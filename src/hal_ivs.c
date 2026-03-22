@@ -1,0 +1,217 @@
+/*
+ * hal_ivs.c -- Raptor HAL IVS (Intelligent Video Surveillance) implementation
+ *
+ * Implements all IVS vtable functions: group/channel lifecycle,
+ * result polling, parameter get/set, and motion detection interface
+ * creation/destruction.
+ *
+ * The IVS API is identical across all Ingenic SoCs (T20-T41).
+ * All algo handles, params, and results use void* since the IVS
+ * algorithm interface is plugin-based and opaque to HAL consumers.
+ *
+ * Copyright (C) 2026 Thingino Project
+ * SPDX-License-Identifier: MIT
+ */
+
+#include "hal_internal.h"
+
+#include <imp/imp_ivs.h>
+#include <imp/imp_ivs_move.h>
+
+/* ================================================================
+ * GROUP LIFECYCLE
+ * ================================================================ */
+
+int hal_ivs_create_group(void *ctx, int grp)
+{
+	(void)ctx;
+	return IMP_IVS_CreateGroup(grp);
+}
+
+int hal_ivs_destroy_group(void *ctx, int grp)
+{
+	(void)ctx;
+	return IMP_IVS_DestroyGroup(grp);
+}
+
+/* ================================================================
+ * CHANNEL LIFECYCLE
+ *
+ * IMP_IVS_CreateChn takes an IMPIVSInterface* as the algorithm
+ * handler.  The HAL passes this through as void* to keep the
+ * public API free of SDK types.
+ * ================================================================ */
+
+int hal_ivs_create_channel(void *ctx, int chn, void *algo_handle)
+{
+	(void)ctx;
+	return IMP_IVS_CreateChn(chn, (IMPIVSInterface *)algo_handle);
+}
+
+int hal_ivs_destroy_channel(void *ctx, int chn)
+{
+	(void)ctx;
+	return IMP_IVS_DestroyChn(chn);
+}
+
+int hal_ivs_register_channel(void *ctx, int grp, int chn)
+{
+	(void)ctx;
+	return IMP_IVS_RegisterChn(grp, chn);
+}
+
+int hal_ivs_unregister_channel(void *ctx, int chn)
+{
+	(void)ctx;
+	return IMP_IVS_UnRegisterChn(chn);
+}
+
+/* ================================================================
+ * START / STOP
+ *
+ * IMP_IVS_StartRecvPic / IMP_IVS_StopRecvPic control whether a
+ * channel actively receives frames for algorithm processing.
+ * ================================================================ */
+
+int hal_ivs_start(void *ctx, int chn)
+{
+	(void)ctx;
+	return IMP_IVS_StartRecvPic(chn);
+}
+
+int hal_ivs_stop(void *ctx, int chn)
+{
+	(void)ctx;
+	return IMP_IVS_StopRecvPic(chn);
+}
+
+/* ================================================================
+ * RESULT POLLING / GET / RELEASE
+ *
+ * The polling/get/release cycle must be strictly paired:
+ *   1. IMP_IVS_PollingResult() -- block until result available
+ *   2. IMP_IVS_GetResult()    -- retrieve result pointer
+ *   3. IMP_IVS_ReleaseResult()-- release result back to SDK
+ * ================================================================ */
+
+int hal_ivs_poll_result(void *ctx, int chn, uint32_t timeout_ms)
+{
+	(void)ctx;
+	return IMP_IVS_PollingResult(chn, (int)timeout_ms);
+}
+
+int hal_ivs_get_result(void *ctx, int chn, void **result)
+{
+	(void)ctx;
+	if (!result)
+		return RSS_ERR_INVAL;
+	return IMP_IVS_GetResult(chn, result);
+}
+
+int hal_ivs_release_result(void *ctx, int chn, void *result)
+{
+	(void)ctx;
+	return IMP_IVS_ReleaseResult(chn, result);
+}
+
+/* ================================================================
+ * PARAMETER GET / SET
+ *
+ * Get/set algorithm parameters on a running channel.
+ * The param pointer is algorithm-specific (opaque to HAL).
+ * ================================================================ */
+
+int hal_ivs_get_param(void *ctx, int chn, void *param)
+{
+	(void)ctx;
+	if (!param)
+		return RSS_ERR_INVAL;
+	return IMP_IVS_GetParam(chn, param);
+}
+
+int hal_ivs_set_param(void *ctx, int chn, void *param)
+{
+	(void)ctx;
+	if (!param)
+		return RSS_ERR_INVAL;
+	return IMP_IVS_SetParam(chn, param);
+}
+
+/* ================================================================
+ * RELEASE DATA
+ *
+ * IMP_IVS_ReleaseData releases frame data cached by the algorithm's
+ * processAsync callback.  Must be assigned as the free_data member
+ * of IMPIVSInterface to avoid deadlocks.
+ * ================================================================ */
+
+int hal_ivs_release_data(void *ctx, int chn, void *data)
+{
+	(void)ctx;
+	(void)chn;
+	if (!data)
+		return RSS_ERR_INVAL;
+	return IMP_IVS_ReleaseData(data);
+}
+
+/* ================================================================
+ * MOTION DETECTION INTERFACE
+ *
+ * IMP_IVS_CreateMoveInterface creates a standard motion detection
+ * algorithm interface from an IMP_IVS_MoveParam struct.  The
+ * returned IMPIVSInterface* can be passed to ivs_create_channel.
+ *
+ * IMP_IVS_DestroyMoveInterface frees the interface and its
+ * internal resources.  The void return from the SDK function
+ * means we always return RSS_OK.
+ * ================================================================ */
+
+void *hal_ivs_create_move_interface(void *ctx, void *param)
+{
+	(void)ctx;
+	if (!param)
+		return NULL;
+	return (void *)IMP_IVS_CreateMoveInterface((IMP_IVS_MoveParam *)param);
+}
+
+int hal_ivs_destroy_move_interface(void *ctx, void *handle)
+{
+	(void)ctx;
+	if (!handle)
+		return RSS_ERR_INVAL;
+	IMP_IVS_DestroyMoveInterface((IMPIVSInterface *)handle);
+	return RSS_OK;
+}
+
+/* ================================================================
+ * BASE MOTION DETECTION INTERFACE
+ *
+ * IMP_IVS_CreateBaseMoveInterface / DestroyBaseMoveInterface are
+ * available on all SoCs via imp_ivs_base_move.h.  They provide a
+ * simpler motion detection algorithm without ROI support.
+ *
+ * These are declared in imp_ivs_base_move.h.  Since that header
+ * may not be present in all SDK versions, we declare them extern
+ * here and let the linker resolve them from libimp.so.
+ * ================================================================ */
+
+/* Forward declarations -- present in libimp.so on all SoCs */
+extern IMPIVSInterface *IMP_IVS_CreateBaseMoveInterface(void *param);
+extern void IMP_IVS_DestroyBaseMoveInterface(IMPIVSInterface *iface);
+
+void *hal_ivs_create_base_move_interface(void *ctx, void *param)
+{
+	(void)ctx;
+	if (!param)
+		return NULL;
+	return (void *)IMP_IVS_CreateBaseMoveInterface(param);
+}
+
+int hal_ivs_destroy_base_move_interface(void *ctx, void *handle)
+{
+	(void)ctx;
+	if (!handle)
+		return RSS_ERR_INVAL;
+	IMP_IVS_DestroyBaseMoveInterface((IMPIVSInterface *)handle);
+	return RSS_OK;
+}

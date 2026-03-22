@@ -1,0 +1,885 @@
+/*
+ * raptor_hal.h -- Raptor Streaming System Hardware Abstraction Layer
+ *
+ * This is the ONLY header that RSS daemons include for hardware access.
+ * All Ingenic IMP SDK types are abstracted behind RSS types.
+ *
+ * Consumers:
+ *   RVD  -- video daemon (ISP, framesource, encoder, OSD, frame output)
+ *   RAD  -- audio daemon (audio input, encoding, frame output)
+ *   RIC  -- IR control daemon (exposure queries)
+ */
+
+#ifndef RAPTOR_HAL_H
+#define RAPTOR_HAL_H
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <errno.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* ================================================================
+ * Error codes
+ * ================================================================ */
+
+#define RSS_OK          0
+#define RSS_ERR         (-1)
+#define RSS_ERR_NOTSUP  (-ENOTSUP)
+#define RSS_ERR_TIMEOUT (-ETIMEDOUT)
+#define RSS_ERR_INVAL   (-EINVAL)
+#define RSS_ERR_NOMEM   (-ENOMEM)
+#define RSS_ERR_IO      (-EIO)
+#define RSS_ERR_BUSY    (-EBUSY)
+#define RSS_ERR_NOENT   (-ENOENT)
+
+/* ================================================================
+ * HAL Types
+ * ================================================================ */
+
+/* Video codec selection */
+typedef enum {
+	RSS_CODEC_H264  = 0,
+	RSS_CODEC_H265  = 1,
+	RSS_CODEC_JPEG  = 2,
+	RSS_CODEC_MJPEG = 3,
+} rss_codec_t;
+
+/* Rate control mode */
+typedef enum {
+	RSS_RC_FIXQP          = 0,
+	RSS_RC_CBR            = 1,
+	RSS_RC_VBR            = 2,
+	RSS_RC_SMART          = 3,  /* old SDK; mapped to CAPPED_VBR on new */
+	RSS_RC_CAPPED_VBR     = 4,  /* new SDK; mapped to VBR on old */
+	RSS_RC_CAPPED_QUALITY = 5,  /* new SDK; mapped to VBR on old */
+} rss_rc_mode_t;
+
+/* Pixel format */
+typedef enum {
+	RSS_PIXFMT_NV12     = 0,
+	RSS_PIXFMT_NV21     = 1,
+	RSS_PIXFMT_YUYV422  = 2,
+	RSS_PIXFMT_UYVY422  = 3,
+	RSS_PIXFMT_YUV420P  = 4,
+	RSS_PIXFMT_RGB24    = 5,
+	RSS_PIXFMT_BGR24    = 6,
+	RSS_PIXFMT_BGRA     = 7,
+	RSS_PIXFMT_ARGB     = 8,
+	RSS_PIXFMT_RGB565LE = 9,
+	RSS_PIXFMT_GRAY8    = 10,
+	RSS_PIXFMT_RAW      = 11,
+	RSS_PIXFMT_RAW8     = 12,  /* T32/T40/T41 only */
+	RSS_PIXFMT_RAW16    = 13,  /* T32/T40/T41 only */
+} rss_pixfmt_t;
+
+/* Abstracted NAL unit type */
+typedef enum {
+	/* H.264 */
+	RSS_NAL_H264_SPS   = 0x10,
+	RSS_NAL_H264_PPS   = 0x11,
+	RSS_NAL_H264_SEI   = 0x12,
+	RSS_NAL_H264_IDR   = 0x13,
+	RSS_NAL_H264_SLICE = 0x14,
+
+	/* H.265 */
+	RSS_NAL_H265_VPS   = 0x20,
+	RSS_NAL_H265_SPS   = 0x21,
+	RSS_NAL_H265_PPS   = 0x22,
+	RSS_NAL_H265_SEI   = 0x23,
+	RSS_NAL_H265_IDR   = 0x24,
+	RSS_NAL_H265_SLICE = 0x25,
+
+	/* JPEG */
+	RSS_NAL_JPEG_FRAME = 0x30,
+
+	RSS_NAL_UNKNOWN    = 0xFF,
+} rss_nal_type_t;
+
+/* Single NAL unit within an encoded frame */
+typedef struct {
+	const uint8_t  *data;       /* contiguous NAL payload */
+	uint32_t        length;     /* payload length in bytes */
+	rss_nal_type_t  type;
+	bool            frame_end;  /* last NAL in the frame */
+} rss_nal_unit_t;
+
+/* Encoded video frame (returned by enc_get_frame) */
+typedef struct {
+	rss_nal_unit_t *nals;
+	uint32_t        nal_count;
+	rss_codec_t     codec;
+	int64_t         timestamp;  /* capture timestamp in microseconds */
+	uint32_t        seq;
+	bool            is_key;
+
+	/* HAL-internal: do not touch */
+	void           *_priv;
+} rss_frame_t;
+
+/* Audio frame (returned by audio_read_frame) */
+typedef struct {
+	const int16_t  *data;
+	uint32_t        length;     /* data length in bytes */
+	int64_t         timestamp;
+	uint32_t        seq;
+
+	/* HAL-internal */
+	void           *_priv;
+} rss_audio_frame_t;
+
+/* Encoder channel configuration */
+typedef struct {
+	rss_codec_t     codec;
+	uint16_t        width;
+	uint16_t        height;
+	int             profile;    /* H264: 0=base,1=main,2=high; H265: ignored */
+
+	/* Rate control */
+	rss_rc_mode_t   rc_mode;
+	uint32_t        bitrate;    /* target bitrate in bps */
+	uint32_t        max_bitrate;
+	int16_t         init_qp;    /* -1 for SDK default */
+	int16_t         min_qp;     /* [0..51] */
+	int16_t         max_qp;     /* [0..51] */
+
+	/* Frame rate */
+	uint32_t        fps_num;
+	uint32_t        fps_den;
+
+	/* GOP */
+	uint32_t        gop_length;
+
+	/* Buffer size hint; 0 = SDK default */
+	uint32_t        buf_size;
+} rss_video_config_t;
+
+/* Raw frame info (returned by fs_get_frame / fs_snap_frame) */
+typedef struct {
+	uint16_t        width;
+	uint16_t        height;
+	rss_pixfmt_t    pixfmt;
+	int64_t         timestamp;
+	uint32_t        phys_addr;
+	void           *virt_addr;
+	uint32_t        size;
+} rss_frame_info_t;
+
+/* Framesource channel configuration */
+typedef struct {
+	uint16_t        width;
+	uint16_t        height;
+	rss_pixfmt_t    pixfmt;
+
+	uint32_t        fps_num;
+	uint32_t        fps_den;
+
+	/* ISP-level crop (before scaling); zero to disable */
+	struct {
+		bool    enable;
+		int     x, y;
+		int     w, h;
+	} crop;
+
+	/* Frame-level crop (after scaling); T23+ only */
+	struct {
+		bool    enable;
+		int     x, y;
+		int     w, h;
+	} fcrop;
+
+	int             nr_vbs;     /* video buffer blocks; 0 = SDK default */
+	int             chn_type;   /* 0 = physical, 1 = extension */
+} rss_fs_config_t;
+
+/* Audio sample rate */
+typedef enum {
+	RSS_AUDIO_RATE_8000  = 8000,
+	RSS_AUDIO_RATE_16000 = 16000,
+	RSS_AUDIO_RATE_24000 = 24000,
+	RSS_AUDIO_RATE_32000 = 32000,
+	RSS_AUDIO_RATE_44100 = 44100,
+	RSS_AUDIO_RATE_48000 = 48000,
+} rss_audio_rate_t;
+
+/* Audio device and channel configuration */
+typedef struct {
+	rss_audio_rate_t sample_rate;
+	int              samples_per_frame;
+	int              chn_count;     /* 1=mono, 2=stereo */
+	int              frame_depth;   /* usrFrmDepth [2..50] */
+	int              ai_vol;        /* [-30..120], 60=unity */
+	int              ai_gain;       /* [0..31] */
+} rss_audio_config_t;
+
+/* ISP image tuning values; 128 = neutral */
+typedef struct {
+	uint8_t brightness;
+	uint8_t contrast;
+	uint8_t saturation;
+	uint8_t sharpness;
+	uint8_t hue;            /* requires has_bcsh_hue */
+} rss_image_attr_t;
+
+/* OSD region type */
+typedef enum {
+	RSS_OSD_PIC      = 0,   /* RGBA picture */
+	RSS_OSD_COVER    = 1,   /* solid color rectangle */
+	RSS_OSD_PIC_RMEM = 2,   /* picture from reserved memory (T31+) */
+} rss_osd_type_t;
+
+/* OSD region definition */
+typedef struct {
+	rss_osd_type_t  type;
+
+	int             x;
+	int             y;
+	int             width;
+	int             height;
+
+	/* PIC / PIC_RMEM: bitmap data */
+	const uint8_t  *bitmap_data;    /* BGRA, width*height*4 bytes */
+	rss_pixfmt_t    bitmap_fmt;     /* must be RSS_PIXFMT_BGRA */
+
+	/* COVER: fill color (BGRA) */
+	uint32_t        cover_color;
+
+	/* Alpha blending */
+	bool            global_alpha_en;
+	uint8_t         fg_alpha;
+	uint8_t         bg_alpha;
+
+	int             layer;          /* z-order */
+} rss_osd_region_t;
+
+/* Sensor VIN type */
+typedef enum {
+	RSS_SENSOR_VIN_MIPI_CSI0 = 0,
+	RSS_SENSOR_VIN_MIPI_CSI1 = 1,
+	RSS_SENSOR_VIN_DVP       = 2,
+} rss_sensor_vin_t;
+
+/* Sensor MCLK source */
+typedef enum {
+	RSS_SENSOR_MCLK0 = 0,
+	RSS_SENSOR_MCLK1 = 1,
+	RSS_SENSOR_MCLK2 = 2,
+} rss_sensor_mclk_t;
+
+/* Sensor configuration */
+typedef struct {
+	char                name[32];       /* sensor driver name */
+	uint16_t            i2c_addr;       /* 7-bit I2C address */
+	int                 i2c_adapter;
+	uint16_t            sensor_id;      /* 0 if unused */
+
+	/* T40/T32/T41 only */
+	rss_sensor_vin_t    vin_type;
+	rss_sensor_mclk_t   mclk;
+	int                 default_boot;
+
+	/* GPIO pins; -1 = unused */
+	int                 rst_gpio;
+	int                 pwdn_gpio;
+	int                 power_gpio;
+} rss_sensor_config_t;
+
+/* Exposure info (for IR-cut control) */
+typedef struct {
+	uint32_t    total_gain;
+	uint32_t    exposure_time;  /* microseconds */
+	uint32_t    ae_luma;
+} rss_exposure_t;
+
+/* White balance mode */
+typedef enum {
+	RSS_WB_AUTO   = 0,
+	RSS_WB_MANUAL = 1,
+} rss_wb_mode_t;
+
+/* White balance configuration */
+typedef struct {
+	rss_wb_mode_t   mode;
+	uint16_t        r_gain;
+	uint16_t        g_gain;
+	uint16_t        b_gain;
+} rss_wb_config_t;
+
+/* Audio AGC parameters */
+typedef struct {
+	int target_level_dbfs;      /* [0..31] */
+	int compression_gain_db;    /* [0..90] */
+} rss_agc_config_t;
+
+/* Custom audio encoder callbacks */
+typedef struct {
+	char    name[16];
+	int     max_frame_len;
+
+	int   (*open)(void *attr, void *encoder);
+	int   (*encode)(void *encoder, const int16_t *pcm, int pcm_len,
+	                uint8_t *out, int *out_len);
+	int   (*close)(void *encoder);
+} rss_audio_encoder_t;
+
+/* Noise suppression level */
+typedef enum {
+	RSS_NS_LOW      = 0,
+	RSS_NS_MODERATE = 1,
+	RSS_NS_HIGH     = 2,
+	RSS_NS_VERYHIGH = 3,
+} rss_ns_level_t;
+
+/* Pipeline device ID */
+typedef enum {
+	RSS_DEV_FS  = 0,
+	RSS_DEV_ENC = 1,
+	RSS_DEV_OSD = 4,
+} rss_dev_id_t;
+
+/* Pipeline endpoint for bind/unbind */
+typedef struct {
+	rss_dev_id_t    device;
+	int             group;
+	int             output;
+} rss_cell_t;
+
+/* ISP running mode */
+typedef enum {
+	RSS_ISP_DAY   = 0,
+	RSS_ISP_NIGHT = 1,
+} rss_isp_mode_t;
+
+/* Anti-flicker mode */
+typedef enum {
+	RSS_ANTIFLICKER_OFF  = 0,
+	RSS_ANTIFLICKER_50HZ = 1,
+	RSS_ANTIFLICKER_60HZ = 2,
+} rss_antiflicker_t;
+
+/* ================================================================
+ * Capability Struct
+ * ================================================================ */
+
+typedef struct {
+	/* System info */
+	const char *soc_name;
+	const char *sdk_version;
+	int         max_fs_channels;
+	int         max_enc_channels;
+	int         max_osd_groups;
+	int         max_osd_regions;
+
+	/* Encoder capabilities */
+	bool has_h265;
+	bool has_rotation;
+	bool has_i2d;
+	bool has_bufshare;
+	bool has_set_default_param;
+	bool has_capped_rc;
+	bool has_smart_rc;
+	bool has_gop_attr;
+	bool has_set_bitrate;
+	bool has_stream_buf_size;
+	bool has_encoder_pool;
+
+	/* ISP capabilities */
+	bool has_multi_sensor;
+	bool has_defog;
+	bool has_dpc;
+	bool has_drc;
+	bool has_face_ae;
+	bool has_bcsh_hue;
+	bool has_sinter;
+	bool has_temper;
+	bool has_highlight_depress;
+	bool has_backlight_comp;
+	bool has_ae_comp;
+	bool has_max_gain;
+	bool has_switch_bin;
+	bool has_gamma;
+	bool has_gamma_attr;
+	bool has_module_control;
+	bool has_wdr;
+
+	/* OSD capabilities */
+	bool has_isp_osd;
+	bool has_osd_mosaic;
+	bool has_osd_group_callback;
+	bool has_osd_region_invert;
+	bool has_extended_osd_types;
+
+	/* Audio capabilities */
+	bool has_audio_process_lib;
+	bool has_audio_aec_channel;
+	bool has_alc_gain;
+	bool has_agc_mode;
+	bool has_digital_gain;
+	bool has_howling_suppress;
+	bool has_hpf_cutoff;
+
+	/* System capabilities */
+	bool uses_xburst2;
+	bool uses_new_sdk;
+	bool uses_impvi;
+	int  max_isp_osd_regions;
+} rss_hal_caps_t;
+
+/* ================================================================
+ * Opaque Context
+ * ================================================================ */
+
+typedef struct rss_hal_ctx rss_hal_ctx_t;
+
+/* ================================================================
+ * Operations Vtable
+ * ================================================================ */
+
+typedef struct rss_hal_ops {
+
+	/* --- System lifecycle --- */
+
+	int (*init)(void *ctx, const rss_sensor_config_t *sensor_cfg);
+	int (*deinit)(void *ctx);
+	const rss_hal_caps_t *(*get_caps)(void *ctx);
+	int (*bind)(void *ctx, const rss_cell_t *src, const rss_cell_t *dst);
+	int (*unbind)(void *ctx, const rss_cell_t *src, const rss_cell_t *dst);
+
+	/* --- System utilities --- */
+
+	int (*sys_get_version)(void *ctx, char *buf, int len);
+	int (*sys_get_cpu_info)(void *ctx, char *buf, int len);
+	int (*sys_get_timestamp)(void *ctx, int64_t *ts);
+	int (*sys_rebase_timestamp)(void *ctx, int64_t base);
+	int (*sys_read_reg32)(void *ctx, uint32_t addr, uint32_t *val);
+	int (*sys_write_reg32)(void *ctx, uint32_t addr, uint32_t val);
+	int (*sys_get_bind_by_dest)(void *ctx, rss_cell_t *dst, rss_cell_t *src);
+
+	/* --- Framesource --- */
+
+	int (*fs_create_channel)(void *ctx, int chn, const rss_fs_config_t *cfg);
+	int (*fs_destroy_channel)(void *ctx, int chn);
+	int (*fs_enable_channel)(void *ctx, int chn);
+	int (*fs_disable_channel)(void *ctx, int chn);
+	int (*fs_set_rotation)(void *ctx, int chn, int degrees);
+	int (*fs_set_fifo)(void *ctx, int chn, int depth);
+	int (*fs_get_frame)(void *ctx, int chn, void **frame_data, rss_frame_info_t *info);
+	int (*fs_release_frame)(void *ctx, int chn, void *frame_data);
+	int (*fs_snap_frame)(void *ctx, int chn, void **frame_data, rss_frame_info_t *info);
+	int (*fs_set_frame_depth)(void *ctx, int chn, int depth);
+	int (*fs_get_frame_depth)(void *ctx, int chn, int *depth);
+	int (*fs_get_fifo)(void *ctx, int chn, int *depth);
+	int (*fs_set_delay)(void *ctx, int chn, int delay_ms);
+	int (*fs_get_delay)(void *ctx, int chn, int *delay_ms);
+	int (*fs_set_max_delay)(void *ctx, int chn, int max_delay_ms);
+	int (*fs_get_max_delay)(void *ctx, int chn, int *max_delay_ms);
+	int (*fs_set_pool)(void *ctx, int chn, int pool_id);
+	int (*fs_get_pool)(void *ctx, int chn, int *pool_id);
+	int (*fs_get_timed_frame)(void *ctx, int chn, void *framets, int block,
+	                          void *framedata, void *frame);
+	int (*fs_set_frame_offset)(void *ctx, int chn, int offset);
+	int (*fs_chn_stat_query)(void *ctx, int chn, void *stat);
+	int (*fs_enable_chn_undistort)(void *ctx, int chn);
+	int (*fs_disable_chn_undistort)(void *ctx, int chn);
+
+	/* --- Encoder --- */
+
+	int (*enc_create_group)(void *ctx, int grp);
+	int (*enc_destroy_group)(void *ctx, int grp);
+	int (*enc_create_channel)(void *ctx, int chn, const rss_video_config_t *cfg);
+	int (*enc_destroy_channel)(void *ctx, int chn);
+	int (*enc_register_channel)(void *ctx, int grp, int chn);
+	int (*enc_unregister_channel)(void *ctx, int chn);
+	int (*enc_start)(void *ctx, int chn);
+	int (*enc_stop)(void *ctx, int chn);
+	int (*enc_poll)(void *ctx, int chn, uint32_t timeout_ms);
+	int (*enc_get_frame)(void *ctx, int chn, rss_frame_t *frame);
+	int (*enc_release_frame)(void *ctx, int chn, rss_frame_t *frame);
+	int (*enc_request_idr)(void *ctx, int chn);
+	int (*enc_set_bitrate)(void *ctx, int chn, uint32_t bitrate);
+	int (*enc_set_gop)(void *ctx, int chn, uint32_t gop_length);
+	int (*enc_set_fps)(void *ctx, int chn, uint32_t fps_num, uint32_t fps_den);
+	int (*enc_set_bufshare)(void *ctx, int src_chn, int dst_chn);
+	int (*enc_get_channel_attr)(void *ctx, int chn, rss_video_config_t *cfg);
+	int (*enc_get_fps)(void *ctx, int chn, uint32_t *fps_num, uint32_t *fps_den);
+	int (*enc_get_gop_attr)(void *ctx, int chn, uint32_t *gop_length);
+	int (*enc_set_gop_attr)(void *ctx, int chn, uint32_t gop_length);
+	int (*enc_get_avg_bitrate)(void *ctx, int chn, uint32_t *bitrate);
+	int (*enc_flush_stream)(void *ctx, int chn);
+	int (*enc_query)(void *ctx, int chn, bool *busy);
+	int (*enc_get_fd)(void *ctx, int chn);
+	int (*enc_set_qp)(void *ctx, int chn, int qp);
+	int (*enc_set_qp_bounds)(void *ctx, int chn, int min_qp, int max_qp);
+	int (*enc_set_qp_ip_delta)(void *ctx, int chn, int delta);
+	int (*enc_set_stream_buf_size)(void *ctx, int chn, uint32_t size);
+	int (*enc_get_stream_buf_size)(void *ctx, int chn, uint32_t *size);
+	int (*enc_get_chn_gop_attr)(void *ctx, int chn, void *gop_attr);
+	int (*enc_set_chn_gop_attr)(void *ctx, int chn, const void *gop_attr);
+	int (*enc_get_chn_enc_type)(void *ctx, int chn, void *enc_type);
+	int (*enc_get_chn_ave_bitrate)(void *ctx, int chn, void *stream,
+	                               int frames, double *br);
+	int (*enc_set_chn_entropy_mode)(void *ctx, int chn, int mode);
+	int (*enc_get_max_stream_cnt)(void *ctx, int chn, int *cnt);
+	int (*enc_set_max_stream_cnt)(void *ctx, int chn, int cnt);
+	int (*enc_set_pool)(void *ctx, int chn, int pool_id);
+	int (*enc_get_pool)(void *ctx, int chn);
+
+	/* --- ISP tuning --- */
+
+	int (*isp_set_brightness)(void *ctx, uint8_t val);
+	int (*isp_set_contrast)(void *ctx, uint8_t val);
+	int (*isp_set_saturation)(void *ctx, uint8_t val);
+	int (*isp_set_sharpness)(void *ctx, uint8_t val);
+	int (*isp_set_hue)(void *ctx, uint8_t val);
+	int (*isp_set_hflip)(void *ctx, int enable);
+	int (*isp_set_vflip)(void *ctx, int enable);
+	int (*isp_set_running_mode)(void *ctx, rss_isp_mode_t mode);
+	int (*isp_set_sensor_fps)(void *ctx, uint32_t fps_num, uint32_t fps_den);
+	int (*isp_set_antiflicker)(void *ctx, rss_antiflicker_t mode);
+	int (*isp_set_wb)(void *ctx, const rss_wb_config_t *wb_cfg);
+	int (*isp_get_exposure)(void *ctx, rss_exposure_t *exposure);
+
+	/* Optional ISP tuning (return -ENOTSUP if unavailable) */
+	int (*isp_set_sinter_strength)(void *ctx, uint8_t val);
+	int (*isp_set_temper_strength)(void *ctx, uint8_t val);
+	int (*isp_set_defog)(void *ctx, int enable);
+	int (*isp_set_dpc_strength)(void *ctx, uint8_t val);
+	int (*isp_set_drc_strength)(void *ctx, uint8_t val);
+	int (*isp_set_ae_comp)(void *ctx, int val);
+	int (*isp_set_max_again)(void *ctx, uint32_t gain);
+	int (*isp_set_max_dgain)(void *ctx, uint32_t gain);
+	int (*isp_set_highlight_depress)(void *ctx, uint8_t val);
+
+	/* ISP getters (mirrors of existing setters) */
+	int (*isp_get_brightness)(void *ctx, uint8_t *val);
+	int (*isp_get_contrast)(void *ctx, uint8_t *val);
+	int (*isp_get_saturation)(void *ctx, uint8_t *val);
+	int (*isp_get_sharpness)(void *ctx, uint8_t *val);
+	int (*isp_get_hue)(void *ctx, uint8_t *val);
+	int (*isp_get_hvflip)(void *ctx, int *hflip, int *vflip);
+	int (*isp_get_running_mode)(void *ctx, rss_isp_mode_t *mode);
+	int (*isp_get_sensor_fps)(void *ctx, uint32_t *fps_num, uint32_t *fps_den);
+	int (*isp_get_antiflicker)(void *ctx, rss_antiflicker_t *mode);
+	int (*isp_get_wb)(void *ctx, rss_wb_config_t *wb_cfg);
+	int (*isp_get_max_again)(void *ctx, uint32_t *gain);
+	int (*isp_get_max_dgain)(void *ctx, uint32_t *gain);
+	int (*isp_get_sensor_attr)(void *ctx, uint32_t *width, uint32_t *height);
+	int (*isp_get_ae_comp)(void *ctx, int *val);
+	int (*isp_get_module_control)(void *ctx, uint32_t *modules);
+	int (*isp_get_sinter_strength)(void *ctx, uint8_t *val);
+	int (*isp_get_temper_strength)(void *ctx, uint8_t *val);
+	int (*isp_get_defog_strength)(void *ctx, uint8_t *val);
+	int (*isp_get_dpc_strength)(void *ctx, uint8_t *val);
+	int (*isp_get_drc_strength)(void *ctx, uint8_t *val);
+	int (*isp_get_highlight_depress)(void *ctx, uint8_t *val);
+	int (*isp_get_backlight_comp)(void *ctx, uint8_t *val);
+
+	/* ISP AE advanced */
+	int (*isp_set_ae_weight)(void *ctx, const uint8_t weight[15][15]);
+	int (*isp_get_ae_weight)(void *ctx, uint8_t weight[15][15]);
+	int (*isp_get_ae_zone)(void *ctx, uint32_t zone[15][15]);
+	int (*isp_set_ae_roi)(void *ctx, const uint8_t roi[15][15]);
+	int (*isp_get_ae_roi)(void *ctx, uint8_t roi[15][15]);
+	int (*isp_set_ae_hist)(void *ctx, const uint8_t thresholds[4]);
+	int (*isp_get_ae_hist)(void *ctx, uint8_t thresholds[4],
+	                       uint16_t bins[5]);
+	int (*isp_get_ae_hist_origin)(void *ctx, uint32_t bins[256]);
+	int (*isp_set_ae_it_max)(void *ctx, uint32_t it_max);
+	int (*isp_get_ae_it_max)(void *ctx, uint32_t *it_max);
+	int (*isp_set_ae_min)(void *ctx, int min_it, int min_again);
+	int (*isp_get_ae_min)(void *ctx, int *min_it, int *min_again);
+
+	/* ISP AWB advanced */
+	int (*isp_set_awb_weight)(void *ctx, const uint8_t weight[15][15]);
+	int (*isp_get_awb_weight)(void *ctx, uint8_t weight[15][15]);
+	int (*isp_get_awb_zone)(void *ctx, uint8_t zone_r[225],
+	                        uint8_t zone_g[225], uint8_t zone_b[225]);
+	int (*isp_get_awb_ct)(void *ctx, uint32_t *color_temp);
+	int (*isp_get_awb_rgb_coefft)(void *ctx, uint16_t *rgain,
+	                              uint16_t *ggain, uint16_t *bgain);
+	int (*isp_get_awb_hist)(void *ctx, void *hist_data);
+
+	/* ISP gamma / CCM / WDR */
+	int (*isp_set_gamma)(void *ctx, const uint16_t gamma[129]);
+	int (*isp_get_gamma)(void *ctx, uint16_t gamma[129]);
+	int (*isp_set_ccm)(void *ctx, const void *ccm_attr);
+	int (*isp_get_ccm)(void *ctx, void *ccm_attr);
+	int (*isp_set_wdr_mode)(void *ctx, int mode);
+	int (*isp_get_wdr_mode)(void *ctx, int *mode);
+	int (*isp_wdr_enable)(void *ctx, int enable);
+	int (*isp_wdr_get_enable)(void *ctx, int *enabled);
+	int (*isp_set_bypass)(void *ctx, int enable);
+	int (*isp_set_module_control)(void *ctx, uint32_t modules);
+
+	/* ISP misc */
+	int (*isp_set_default_bin_path)(void *ctx, const char *path);
+	int (*isp_get_default_bin_path)(void *ctx, char *path, int path_len);
+	int (*isp_set_frame_drop)(void *ctx, int drop);
+	int (*isp_get_frame_drop)(void *ctx, int *drop);
+	int (*isp_set_sensor_register)(void *ctx, uint32_t reg, uint32_t val);
+	int (*isp_get_sensor_register)(void *ctx, uint32_t reg, uint32_t *val);
+	int (*isp_set_auto_zoom)(void *ctx, const void *zoom_attr);
+	int (*isp_set_video_drop)(void *ctx, void (*callback)(void));
+	int (*isp_set_mask)(void *ctx, const void *mask_attr);
+	int (*isp_get_mask)(void *ctx, void *mask_attr);
+
+	/* ISP advanced AE/AWB/misc (T23+T31 and select SoCs) */
+	int (*isp_set_expr)(void *ctx, const void *expr_attr);
+	int (*isp_get_ae_attr)(void *ctx, void *ae_attr);
+	int (*isp_set_ae_attr)(void *ctx, const void *ae_attr);
+	int (*isp_get_ae_state)(void *ctx, void *ae_state);
+	int (*isp_get_ae_target_list)(void *ctx, void *target_list);
+	int (*isp_set_ae_target_list)(void *ctx, const void *target_list);
+	int (*isp_set_ae_freeze)(void *ctx, int enable);
+	int (*isp_get_af_zone)(void *ctx, void *af_zone);
+	int (*isp_get_awb_clust)(void *ctx, void *clust);
+	int (*isp_set_awb_clust)(void *ctx, const void *clust);
+	int (*isp_get_awb_ct_attr)(void *ctx, void *ct_attr);
+	int (*isp_set_awb_ct_attr)(void *ctx, const void *ct_attr);
+	int (*isp_get_awb_ct_trend)(void *ctx, void *trend);
+	int (*isp_set_awb_ct_trend)(void *ctx, const void *trend);
+	int (*isp_set_backlight_comp)(void *ctx, uint32_t strength);
+	int (*isp_get_defog_strength_adv)(void *ctx, void *defog_attr);
+	int (*isp_set_defog_strength_adv)(void *ctx, const void *defog_attr);
+	int (*isp_get_front_crop)(void *ctx, void *crop_attr);
+	int (*isp_set_front_crop)(void *ctx, const void *crop_attr);
+	int (*isp_get_blc_attr)(void *ctx, void *blc_attr);
+	int (*isp_get_csc_attr)(void *ctx, void *csc_attr);
+	int (*isp_set_csc_attr)(void *ctx, const void *csc_attr);
+	int (*isp_set_custom_mode)(void *ctx, int mode);
+	int (*isp_get_custom_mode)(void *ctx, int *mode);
+	int (*isp_enable_drc)(void *ctx, int enable);
+
+	/* ISP AF / move-state (T20-T31) */
+	int (*isp_get_af_hist)(void *ctx, void *af_hist);
+	int (*isp_set_af_hist)(void *ctx, const void *af_hist);
+	int (*isp_get_af_metrics)(void *ctx, void *metrics);
+	int (*isp_enable_movestate)(void *ctx);
+	int (*isp_disable_movestate)(void *ctx);
+	int (*isp_set_shading)(void *ctx, const void *shading_attr);
+	int (*isp_wait_frame)(void *ctx, int timeout_ms);
+
+	/* ISP AF weight (T21+T23+T31+T32+T40+T41) */
+	int (*isp_get_af_weight)(void *ctx, void *af_weight);
+	int (*isp_set_af_weight)(void *ctx, const void *af_weight);
+
+	/* ISP WB statistics (T20-T31) */
+	int (*isp_get_wb_statis)(void *ctx, void *wb_statis);
+	int (*isp_set_awb_hist_adv)(void *ctx, const void *awb_hist);
+
+	/* ISP WB GOL statistics (T21+T23+T31) */
+	int (*isp_get_wb_gol_statis)(void *ctx, void *gol_statis);
+
+	/* ISP WDR output mode (T31 only) */
+	int (*isp_set_wdr_output_mode)(void *ctx, int mode);
+	int (*isp_get_wdr_output_mode)(void *ctx, int *mode);
+
+	/* ISP scaler level (T23+T31+T32+T41) */
+	int (*isp_set_scaler_lv)(void *ctx, int chn, int level);
+
+	/* --- Audio --- */
+
+	int (*audio_init)(void *ctx, const rss_audio_config_t *cfg);
+	int (*audio_deinit)(void *ctx);
+	int (*audio_set_volume)(void *ctx, int dev, int chn, int vol);
+	int (*audio_set_gain)(void *ctx, int dev, int chn, int gain);
+	int (*audio_enable_ns)(void *ctx, rss_ns_level_t level);
+	int (*audio_disable_ns)(void *ctx);
+	int (*audio_enable_hpf)(void *ctx);
+	int (*audio_disable_hpf)(void *ctx);
+	int (*audio_enable_agc)(void *ctx, const rss_agc_config_t *cfg);
+	int (*audio_disable_agc)(void *ctx);
+	int (*audio_read_frame)(void *ctx, int dev, int chn,
+	                        rss_audio_frame_t *frame, bool block);
+	int (*audio_register_encoder)(void *ctx, const rss_audio_encoder_t *enc,
+	                              int *handle);
+	int (*audio_unregister_encoder)(void *ctx, int handle);
+
+	/* AI additional */
+	int (*audio_enable_aec)(void *ctx, int ai_dev, int ai_chn, int ao_dev, int ao_chn);
+	int (*audio_disable_aec)(void *ctx);
+	int (*audio_get_volume)(void *ctx, int dev, int chn, int *vol);
+	int (*audio_get_gain)(void *ctx, int dev, int chn, int *gain);
+	int (*audio_set_mute)(void *ctx, int dev, int chn, int mute);
+	int (*audio_set_alc_gain)(void *ctx, int dev, int chn, int gain);
+	int (*audio_get_alc_gain)(void *ctx, int dev, int chn, int *gain);
+	int (*audio_set_agc_mode)(void *ctx, int mode);
+	int (*audio_set_hpf_co_freq)(void *ctx, int freq);
+	int (*audio_enable_aec_ref_frame)(void *ctx, int ai_dev, int ai_chn,
+	                                  int ao_dev, int ao_chn);
+	int (*audio_disable_aec_ref_frame)(void *ctx, int ai_dev, int ai_chn);
+	int (*audio_get_chn_param)(void *ctx, int dev, int chn, void *param);
+	int (*audio_get_frame_and_ref)(void *ctx, int dev, int chn,
+	                               void *frame, void *ref, int block);
+
+	/* Audio encoding pipeline (AENC) */
+	int (*aenc_create_channel)(void *ctx, int chn, int codec_type);
+	int (*aenc_destroy_channel)(void *ctx, int chn);
+	int (*aenc_send_frame)(void *ctx, int chn, rss_audio_frame_t *frame);
+	int (*aenc_poll_stream)(void *ctx, int chn, uint32_t timeout_ms);
+	int (*aenc_get_stream)(void *ctx, int chn, rss_audio_frame_t *stream);
+	int (*aenc_release_stream)(void *ctx, int chn, rss_audio_frame_t *stream);
+
+	/* Audio decoding pipeline (ADEC) — for backchannel / two-way audio */
+	int (*adec_register_decoder)(void *ctx, int *handle, void *decoder);
+	int (*adec_unregister_decoder)(void *ctx, int handle);
+	int (*adec_create_channel)(void *ctx, int chn, int codec_type);
+	int (*adec_destroy_channel)(void *ctx, int chn);
+	int (*adec_send_stream)(void *ctx, int chn, const uint8_t *data,
+	                        uint32_t len, int64_t timestamp);
+	int (*adec_clear_buf)(void *ctx, int chn);
+	int (*adec_poll_stream)(void *ctx, int chn, uint32_t timeout_ms);
+	int (*adec_get_stream)(void *ctx, int chn, rss_audio_frame_t *stream);
+	int (*adec_release_stream)(void *ctx, int chn, rss_audio_frame_t *stream);
+
+	/* Audio output (AO) — speaker playback for backchannel */
+	int (*ao_init)(void *ctx, const rss_audio_config_t *cfg);
+	int (*ao_deinit)(void *ctx);
+	int (*ao_set_volume)(void *ctx, int vol);
+	int (*ao_set_gain)(void *ctx, int gain);
+	int (*ao_send_frame)(void *ctx, const int16_t *data, uint32_t len, bool block);
+	int (*ao_pause)(void *ctx);
+	int (*ao_resume)(void *ctx);
+	int (*ao_clear_buf)(void *ctx);
+	int (*ao_flush_buf)(void *ctx);
+	int (*ao_get_volume)(void *ctx, int *vol);
+	int (*ao_get_gain)(void *ctx, int *gain);
+	int (*ao_set_mute)(void *ctx, int mute);
+	int (*ao_enable_hpf)(void *ctx);
+	int (*ao_disable_hpf)(void *ctx);
+	int (*ao_enable_agc)(void *ctx);
+	int (*ao_disable_agc)(void *ctx);
+	int (*ao_set_hpf_co_freq)(void *ctx, int freq);
+	int (*ao_query_chn_stat)(void *ctx, int dev, int chn, void *stat);
+	int (*ao_soft_mute)(void *ctx, int dev, int chn);
+	int (*ao_soft_unmute)(void *ctx, int dev, int chn);
+	int (*ao_cache_switch)(void *ctx, int dev, int chn, int enable);
+
+	/* --- OSD --- */
+
+	int (*osd_set_pool_size)(void *ctx, uint32_t bytes);
+	int (*osd_create_group)(void *ctx, int grp);
+	int (*osd_destroy_group)(void *ctx, int grp);
+	int (*osd_create_region)(void *ctx, int *handle,
+	                         const rss_osd_region_t *attr);
+	int (*osd_destroy_region)(void *ctx, int handle);
+	int (*osd_register_region)(void *ctx, int handle, int grp);
+	int (*osd_unregister_region)(void *ctx, int handle, int grp);
+	int (*osd_set_region_attr)(void *ctx, int handle,
+	                           const rss_osd_region_t *attr);
+	int (*osd_update_region_data)(void *ctx, int handle,
+	                              const uint8_t *data);
+	int (*osd_show_region)(void *ctx, int handle, int grp, int show);
+	int (*osd_get_region_attr)(void *ctx, int handle, rss_osd_region_t *attr);
+	int (*osd_get_group_region_attr)(void *ctx, int handle, int grp, rss_osd_region_t *attr);
+	int (*osd_show)(void *ctx, int handle, int grp, bool show);
+	int (*osd_start)(void *ctx, int grp);
+	int (*osd_stop)(void *ctx, int grp);
+	int (*osd_set_region_attr_with_timestamp)(void *ctx, int handle, const rss_osd_region_t *attr, uint64_t timestamp);
+	int (*osd_attach_to_group)(void *ctx, int handle, int grp);
+
+	/* --- GPIO / IR-cut --- */
+
+	int (*gpio_set)(void *ctx, int pin, int value);
+	int (*gpio_get)(void *ctx, int pin, int *value);
+	int (*ircut_set)(void *ctx, int state);
+
+	/* --- IVS (Intelligent Video Surveillance / Motion Detection) --- */
+
+	int (*ivs_create_group)(void *ctx, int grp);
+	int (*ivs_destroy_group)(void *ctx, int grp);
+	int (*ivs_create_channel)(void *ctx, int chn, void *algo_handle);
+	int (*ivs_destroy_channel)(void *ctx, int chn);
+	int (*ivs_register_channel)(void *ctx, int grp, int chn);
+	int (*ivs_unregister_channel)(void *ctx, int chn);
+	int (*ivs_start)(void *ctx, int chn);
+	int (*ivs_stop)(void *ctx, int chn);
+	int (*ivs_poll_result)(void *ctx, int chn, uint32_t timeout_ms);
+	int (*ivs_get_result)(void *ctx, int chn, void **result);
+	int (*ivs_release_result)(void *ctx, int chn, void *result);
+	int (*ivs_get_param)(void *ctx, int chn, void *param);
+	int (*ivs_set_param)(void *ctx, int chn, void *param);
+	int (*ivs_release_data)(void *ctx, int chn, void *data);
+	void *(*ivs_create_move_interface)(void *ctx, void *param);
+	int (*ivs_destroy_move_interface)(void *ctx, void *handle);
+	void *(*ivs_create_base_move_interface)(void *ctx, void *param);
+	int (*ivs_destroy_base_move_interface)(void *ctx, void *handle);
+
+	/* --- DMIC (Digital Microphone — T30/T31/T32/T40/T41) --- */
+
+	int (*dmic_init)(void *ctx, const rss_audio_config_t *cfg);
+	int (*dmic_deinit)(void *ctx);
+	int (*dmic_set_volume)(void *ctx, int vol);
+	int (*dmic_get_volume)(void *ctx, int *vol);
+	int (*dmic_set_gain)(void *ctx, int gain);
+	int (*dmic_get_gain)(void *ctx, int *gain);
+	int (*dmic_set_chn_param)(void *ctx, int chn, int frames_per_buf);
+	int (*dmic_get_chn_param)(void *ctx, int chn, int *frames_per_buf);
+	int (*dmic_read_frame)(void *ctx, rss_audio_frame_t *frame, bool block);
+	int (*dmic_release_frame)(void *ctx, rss_audio_frame_t *frame);
+	int (*dmic_poll_frame)(void *ctx, uint32_t timeout_ms);
+	int (*dmic_enable_aec)(void *ctx, int dev, int chn, int ao_dev, int ao_chn);
+	int (*dmic_disable_aec)(void *ctx, int dev, int chn);
+	int (*dmic_enable_aec_ref_frame)(void *ctx, int dev, int chn,
+	                                 int ao_dev, int ao_chn);
+	int (*dmic_disable_aec_ref_frame)(void *ctx, int dev, int chn,
+	                                  int ao_dev, int ao_chn);
+	int (*dmic_get_pub_attr)(void *ctx, int dev, void *attr);
+	int (*dmic_get_frame_and_ref)(void *ctx, int dev, int chn,
+	                              void *frame, void *ref, int block);
+
+	/* --- ISP OSD (T23/T32/T40/T41 — hardware overlay in ISP pipeline) --- */
+
+	int (*isp_osd_init)(void *ctx);
+	int (*isp_osd_exit)(void *ctx);
+	int (*isp_osd_set_pool_size)(void *ctx, int size);
+	int (*isp_osd_create_region)(void *ctx, int chn, void *attr);
+	int (*isp_osd_destroy_region)(void *ctx, int chn, int handle);
+	int (*isp_osd_set_region_attr)(void *ctx, int chn, int handle, void *attr);
+	int (*isp_osd_get_region_attr)(void *ctx, int chn, int handle, void *attr);
+	int (*isp_osd_show_region)(void *ctx, int chn, int handle, int show);
+	int (*isp_osd_update_region_data)(void *ctx, int chn, int handle, void *data);
+
+	/* --- Memory Management --- */
+
+	void *(*mem_alloc)(void *ctx, uint32_t size, const char *name);
+	void (*mem_free)(void *ctx, void *ptr);
+	int (*mem_flush_cache)(void *ctx, void *ptr, uint32_t size);
+	void *(*mem_phys_to_virt)(void *ctx, uint32_t phys_addr);
+	uint32_t (*mem_virt_to_phys)(void *ctx, void *virt_addr);
+	void *(*mem_pool_alloc)(void *ctx, uint32_t pool_id, uint32_t size);
+	void (*mem_pool_free)(void *ctx, void *ptr);
+	int (*mem_pool_flush_cache)(void *ctx, void *ptr, uint32_t size);
+	void *(*mem_pool_phys_to_virt)(void *ctx, uint32_t phys_addr);
+	uint32_t (*mem_pool_virt_to_phys)(void *ctx, void *virt_addr);
+
+} rss_hal_ops_t;
+
+/* ================================================================
+ * Factory Functions
+ * ================================================================ */
+
+rss_hal_ctx_t      *rss_hal_create(void);
+void                rss_hal_destroy(rss_hal_ctx_t *ctx);
+const rss_hal_ops_t *rss_hal_get_ops(rss_hal_ctx_t *ctx);
+
+/* ================================================================
+ * Convenience Macro
+ * ================================================================ */
+
+/*
+ * RSS_HAL_CALL -- invoke a vtable function with NULL guard.
+ *
+ * Returns RSS_ERR_NOTSUP if the function pointer is NULL.
+ */
+#define RSS_HAL_CALL(ops, fn, ctx, ...) \
+	((ops)->fn ? (ops)->fn((ctx), ##__VA_ARGS__) : RSS_ERR_NOTSUP)
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* RAPTOR_HAL_H */
