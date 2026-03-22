@@ -351,8 +351,29 @@ int hal_audio_read_frame(void *ctx, int dev, int chn,
  * IMP_AENC_RegisterEncoder(int *handle, IMPAudioEncEncoder *encoder)
  * IMP_AENC_UnRegisterEncoder(int *handle)
  *
+ * The SDK's encoderFrm callback takes (void*, IMPAudioFrame*, uchar*, int*).
+ * Our rss_audio_encoder_t.encode takes (void*, int16_t*, int, uint8_t*, int*).
+ * We use a shim to bridge the two, extracting PCM from IMPAudioFrame.
+ *
  * Identical across all SoCs.
  * ================================================================ */
+
+/* User's encode callback — stored here so the shim can access it.
+ * Limitation: only one custom encoder can be registered at a time. */
+static int (*g_user_encode)(void *encoder, const int16_t *pcm,
+                            int pcm_len, uint8_t *out, int *out_len);
+
+/* Shim that bridges SDK callback signature to RSS signature */
+static int hal_aenc_encode_shim(void *encoder, IMPAudioFrame *frame,
+                                unsigned char *outbuf, int *outlen)
+{
+	if (!g_user_encode || !frame)
+		return -1;
+	return g_user_encode(encoder,
+	                     (const int16_t *)(uintptr_t)frame->virAddr,
+	                     frame->len / (int)sizeof(int16_t),
+	                     outbuf, outlen);
+}
 
 int hal_audio_register_encoder(void *ctx, const rss_audio_encoder_t *enc,
                                int *handle)
@@ -364,14 +385,15 @@ int hal_audio_register_encoder(void *ctx, const rss_audio_encoder_t *enc,
 
 	IMPAudioEncEncoder sdk_enc;
 	memset(&sdk_enc, 0, sizeof(sdk_enc));
-	sdk_enc.type        = PT_MAX;  /* custom type beyond built-in codecs */
-	sdk_enc.maxFrmLen   = enc->max_frame_len;
+	sdk_enc.type         = PT_MAX;
+	sdk_enc.maxFrmLen    = enc->max_frame_len;
 	strncpy(sdk_enc.name, enc->name, sizeof(sdk_enc.name) - 1);
 	sdk_enc.openEncoder  = enc->open;
-	/* Suppress -Wcast-function-type: SDK callback signature differs
-	 * from our rss_audio_encoder_t.encode signature */
-	memcpy(&sdk_enc.encoderFrm, &enc->encode, sizeof(sdk_enc.encoderFrm));
+	sdk_enc.encoderFrm   = hal_aenc_encode_shim;
 	sdk_enc.closeEncoder = enc->close;
+
+	/* Store user callback so the shim can reach it */
+	g_user_encode = enc->encode;
 
 	return IMP_AENC_RegisterEncoder(handle, &sdk_enc);
 }
