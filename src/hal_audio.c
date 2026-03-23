@@ -54,7 +54,7 @@ int hal_audio_init(void *ctx, const rss_audio_config_t *cfg)
 	attr.bitwidth   = AUDIO_BIT_WIDTH_16;
 	attr.soundmode  = (cfg->chn_count >= 2) ? AUDIO_SOUND_MODE_STEREO
 	                                        : AUDIO_SOUND_MODE_MONO;
-	attr.frmNum     = (cfg->frame_depth > 0) ? cfg->frame_depth : 25;
+	attr.frmNum     = (cfg->frame_depth > 0) ? cfg->frame_depth : 20;
 	attr.numPerFrm  = cfg->samples_per_frame;
 	attr.chnCnt     = 1;  /* SDK supports only 1 channel per device */
 
@@ -75,7 +75,7 @@ int hal_audio_init(void *ctx, const rss_audio_config_t *cfg)
 	/* Step 3: set channel parameters */
 	IMPAudioIChnParam param;
 	memset(&param, 0, sizeof(param));
-	param.usrFrmDepth = (cfg->frame_depth > 0) ? cfg->frame_depth : 25;
+	param.usrFrmDepth = (cfg->frame_depth > 0) ? cfg->frame_depth : 20;
 #if defined(PLATFORM_T23) || defined(PLATFORM_T32) || \
     defined(PLATFORM_T40) || defined(PLATFORM_T41)
 	/* Extended struct: set aecChn to default first channel */
@@ -438,7 +438,7 @@ static int hal_audio_ao_init_internal(const rss_audio_config_t *cfg)
 	attr.bitwidth   = AUDIO_BIT_WIDTH_16;
 	attr.soundmode  = (cfg->chn_count >= 2) ? AUDIO_SOUND_MODE_STEREO
 	                                        : AUDIO_SOUND_MODE_MONO;
-	attr.frmNum     = (cfg->frame_depth > 0) ? cfg->frame_depth : 25;
+	attr.frmNum     = (cfg->frame_depth > 0) ? cfg->frame_depth : 20;
 	attr.numPerFrm  = cfg->samples_per_frame;
 	attr.chnCnt     = 1;
 

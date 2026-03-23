@@ -1,3 +1,9 @@
+/* MIPS cacheflush syscall */
+#ifdef __mips__
+#include <asm/cachectl.h>
+extern int cacheflush(void *addr, int nbytes, int cache);
+#endif
+
 /*
  * hal_memory.c -- Raptor HAL memory management implementation
  *

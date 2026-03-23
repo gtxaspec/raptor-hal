@@ -63,6 +63,7 @@ CFLAGS  := -Wall -Wextra -Werror=implicit-function-declaration
 CFLAGS  += -std=c11
 CFLAGS  += -DPLATFORM_$(PLATFORM)
 CFLAGS  += -I$(SDK_INCLUDE)
+CFLAGS  += -I$(SDK_INCLUDE)/imp
 CFLAGS  += -Iinclude
 CFLAGS  += -Isrc
 

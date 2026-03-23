@@ -851,7 +851,7 @@ int hal_enc_set_bitrate(void *ctx, int chn, uint32_t bitrate)
 	int ret;
 
 #if defined(HAL_NEW_SDK)
-	ret = IMP_Encoder_SetChnBitRate(chn, (int)bitrate, (int)bitrate);
+	ret = IMP_Encoder_SetChnBitRate(chn, (int)bitrate, (int)(bitrate * 4 / 3));
 	if (ret != 0)
 		HAL_LOG_ERR("SetChnBitRate(%d, %u) failed: %d", chn, bitrate, ret);
 	return ret;
@@ -882,9 +882,12 @@ int hal_enc_set_bitrate(void *ctx, int chn, uint32_t bitrate)
 	}
 
 	ret = IMP_Encoder_SetChnAttrRcMode(chn, &rcMode);
-	if (ret != 0)
+	if (ret != 0) {
 		HAL_LOG_ERR("SetChnAttrRcMode(%d) failed: %d", chn, ret);
-	return ret;
+		return ret;
+	}
+	IMP_Encoder_RequestIDR(chn);
+	return 0;
 #endif
 }
 
@@ -1325,42 +1328,13 @@ int hal_enc_set_qp_bounds(void *ctx, int chn, int min_qp, int max_qp)
 /*
  * hal_enc_set_qp_ip_delta -- set QP delta between I and P frames.
  *
- * New SDK only.
+ * T31 only: uses IMP_Encoder_SetChnQpIPDelta() direct API.
  */
 int hal_enc_set_qp_ip_delta(void *ctx, int chn, int delta)
 {
 	(void)ctx;
-#if defined(HAL_NEW_SDK) && !defined(PLATFORM_T32)
-	IMPEncoderCHNAttr chnAttr;
-	int ret;
-
-	memset(&chnAttr, 0, sizeof(chnAttr));
-	ret = IMP_Encoder_GetChnAttr(chn, &chnAttr);
-	if (ret != 0) {
-		HAL_LOG_ERR("GetChnAttr(%d) for QP IP delta failed: %d", chn, ret);
-		return ret;
-	}
-
-	switch (chnAttr.rcAttr.attrRcMode.rcMode) {
-	case IMP_ENC_RC_MODE_CBR:
-		chnAttr.rcAttr.attrRcMode.attrCbr.iIPDelta = delta;
-		break;
-	case IMP_ENC_RC_MODE_VBR:
-		chnAttr.rcAttr.attrRcMode.attrVbr.iIPDelta = delta;
-		break;
-	case IMP_ENC_RC_MODE_CAPPED_VBR:
-		chnAttr.rcAttr.attrRcMode.attrCappedVbr.iIPDelta = delta;
-		break;
-	case IMP_ENC_RC_MODE_CAPPED_QUALITY:
-		chnAttr.rcAttr.attrRcMode.attrCappedQuality.iIPDelta = delta;
-		break;
-	default:
-		return RSS_ERR_NOTSUP;
-	}
-
-	/* SetChnQpIPDelta only exists on T31 */
-	(void)ret;
-	return RSS_ERR_NOTSUP;
+#if defined(PLATFORM_T31)
+	return IMP_Encoder_SetChnQpIPDelta(chn, delta);
 #else
 	(void)chn;
 	(void)delta;

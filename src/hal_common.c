@@ -432,13 +432,10 @@ static int hal_sys_get_cpu_info(void *ctx, char *buf, int len)
     (void)ctx;
     if (!buf || len <= 0) return -EINVAL;
 
-    IMPVersion version;
-    memset(&version, 0, sizeof(version));
-    int ret = IMP_System_GetVersion(&version);
-    if (ret != 0) return ret;
+    const char *info = IMP_System_GetCPUInfo();
+    if (!info) return -EIO;
 
-    /* IMP_System_GetCPUInfo returns CPU model string */
-    strncpy(buf, version.aVersion, (size_t)(len - 1));
+    strncpy(buf, info, (size_t)(len - 1));
     buf[len - 1] = '\0';
     return 0;
 }
@@ -490,6 +487,8 @@ static int hal_sys_get_bind_by_dest(void *ctx, rss_cell_t *dst,
     switch (imp_src.deviceID) {
     case DEV_ID_FS:  src->device = RSS_DEV_FS;  break;
     case DEV_ID_ENC: src->device = RSS_DEV_ENC; break;
+    case DEV_ID_DEC: src->device = RSS_DEV_DEC; break;
+    case DEV_ID_IVS: src->device = RSS_DEV_IVS; break;
     case DEV_ID_OSD: src->device = RSS_DEV_OSD; break;
     default:         src->device = RSS_DEV_FS;   break;
     }
@@ -924,6 +923,8 @@ static IMPDeviceID hal_translate_dev_id(rss_dev_id_t dev)
     switch (dev) {
     case RSS_DEV_FS:  return DEV_ID_FS;
     case RSS_DEV_ENC: return DEV_ID_ENC;
+    case RSS_DEV_DEC: return DEV_ID_DEC;
+    case RSS_DEV_IVS: return DEV_ID_IVS;
     case RSS_DEV_OSD: return DEV_ID_OSD;
     default:          return DEV_ID_FS;
     }
@@ -941,8 +942,9 @@ static IMPDeviceID hal_translate_dev_id(rss_dev_id_t dev)
  *   2. IMP_ISP_Open()
  *   3. IMP_ISP_AddSensor()
  *   4. IMP_ISP_EnableSensor()
- *   5. IMP_ISP_EnableTuning()
+ *   5. IMP_OSD_SetPoolSize()
  *   6. IMP_System_Init()
+ *   7. IMP_ISP_EnableTuning()
  */
 static int hal_init(void *ctx, const rss_sensor_config_t *sensor_cfg)
 {
@@ -988,7 +990,7 @@ static int hal_init(void *ctx, const rss_sensor_config_t *sensor_cfg)
     return 0;
 
     /* ── Cleanup on failure (reverse order) ── */
-err_disable_tuning:
+err_disable_tuning: __attribute__((unused))
     IMP_ISP_DisableTuning();
 err_system_exit:
     IMP_System_Exit();

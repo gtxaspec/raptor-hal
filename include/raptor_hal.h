@@ -337,6 +337,8 @@ typedef enum {
 typedef enum {
 	RSS_DEV_FS  = 0,
 	RSS_DEV_ENC = 1,
+	RSS_DEV_DEC = 2,
+	RSS_DEV_IVS = 3,
 	RSS_DEV_OSD = 4,
 } rss_dev_id_t;
 
