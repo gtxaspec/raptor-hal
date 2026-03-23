@@ -87,7 +87,7 @@ int hal_fs_create_channel(void *ctx, int chn, const rss_fs_config_t *cfg)
 	attr.mirr_enable = 0;
 #endif
 
-	/* ── Scaler defaults (disabled) ── */
+	/* ── Scaler defaults (disabled — ISP handles sensor→output scaling) ── */
 	attr.scaler.enable = 0;
 
 	/* ── Create and set channel ── */

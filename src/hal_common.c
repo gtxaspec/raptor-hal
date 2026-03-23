@@ -976,17 +976,22 @@ static int hal_init(void *ctx, const rss_sensor_config_t *sensor_cfg)
     HAL_CHECK(IMP_ISP_EnableSensor(), err_del_sensor);
 #endif
 
-    /* Step 5: enable ISP tuning -- same signature on all SoCs */
-    HAL_CHECK(IMP_ISP_EnableTuning(), err_disable_sensor);
+    /* Step 5: set OSD pool size before System_Init (prudynt pattern) */
+    IMP_OSD_SetPoolSize(512 * 1024);
 
-    /* Step 6: init system -- same signature on all SoCs */
-    HAL_CHECK(IMP_System_Init(), err_disable_tuning);
+    /* Step 6: init system (must be before EnableTuning — prudynt order) */
+    HAL_CHECK(IMP_System_Init(), err_disable_sensor);
+
+    /* Step 7: enable ISP tuning */
+    HAL_CHECK(IMP_ISP_EnableTuning(), err_system_exit);
 
     return 0;
 
     /* ── Cleanup on failure (reverse order) ── */
 err_disable_tuning:
     IMP_ISP_DisableTuning();
+err_system_exit:
+    IMP_System_Exit();
 err_disable_sensor:
 #if defined(HAL_MULTI_SENSOR)
     IMP_ISP_DisableSensor(IMPVI_MAIN);

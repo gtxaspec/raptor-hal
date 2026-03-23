@@ -414,7 +414,7 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
 		cfg->gop_length,
 		cfg->buf_size,              /* T32: uBufSize */
 		init_qp,
-		cfg->bitrate
+		cfg->bitrate / 1000        /* SDK expects kbps */
 	);
 #else
 	ret = IMP_Encoder_SetDefaultParam(
@@ -424,7 +424,7 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
 		cfg->gop_length,
 		2,                          /* uMaxSameSenceCnt: default 2 */
 		init_qp,
-		cfg->bitrate
+		cfg->bitrate / 1000        /* SDK expects kbps */
 	);
 #endif
 	if (ret != 0) {
@@ -505,8 +505,7 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
 		break;
 	}
 
-	/* GOP attributes (separate struct on new SDK, not T32) */
-	chnAttr.gopAttr.uGopCtrlMode = IMP_ENC_GOP_CTRL_MODE_DEFAULT;
+	/* GOP length — don't override uGopCtrlMode, SetDefaultParam sets it correctly */
 	chnAttr.gopAttr.uGopLength   = (uint16_t)cfg->gop_length;
 #endif
 
