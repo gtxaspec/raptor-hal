@@ -29,41 +29,38 @@
  * ═══════════════════════════════════════════════════════════════════════ */
 
 /* Old-style encoder structs, per-codec RC unions, packs with direct virAddr */
-#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || \
-    defined(PLATFORM_T23) || defined(PLATFORM_T30)
-  #define HAL_OLD_SDK
+#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) || defined(PLATFORM_T30)
+#define HAL_OLD_SDK
 #endif
 
 /* New-style encoder structs, unified RC, packs with offset into ring buffer */
-#if defined(PLATFORM_T31) || defined(PLATFORM_T32) || \
-    defined(PLATFORM_T40) || defined(PLATFORM_T41)
-  #define HAL_NEW_SDK
+#if defined(PLATFORM_T31) || defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#define HAL_NEW_SDK
 #endif
 
 /* ISP functions take IMPVI_NUM as first parameter */
 #if defined(PLATFORM_T40) || defined(PLATFORM_T41)
-  #define HAL_IMPVI_SDK
+#define HAL_IMPVI_SDK
 #endif
 
 /* T32 is a hybrid: new-style encoder internals but old-style type names */
 #if defined(PLATFORM_T32)
-  #define HAL_HYBRID_SDK
+#define HAL_HYBRID_SDK
 #endif
 
 /* ISP tuning functions that take pointer args (not scalar) */
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-  #define HAL_ISP_PTR_ARGS
+#define HAL_ISP_PTR_ARGS
 #endif
 
 /* Extended OSD region types (enum values shifted) */
-#if defined(PLATFORM_T23) || defined(PLATFORM_T32) || \
-    defined(PLATFORM_T40) || defined(PLATFORM_T41)
-  #define HAL_EXTENDED_OSD
+#if defined(PLATFORM_T23) || defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#define HAL_EXTENDED_OSD
 #endif
 
 /* Multi-sensor support via IMPVI_NUM parameter */
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-  #define HAL_MULTI_SENSOR
+#define HAL_MULTI_SENSOR
 #endif
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -74,13 +71,15 @@
  * including SDK headers.
  * ═══════════════════════════════════════════════════════════════════════ */
 
-#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || \
-    defined(PLATFORM_T30) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-struct IMPISPAEAttr {};    /* not defined on these SoCs */
+#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T30) ||                     \
+    defined(PLATFORM_T40) || defined(PLATFORM_T41)
+struct IMPISPAEAttr {
+}; /* not defined on these SoCs */
 #endif
 
 #if defined(PLATFORM_T40) || defined(PLATFORM_T41)
-struct IMPISPEVAttr {};    /* not defined on T40/T41 */
+struct IMPISPEVAttr {
+}; /* not defined on T40/T41 */
 #endif
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -104,8 +103,8 @@ struct IMPISPEVAttr {};    /* not defined on T40/T41 */
  * ═══════════════════════════════════════════════════════════════════════ */
 
 #if defined(HAL_NEW_SDK) && !defined(PLATFORM_T32)
-  #define IMPEncoderCHNAttr  IMPEncoderChnAttr
-  #define IMPEncoderCHNStat  IMPEncoderChnStat
+#define IMPEncoderCHNAttr IMPEncoderChnAttr
+#define IMPEncoderCHNStat IMPEncoderChnStat
 #endif
 
 /* T32 is a hybrid: new-style SetDefaultParam/Profile, but old-style
@@ -113,25 +112,25 @@ struct IMPISPEVAttr {};    /* not defined on T40/T41 */
  * struct layout (no gopAttr, old RC attr union members).  Define
  * compatibility macros so the new-SDK code path can use IMP_ENC_RC_MODE_*. */
 #if defined(PLATFORM_T32)
-  #define IMP_ENC_RC_MODE_FIXQP          ENC_RC_MODE_FIXQP
-  #define IMP_ENC_RC_MODE_CBR            ENC_RC_MODE_CBR
-  #define IMP_ENC_RC_MODE_VBR            ENC_RC_MODE_VBR
-  #define IMP_ENC_RC_MODE_SMART          ENC_RC_MODE_SMART
-  #define IMP_ENC_RC_MODE_CAPPED_VBR     ENC_RC_MODE_CVBR
-  #define IMP_ENC_RC_MODE_CAPPED_QUALITY ENC_RC_MODE_AVBR
-  #define IMP_ENC_GOP_CTRL_MODE_DEFAULT  0
+#define IMP_ENC_RC_MODE_FIXQP ENC_RC_MODE_FIXQP
+#define IMP_ENC_RC_MODE_CBR ENC_RC_MODE_CBR
+#define IMP_ENC_RC_MODE_VBR ENC_RC_MODE_VBR
+#define IMP_ENC_RC_MODE_SMART ENC_RC_MODE_SMART
+#define IMP_ENC_RC_MODE_CAPPED_VBR ENC_RC_MODE_CVBR
+#define IMP_ENC_RC_MODE_CAPPED_QUALITY ENC_RC_MODE_AVBR
+#define IMP_ENC_GOP_CTRL_MODE_DEFAULT 0
 #endif
 
 /* T40/T41 use IMPISPCoefftWb (mixed case), older SDKs use IMPISPCOEFFTWB.
  * Normalize so hal_isp.c can use IMPISPCOEFFTWB everywhere. */
 #if defined(PLATFORM_T40) || defined(PLATFORM_T41)
-  #define IMPISPCOEFFTWB  IMPISPCoefftWb
+#define IMPISPCOEFFTWB IMPISPCoefftWb
 #endif
 
 /* T32/T40/T41 use IMPISPAEExprInfo (capital AE), not IMPISPAeExprInfo.
  * Define the name used in hal_isp.c for consistency. */
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-  #define IMPISPAeExprInfo  IMPISPAEExprInfo
+#define IMPISPAeExprInfo IMPISPAEExprInfo
 #endif
 
 /* T32/T41 use IMPISPSensorFps struct for GetSensorFPS.
@@ -154,7 +153,7 @@ int IMP_OSD_SetPoolSize(int size);
 
 /* IMP_ISP_Tuning_GetAwbHist is present in libimp.so on T20-T31
  * but the header prototype is absent on some versions */
-#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) || \
+#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
     defined(PLATFORM_T30) || defined(PLATFORM_T31)
 int IMP_ISP_Tuning_GetAwbHist(IMPISPAWBHist *awb_hist);
 #endif
@@ -171,20 +170,20 @@ int IMP_ISP_Tuning_GetAwbHist(IMPISPAWBHist *awb_hist);
  * 6. Logging Macros
  * ═══════════════════════════════════════════════════════════════════════ */
 
-#define HAL_LOG_ERR(fmt, ...) \
+#define HAL_LOG_ERR(fmt, ...)                                                                      \
     fprintf(stderr, "[HAL ERR] %s:%d: " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)
 
-#define HAL_LOG_WARN(fmt, ...) \
+#define HAL_LOG_WARN(fmt, ...)                                                                     \
     fprintf(stderr, "[HAL WARN] %s:%d: " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)
 
-#define HAL_LOG_INFO(fmt, ...) \
+#define HAL_LOG_INFO(fmt, ...)                                                                     \
     fprintf(stderr, "[HAL INFO] %s:%d: " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)
 
 #ifdef HAL_DEBUG
-#define HAL_LOG_DBG(fmt, ...) \
+#define HAL_LOG_DBG(fmt, ...)                                                                      \
     fprintf(stderr, "[HAL DBG] %s:%d: " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)
 #else
-#define HAL_LOG_DBG(fmt, ...)  ((void)0)
+#define HAL_LOG_DBG(fmt, ...) ((void)0)
 #endif
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -193,13 +192,14 @@ int IMP_ISP_Tuning_GetAwbHist(IMPISPAWBHist *awb_hist);
  * Calls an SDK function, logs on failure, and jumps to a cleanup label.
  * ═══════════════════════════════════════════════════════════════════════ */
 
-#define HAL_CHECK(call, label) do { \
-    int _ret = (call); \
-    if (_ret != 0) { \
-        HAL_LOG_ERR("%s failed: %d", #call, _ret); \
-        goto label; \
-    } \
-} while (0)
+#define HAL_CHECK(call, label)                                                                     \
+    do {                                                                                           \
+        int _ret = (call);                                                                         \
+        if (_ret != 0) {                                                                           \
+            HAL_LOG_ERR("%s failed: %d", #call, _ret);                                             \
+            goto label;                                                                            \
+        }                                                                                          \
+    } while (0)
 
 /* ═══════════════════════════════════════════════════════════════════════
  * 8. HAL Context -- Internal Definition
@@ -213,29 +213,29 @@ int IMP_ISP_Tuning_GetAwbHist(IMPISPAWBHist *awb_hist);
 #endif
 
 struct rss_hal_ctx {
-    const rss_hal_ops_t  *ops;
-    rss_hal_caps_t        caps;
-    rss_sensor_config_t   sensor;
+    const rss_hal_ops_t *ops;
+    rss_hal_caps_t caps;
+    rss_sensor_config_t sensor;
 
     /* Flip state (needed for SoCs with combined H/V flip) */
-    int                   hflip_state;
-    int                   vflip_state;
+    int hflip_state;
+    int vflip_state;
 
     /* Frame linearization scratch buffer (new SDK ring-buffer wrap) */
-    uint8_t              *scratch_buf;
-    size_t                scratch_size;
+    uint8_t *scratch_buf;
+    size_t scratch_size;
 
     /* Per-channel NAL unit arrays (reused across get_frame calls) */
-    rss_nal_unit_t       *nal_arrays[RSS_MAX_ENC_CHANNELS];
-    int                   nal_array_caps[RSS_MAX_ENC_CHANNELS];
+    rss_nal_unit_t *nal_arrays[RSS_MAX_ENC_CHANNELS];
+    int nal_array_caps[RSS_MAX_ENC_CHANNELS];
 
     /* Platform-specific opaque data */
-    void                 *platform;
+    void *platform;
 
     /* Cached IMPSensorInfo for deinit (DelSensor needs it) */
-    IMPSensorInfo         imp_sensor;
+    IMPSensorInfo imp_sensor;
 
-    bool                  initialized;
+    bool initialized;
 };
 
 /* ═══════════════════════════════════════════════════════════════════════

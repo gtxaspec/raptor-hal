@@ -14,15 +14,12 @@
 
 #include "hal_internal.h"
 
-
-
 /* ── External function declarations (implemented in other files) ── */
 
 /* Encoder (hal_encoder_old.c / hal_encoder_new.c) */
 extern int hal_enc_create_group(void *ctx, int grp);
 extern int hal_enc_destroy_group(void *ctx, int grp);
-extern int hal_enc_create_channel(void *ctx, int chn,
-                                  const rss_video_config_t *cfg);
+extern int hal_enc_create_channel(void *ctx, int chn, const rss_video_config_t *cfg);
 extern int hal_enc_destroy_channel(void *ctx, int chn);
 extern int hal_enc_register_channel(void *ctx, int grp, int chn);
 extern int hal_enc_unregister_channel(void *ctx, int chn);
@@ -34,13 +31,10 @@ extern int hal_enc_release_frame(void *ctx, int chn, rss_frame_t *frame);
 extern int hal_enc_request_idr(void *ctx, int chn);
 extern int hal_enc_set_bitrate(void *ctx, int chn, uint32_t bitrate);
 extern int hal_enc_set_gop(void *ctx, int chn, uint32_t gop_length);
-extern int hal_enc_set_fps(void *ctx, int chn,
-                           uint32_t fps_num, uint32_t fps_den);
+extern int hal_enc_set_fps(void *ctx, int chn, uint32_t fps_num, uint32_t fps_den);
 extern int hal_enc_set_bufshare(void *ctx, int src_chn, int dst_chn);
-extern int hal_enc_get_channel_attr(void *ctx, int chn,
-                                    rss_video_config_t *cfg);
-extern int hal_enc_get_fps(void *ctx, int chn,
-                           uint32_t *fps_num, uint32_t *fps_den);
+extern int hal_enc_get_channel_attr(void *ctx, int chn, rss_video_config_t *cfg);
+extern int hal_enc_get_fps(void *ctx, int chn, uint32_t *fps_num, uint32_t *fps_den);
 extern int hal_enc_get_gop_attr(void *ctx, int chn, uint32_t *gop_length);
 extern int hal_enc_set_gop_attr(void *ctx, int chn, uint32_t gop_length);
 extern int hal_enc_get_avg_bitrate(void *ctx, int chn, uint32_t *bitrate);
@@ -53,11 +47,9 @@ extern int hal_enc_set_qp_ip_delta(void *ctx, int chn, int delta);
 extern int hal_enc_set_stream_buf_size(void *ctx, int chn, uint32_t size);
 extern int hal_enc_get_stream_buf_size(void *ctx, int chn, uint32_t *size);
 extern int hal_enc_get_chn_gop_attr(void *ctx, int chn, void *gop_attr);
-extern int hal_enc_set_chn_gop_attr(void *ctx, int chn,
-                                    const void *gop_attr);
+extern int hal_enc_set_chn_gop_attr(void *ctx, int chn, const void *gop_attr);
 extern int hal_enc_get_chn_enc_type(void *ctx, int chn, void *enc_type);
-extern int hal_enc_get_chn_ave_bitrate(void *ctx, int chn, void *stream,
-                                       int frames, double *br);
+extern int hal_enc_get_chn_ave_bitrate(void *ctx, int chn, void *stream, int frames, double *br);
 extern int hal_enc_set_chn_entropy_mode(void *ctx, int chn, int mode);
 extern int hal_enc_get_max_stream_cnt(void *ctx, int chn, int *cnt);
 extern int hal_enc_set_max_stream_cnt(void *ctx, int chn, int cnt);
@@ -65,18 +57,15 @@ extern int hal_enc_set_pool(void *ctx, int chn, int pool_id);
 extern int hal_enc_get_pool(void *ctx, int chn);
 
 /* Framesource (hal_framesource.c) */
-extern int hal_fs_create_channel(void *ctx, int chn,
-                                 const rss_fs_config_t *cfg);
+extern int hal_fs_create_channel(void *ctx, int chn, const rss_fs_config_t *cfg);
 extern int hal_fs_destroy_channel(void *ctx, int chn);
 extern int hal_fs_enable_channel(void *ctx, int chn);
 extern int hal_fs_disable_channel(void *ctx, int chn);
 extern int hal_fs_set_rotation(void *ctx, int chn, int degrees);
 extern int hal_fs_set_fifo(void *ctx, int chn, int depth);
-extern int hal_fs_get_frame(void *ctx, int chn, void **frame_data,
-                            rss_frame_info_t *info);
+extern int hal_fs_get_frame(void *ctx, int chn, void **frame_data, rss_frame_info_t *info);
 extern int hal_fs_release_frame(void *ctx, int chn, void *frame_data);
-extern int hal_fs_snap_frame(void *ctx, int chn, void **frame_data,
-                             rss_frame_info_t *info);
+extern int hal_fs_snap_frame(void *ctx, int chn, void **frame_data, rss_frame_info_t *info);
 extern int hal_fs_set_frame_depth(void *ctx, int chn, int depth);
 extern int hal_fs_get_frame_depth(void *ctx, int chn, int *depth);
 extern int hal_fs_get_fifo(void *ctx, int chn, int *depth);
@@ -86,8 +75,8 @@ extern int hal_fs_set_max_delay(void *ctx, int chn, int max_delay_ms);
 extern int hal_fs_get_max_delay(void *ctx, int chn, int *max_delay_ms);
 extern int hal_fs_set_pool(void *ctx, int chn, int pool_id);
 extern int hal_fs_get_pool(void *ctx, int chn, int *pool_id);
-extern int hal_fs_get_timed_frame(void *ctx, int chn, void *framets,
-                                  int block, void *framedata, void *frame);
+extern int hal_fs_get_timed_frame(void *ctx, int chn, void *framets, int block, void *framedata,
+                                  void *frame);
 extern int hal_fs_set_frame_offset(void *ctx, int chn, int offset);
 extern int hal_fs_chn_stat_query(void *ctx, int chn, void *stat);
 extern int hal_fs_enable_chn_undistort(void *ctx, int chn);
@@ -102,8 +91,7 @@ extern int hal_isp_set_hue(void *ctx, uint8_t val);
 extern int hal_isp_set_hflip(void *ctx, int enable);
 extern int hal_isp_set_vflip(void *ctx, int enable);
 extern int hal_isp_set_running_mode(void *ctx, rss_isp_mode_t mode);
-extern int hal_isp_set_sensor_fps(void *ctx,
-                                  uint32_t fps_num, uint32_t fps_den);
+extern int hal_isp_set_sensor_fps(void *ctx, uint32_t fps_num, uint32_t fps_den);
 extern int hal_isp_set_antiflicker(void *ctx, rss_antiflicker_t mode);
 extern int hal_isp_set_wb(void *ctx, const rss_wb_config_t *wb_cfg);
 extern int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure);
@@ -125,14 +113,12 @@ extern int hal_isp_get_sharpness(void *ctx, uint8_t *val);
 extern int hal_isp_get_hue(void *ctx, uint8_t *val);
 extern int hal_isp_get_hvflip(void *ctx, int *hflip, int *vflip);
 extern int hal_isp_get_running_mode(void *ctx, rss_isp_mode_t *mode);
-extern int hal_isp_get_sensor_fps(void *ctx, uint32_t *fps_num,
-                                   uint32_t *fps_den);
+extern int hal_isp_get_sensor_fps(void *ctx, uint32_t *fps_num, uint32_t *fps_den);
 extern int hal_isp_get_antiflicker(void *ctx, rss_antiflicker_t *mode);
 extern int hal_isp_get_wb(void *ctx, rss_wb_config_t *wb_cfg);
 extern int hal_isp_get_max_again(void *ctx, uint32_t *gain);
 extern int hal_isp_get_max_dgain(void *ctx, uint32_t *gain);
-extern int hal_isp_get_sensor_attr(void *ctx, uint32_t *width,
-                                    uint32_t *height);
+extern int hal_isp_get_sensor_attr(void *ctx, uint32_t *width, uint32_t *height);
 extern int hal_isp_get_ae_comp(void *ctx, int *val);
 extern int hal_isp_get_module_control(void *ctx, uint32_t *modules);
 extern int hal_isp_get_sinter_strength(void *ctx, uint8_t *val);
@@ -148,8 +134,7 @@ extern int hal_isp_get_ae_zone(void *ctx, uint32_t zone[15][15]);
 extern int hal_isp_set_ae_roi(void *ctx, const uint8_t roi[15][15]);
 extern int hal_isp_get_ae_roi(void *ctx, uint8_t roi[15][15]);
 extern int hal_isp_set_ae_hist(void *ctx, const uint8_t thresholds[4]);
-extern int hal_isp_get_ae_hist(void *ctx, uint8_t thresholds[4],
-                                uint16_t bins[5]);
+extern int hal_isp_get_ae_hist(void *ctx, uint8_t thresholds[4], uint16_t bins[5]);
 extern int hal_isp_get_ae_hist_origin(void *ctx, uint32_t bins[256]);
 extern int hal_isp_set_ae_it_max(void *ctx, uint32_t it_max);
 extern int hal_isp_get_ae_it_max(void *ctx, uint32_t *it_max);
@@ -157,11 +142,10 @@ extern int hal_isp_set_ae_min(void *ctx, int min_it, int min_again);
 extern int hal_isp_get_ae_min(void *ctx, int *min_it, int *min_again);
 extern int hal_isp_set_awb_weight(void *ctx, const uint8_t weight[15][15]);
 extern int hal_isp_get_awb_weight(void *ctx, uint8_t weight[15][15]);
-extern int hal_isp_get_awb_zone(void *ctx, uint8_t zone_r[225],
-                                 uint8_t zone_g[225], uint8_t zone_b[225]);
+extern int hal_isp_get_awb_zone(void *ctx, uint8_t zone_r[225], uint8_t zone_g[225],
+                                uint8_t zone_b[225]);
 extern int hal_isp_get_awb_ct(void *ctx, uint32_t *color_temp);
-extern int hal_isp_get_awb_rgb_coefft(void *ctx, uint16_t *rgain,
-                                       uint16_t *ggain, uint16_t *bgain);
+extern int hal_isp_get_awb_rgb_coefft(void *ctx, uint16_t *rgain, uint16_t *ggain, uint16_t *bgain);
 extern int hal_isp_get_awb_hist(void *ctx, void *hist_data);
 extern int hal_isp_set_gamma(void *ctx, const uint16_t gamma[129]);
 extern int hal_isp_get_gamma(void *ctx, uint16_t gamma[129]);
@@ -178,8 +162,7 @@ extern int hal_isp_get_default_bin_path(void *ctx, char *path, int path_len);
 extern int hal_isp_set_frame_drop(void *ctx, int drop);
 extern int hal_isp_get_frame_drop(void *ctx, int *drop);
 extern int hal_isp_set_sensor_register(void *ctx, uint32_t reg, uint32_t val);
-extern int hal_isp_get_sensor_register(void *ctx, uint32_t reg,
-                                        uint32_t *val);
+extern int hal_isp_get_sensor_register(void *ctx, uint32_t reg, uint32_t *val);
 extern int hal_isp_set_auto_zoom(void *ctx, const void *zoom_attr);
 extern int hal_isp_set_video_drop(void *ctx, void (*callback)(void));
 extern int hal_isp_set_mask(void *ctx, const void *mask_attr);
@@ -238,14 +221,10 @@ extern int hal_audio_enable_hpf(void *ctx);
 extern int hal_audio_disable_hpf(void *ctx);
 extern int hal_audio_enable_agc(void *ctx, const rss_agc_config_t *cfg);
 extern int hal_audio_disable_agc(void *ctx);
-extern int hal_audio_read_frame(void *ctx, int dev, int chn,
-                                rss_audio_frame_t *frame, bool block);
-extern int hal_audio_register_encoder(void *ctx,
-                                      const rss_audio_encoder_t *enc,
-                                      int *handle);
+extern int hal_audio_read_frame(void *ctx, int dev, int chn, rss_audio_frame_t *frame, bool block);
+extern int hal_audio_register_encoder(void *ctx, const rss_audio_encoder_t *enc, int *handle);
 extern int hal_audio_unregister_encoder(void *ctx, int handle);
-extern int hal_audio_enable_aec(void *ctx, int ai_dev, int ai_chn,
-                                int ao_dev, int ao_chn);
+extern int hal_audio_enable_aec(void *ctx, int ai_dev, int ai_chn, int ao_dev, int ao_chn);
 extern int hal_audio_disable_aec(void *ctx);
 extern int hal_audio_get_volume(void *ctx, int dev, int chn, int *vol);
 extern int hal_audio_get_gain(void *ctx, int dev, int chn, int *gain);
@@ -254,36 +233,33 @@ extern int hal_audio_set_alc_gain(void *ctx, int dev, int chn, int gain);
 extern int hal_audio_get_alc_gain(void *ctx, int dev, int chn, int *gain);
 extern int hal_audio_set_agc_mode(void *ctx, int mode);
 extern int hal_audio_set_hpf_co_freq(void *ctx, int freq);
-extern int hal_audio_enable_aec_ref_frame(void *ctx, int ai_dev, int ai_chn,
-                                          int ao_dev, int ao_chn);
+extern int hal_audio_enable_aec_ref_frame(void *ctx, int ai_dev, int ai_chn, int ao_dev,
+                                          int ao_chn);
 extern int hal_audio_disable_aec_ref_frame(void *ctx, int ai_dev, int ai_chn);
 extern int hal_audio_get_chn_param(void *ctx, int dev, int chn, void *param);
-extern int hal_audio_get_frame_and_ref(void *ctx, int dev, int chn,
-                                       void *frame, void *ref, int block);
+extern int hal_audio_get_frame_and_ref(void *ctx, int dev, int chn, void *frame, void *ref,
+                                       int block);
 extern int hal_aenc_create_channel(void *ctx, int chn, int codec_type);
 extern int hal_aenc_destroy_channel(void *ctx, int chn);
 extern int hal_aenc_send_frame(void *ctx, int chn, rss_audio_frame_t *frame);
 extern int hal_aenc_poll_stream(void *ctx, int chn, uint32_t timeout_ms);
 extern int hal_aenc_get_stream(void *ctx, int chn, rss_audio_frame_t *stream);
 extern int hal_aenc_release_stream(void *ctx, int chn, rss_audio_frame_t *stream);
-extern int hal_adec_register_decoder_real(void *ctx, int *handle,
-                                          void *decoder);
+extern int hal_adec_register_decoder_real(void *ctx, int *handle, void *decoder);
 extern int hal_adec_unregister_decoder(void *ctx, int handle);
 extern int hal_adec_create_channel(void *ctx, int chn, int codec_type);
 extern int hal_adec_destroy_channel(void *ctx, int chn);
-extern int hal_adec_send_stream(void *ctx, int chn, const uint8_t *data,
-                                uint32_t len, int64_t timestamp);
+extern int hal_adec_send_stream(void *ctx, int chn, const uint8_t *data, uint32_t len,
+                                int64_t timestamp);
 extern int hal_adec_clear_buf(void *ctx, int chn);
 extern int hal_adec_poll_stream(void *ctx, int chn, uint32_t timeout_ms);
 extern int hal_adec_get_stream(void *ctx, int chn, rss_audio_frame_t *stream);
-extern int hal_adec_release_stream(void *ctx, int chn,
-                                   rss_audio_frame_t *stream);
+extern int hal_adec_release_stream(void *ctx, int chn, rss_audio_frame_t *stream);
 extern int hal_ao_init(void *ctx, const rss_audio_config_t *cfg);
 extern int hal_ao_deinit(void *ctx);
 extern int hal_ao_set_volume(void *ctx, int vol);
 extern int hal_ao_set_gain(void *ctx, int gain);
-extern int hal_ao_send_frame(void *ctx, const int16_t *data, uint32_t len,
-                             bool block);
+extern int hal_ao_send_frame(void *ctx, const int16_t *data, uint32_t len, bool block);
 extern int hal_ao_pause(void *ctx);
 extern int hal_ao_resume(void *ctx);
 extern int hal_ao_clear_buf(void *ctx);
@@ -305,26 +281,20 @@ extern int hal_ao_cache_switch(void *ctx, int dev, int chn, int enable);
 extern int hal_osd_set_pool_size(void *ctx, uint32_t bytes);
 extern int hal_osd_create_group(void *ctx, int grp);
 extern int hal_osd_destroy_group(void *ctx, int grp);
-extern int hal_osd_create_region(void *ctx, int *handle,
-                                 const rss_osd_region_t *attr);
+extern int hal_osd_create_region(void *ctx, int *handle, const rss_osd_region_t *attr);
 extern int hal_osd_destroy_region(void *ctx, int handle);
 extern int hal_osd_register_region(void *ctx, int handle, int grp);
 extern int hal_osd_unregister_region(void *ctx, int handle, int grp);
-extern int hal_osd_set_region_attr(void *ctx, int handle,
-                                   const rss_osd_region_t *attr);
-extern int hal_osd_update_region_data(void *ctx, int handle,
-                                      const uint8_t *data);
+extern int hal_osd_set_region_attr(void *ctx, int handle, const rss_osd_region_t *attr);
+extern int hal_osd_update_region_data(void *ctx, int handle, const uint8_t *data);
 extern int hal_osd_show_region(void *ctx, int handle, int grp, int show);
-extern int hal_osd_get_region_attr(void *ctx, int handle,
-                                   rss_osd_region_t *attr);
-extern int hal_osd_get_group_region_attr(void *ctx, int handle, int grp,
-                                         rss_osd_region_t *attr);
+extern int hal_osd_get_region_attr(void *ctx, int handle, rss_osd_region_t *attr);
+extern int hal_osd_get_group_region_attr(void *ctx, int handle, int grp, rss_osd_region_t *attr);
 extern int hal_osd_show(void *ctx, int handle, int grp, bool show);
 extern int hal_osd_start(void *ctx, int grp);
 extern int hal_osd_stop(void *ctx, int grp);
 extern int hal_osd_set_region_attr_with_timestamp(void *ctx, int handle,
-                                                   const rss_osd_region_t *attr,
-                                                   uint64_t timestamp);
+                                                  const rss_osd_region_t *attr, uint64_t timestamp);
 extern int hal_osd_attach_to_group(void *ctx, int handle, int grp);
 
 /* ISP OSD (hal_osd.c) */
@@ -375,16 +345,13 @@ extern int hal_dmic_get_chn_param(void *ctx, int chn, int *frames_per_buf);
 extern int hal_dmic_read_frame(void *ctx, rss_audio_frame_t *frame, bool block);
 extern int hal_dmic_release_frame(void *ctx, rss_audio_frame_t *frame);
 extern int hal_dmic_poll_frame(void *ctx, uint32_t timeout_ms);
-extern int hal_dmic_enable_aec(void *ctx, int dev, int chn,
-                               int ao_dev, int ao_chn);
+extern int hal_dmic_enable_aec(void *ctx, int dev, int chn, int ao_dev, int ao_chn);
 extern int hal_dmic_disable_aec(void *ctx, int dev, int chn);
-extern int hal_dmic_enable_aec_ref_frame(void *ctx, int dev, int chn,
-                                         int ao_dev, int ao_chn);
-extern int hal_dmic_disable_aec_ref_frame(void *ctx, int dev, int chn,
-                                          int ao_dev, int ao_chn);
+extern int hal_dmic_enable_aec_ref_frame(void *ctx, int dev, int chn, int ao_dev, int ao_chn);
+extern int hal_dmic_disable_aec_ref_frame(void *ctx, int dev, int chn, int ao_dev, int ao_chn);
 extern int hal_dmic_get_pub_attr(void *ctx, int dev, void *attr);
-extern int hal_dmic_get_frame_and_ref(void *ctx, int dev, int chn,
-                                      void *frame, void *ref, int block);
+extern int hal_dmic_get_frame_and_ref(void *ctx, int dev, int chn, void *frame, void *ref,
+                                      int block);
 
 /* Memory (hal_memory.c) */
 extern void *hal_mem_alloc(void *ctx, uint32_t size, const char *name);
@@ -415,12 +382,14 @@ static IMPDeviceID hal_translate_dev_id(rss_dev_id_t dev);
 static int hal_sys_get_version(void *ctx, char *buf, int len)
 {
     (void)ctx;
-    if (!buf || len <= 0) return -EINVAL;
+    if (!buf || len <= 0)
+        return -EINVAL;
 
     IMPVersion version;
     memset(&version, 0, sizeof(version));
     int ret = IMP_System_GetVersion(&version);
-    if (ret != 0) return ret;
+    if (ret != 0)
+        return ret;
 
     strncpy(buf, version.aVersion, (size_t)(len - 1));
     buf[len - 1] = '\0';
@@ -430,10 +399,12 @@ static int hal_sys_get_version(void *ctx, char *buf, int len)
 static int hal_sys_get_cpu_info(void *ctx, char *buf, int len)
 {
     (void)ctx;
-    if (!buf || len <= 0) return -EINVAL;
+    if (!buf || len <= 0)
+        return -EINVAL;
 
     const char *info = IMP_System_GetCPUInfo();
-    if (!info) return -EIO;
+    if (!info)
+        return -EIO;
 
     strncpy(buf, info, (size_t)(len - 1));
     buf[len - 1] = '\0';
@@ -443,7 +414,8 @@ static int hal_sys_get_cpu_info(void *ctx, char *buf, int len)
 static int hal_sys_get_timestamp(void *ctx, int64_t *ts)
 {
     (void)ctx;
-    if (!ts) return -EINVAL;
+    if (!ts)
+        return -EINVAL;
     *ts = IMP_System_GetTimeStamp();
     return 0;
 }
@@ -457,7 +429,8 @@ static int hal_sys_rebase_timestamp(void *ctx, int64_t base)
 static int hal_sys_read_reg32(void *ctx, uint32_t addr, uint32_t *val)
 {
     (void)ctx;
-    if (!val) return -EINVAL;
+    if (!val)
+        return -EINVAL;
     *val = IMP_System_ReadReg32(addr);
     return 0;
 }
@@ -469,30 +442,43 @@ static int hal_sys_write_reg32(void *ctx, uint32_t addr, uint32_t val)
     return 0;
 }
 
-static int hal_sys_get_bind_by_dest(void *ctx, rss_cell_t *dst,
-                                     rss_cell_t *src)
+static int hal_sys_get_bind_by_dest(void *ctx, rss_cell_t *dst, rss_cell_t *src)
 {
     (void)ctx;
-    if (!dst || !src) return -EINVAL;
+    if (!dst || !src)
+        return -EINVAL;
 
     IMPCell imp_dst, imp_src;
     imp_dst.deviceID = hal_translate_dev_id(dst->device);
-    imp_dst.groupID  = dst->group;
+    imp_dst.groupID = dst->group;
     imp_dst.outputID = dst->output;
 
     int ret = IMP_System_GetBindbyDest(&imp_dst, &imp_src);
-    if (ret != 0) return ret;
+    if (ret != 0)
+        return ret;
 
     /* Reverse translate IMPCell back to rss_cell_t */
     switch (imp_src.deviceID) {
-    case DEV_ID_FS:  src->device = RSS_DEV_FS;  break;
-    case DEV_ID_ENC: src->device = RSS_DEV_ENC; break;
-    case DEV_ID_DEC: src->device = RSS_DEV_DEC; break;
-    case DEV_ID_IVS: src->device = RSS_DEV_IVS; break;
-    case DEV_ID_OSD: src->device = RSS_DEV_OSD; break;
-    default:         src->device = RSS_DEV_FS;   break;
+    case DEV_ID_FS:
+        src->device = RSS_DEV_FS;
+        break;
+    case DEV_ID_ENC:
+        src->device = RSS_DEV_ENC;
+        break;
+    case DEV_ID_DEC:
+        src->device = RSS_DEV_DEC;
+        break;
+    case DEV_ID_IVS:
+        src->device = RSS_DEV_IVS;
+        break;
+    case DEV_ID_OSD:
+        src->device = RSS_DEV_OSD;
+        break;
+    default:
+        src->device = RSS_DEV_FS;
+        break;
     }
-    src->group  = imp_src.groupID;
+    src->group = imp_src.groupID;
     src->output = imp_src.outputID;
     return 0;
 }
@@ -507,369 +493,369 @@ extern const rss_hal_caps_t g_hal_caps;
 
 static const rss_hal_ops_t g_ops = {
     /* System lifecycle */
-    .init                   = hal_init,
-    .deinit                 = hal_deinit,
-    .get_caps               = hal_get_caps,
-    .bind                   = hal_bind,
-    .unbind                 = hal_unbind,
+    .init = hal_init,
+    .deinit = hal_deinit,
+    .get_caps = hal_get_caps,
+    .bind = hal_bind,
+    .unbind = hal_unbind,
 
     /* System utilities */
-    .sys_get_version        = hal_sys_get_version,
-    .sys_get_cpu_info       = hal_sys_get_cpu_info,
-    .sys_get_timestamp      = hal_sys_get_timestamp,
-    .sys_rebase_timestamp   = hal_sys_rebase_timestamp,
-    .sys_read_reg32         = hal_sys_read_reg32,
-    .sys_write_reg32        = hal_sys_write_reg32,
-    .sys_get_bind_by_dest   = hal_sys_get_bind_by_dest,
+    .sys_get_version = hal_sys_get_version,
+    .sys_get_cpu_info = hal_sys_get_cpu_info,
+    .sys_get_timestamp = hal_sys_get_timestamp,
+    .sys_rebase_timestamp = hal_sys_rebase_timestamp,
+    .sys_read_reg32 = hal_sys_read_reg32,
+    .sys_write_reg32 = hal_sys_write_reg32,
+    .sys_get_bind_by_dest = hal_sys_get_bind_by_dest,
 
     /* Framesource */
-    .fs_create_channel      = hal_fs_create_channel,
-    .fs_destroy_channel     = hal_fs_destroy_channel,
-    .fs_enable_channel      = hal_fs_enable_channel,
-    .fs_disable_channel     = hal_fs_disable_channel,
-    .fs_set_rotation        = hal_fs_set_rotation,
-    .fs_set_fifo            = hal_fs_set_fifo,
-    .fs_get_frame           = hal_fs_get_frame,
-    .fs_release_frame       = hal_fs_release_frame,
-    .fs_snap_frame          = hal_fs_snap_frame,
-    .fs_set_frame_depth     = hal_fs_set_frame_depth,
-    .fs_get_frame_depth     = hal_fs_get_frame_depth,
-    .fs_get_fifo            = hal_fs_get_fifo,
-    .fs_set_delay           = hal_fs_set_delay,
-    .fs_get_delay           = hal_fs_get_delay,
-    .fs_set_max_delay       = hal_fs_set_max_delay,
-    .fs_get_max_delay       = hal_fs_get_max_delay,
-    .fs_set_pool            = hal_fs_set_pool,
-    .fs_get_pool            = hal_fs_get_pool,
-    .fs_get_timed_frame     = hal_fs_get_timed_frame,
-    .fs_set_frame_offset    = hal_fs_set_frame_offset,
-    .fs_chn_stat_query      = hal_fs_chn_stat_query,
-    .fs_enable_chn_undistort  = hal_fs_enable_chn_undistort,
+    .fs_create_channel = hal_fs_create_channel,
+    .fs_destroy_channel = hal_fs_destroy_channel,
+    .fs_enable_channel = hal_fs_enable_channel,
+    .fs_disable_channel = hal_fs_disable_channel,
+    .fs_set_rotation = hal_fs_set_rotation,
+    .fs_set_fifo = hal_fs_set_fifo,
+    .fs_get_frame = hal_fs_get_frame,
+    .fs_release_frame = hal_fs_release_frame,
+    .fs_snap_frame = hal_fs_snap_frame,
+    .fs_set_frame_depth = hal_fs_set_frame_depth,
+    .fs_get_frame_depth = hal_fs_get_frame_depth,
+    .fs_get_fifo = hal_fs_get_fifo,
+    .fs_set_delay = hal_fs_set_delay,
+    .fs_get_delay = hal_fs_get_delay,
+    .fs_set_max_delay = hal_fs_set_max_delay,
+    .fs_get_max_delay = hal_fs_get_max_delay,
+    .fs_set_pool = hal_fs_set_pool,
+    .fs_get_pool = hal_fs_get_pool,
+    .fs_get_timed_frame = hal_fs_get_timed_frame,
+    .fs_set_frame_offset = hal_fs_set_frame_offset,
+    .fs_chn_stat_query = hal_fs_chn_stat_query,
+    .fs_enable_chn_undistort = hal_fs_enable_chn_undistort,
     .fs_disable_chn_undistort = hal_fs_disable_chn_undistort,
 
     /* Encoder */
-    .enc_create_group       = hal_enc_create_group,
-    .enc_destroy_group      = hal_enc_destroy_group,
-    .enc_create_channel     = hal_enc_create_channel,
-    .enc_destroy_channel    = hal_enc_destroy_channel,
-    .enc_register_channel   = hal_enc_register_channel,
+    .enc_create_group = hal_enc_create_group,
+    .enc_destroy_group = hal_enc_destroy_group,
+    .enc_create_channel = hal_enc_create_channel,
+    .enc_destroy_channel = hal_enc_destroy_channel,
+    .enc_register_channel = hal_enc_register_channel,
     .enc_unregister_channel = hal_enc_unregister_channel,
-    .enc_start              = hal_enc_start,
-    .enc_stop               = hal_enc_stop,
-    .enc_poll               = hal_enc_poll,
-    .enc_get_frame          = hal_enc_get_frame,
-    .enc_release_frame      = hal_enc_release_frame,
-    .enc_request_idr        = hal_enc_request_idr,
-    .enc_set_bitrate        = hal_enc_set_bitrate,
-    .enc_set_gop            = hal_enc_set_gop,
-    .enc_set_fps            = hal_enc_set_fps,
-    .enc_set_bufshare       = hal_enc_set_bufshare,
-    .enc_get_channel_attr   = hal_enc_get_channel_attr,
-    .enc_get_fps            = hal_enc_get_fps,
-    .enc_get_gop_attr       = hal_enc_get_gop_attr,
-    .enc_set_gop_attr       = hal_enc_set_gop_attr,
-    .enc_get_avg_bitrate    = hal_enc_get_avg_bitrate,
-    .enc_flush_stream       = hal_enc_flush_stream,
-    .enc_query              = hal_enc_query,
-    .enc_get_fd             = hal_enc_get_fd,
-    .enc_set_qp             = hal_enc_set_qp,
-    .enc_set_qp_bounds      = hal_enc_set_qp_bounds,
-    .enc_set_qp_ip_delta    = hal_enc_set_qp_ip_delta,
+    .enc_start = hal_enc_start,
+    .enc_stop = hal_enc_stop,
+    .enc_poll = hal_enc_poll,
+    .enc_get_frame = hal_enc_get_frame,
+    .enc_release_frame = hal_enc_release_frame,
+    .enc_request_idr = hal_enc_request_idr,
+    .enc_set_bitrate = hal_enc_set_bitrate,
+    .enc_set_gop = hal_enc_set_gop,
+    .enc_set_fps = hal_enc_set_fps,
+    .enc_set_bufshare = hal_enc_set_bufshare,
+    .enc_get_channel_attr = hal_enc_get_channel_attr,
+    .enc_get_fps = hal_enc_get_fps,
+    .enc_get_gop_attr = hal_enc_get_gop_attr,
+    .enc_set_gop_attr = hal_enc_set_gop_attr,
+    .enc_get_avg_bitrate = hal_enc_get_avg_bitrate,
+    .enc_flush_stream = hal_enc_flush_stream,
+    .enc_query = hal_enc_query,
+    .enc_get_fd = hal_enc_get_fd,
+    .enc_set_qp = hal_enc_set_qp,
+    .enc_set_qp_bounds = hal_enc_set_qp_bounds,
+    .enc_set_qp_ip_delta = hal_enc_set_qp_ip_delta,
     .enc_set_stream_buf_size = hal_enc_set_stream_buf_size,
     .enc_get_stream_buf_size = hal_enc_get_stream_buf_size,
-    .enc_get_chn_gop_attr    = hal_enc_get_chn_gop_attr,
-    .enc_set_chn_gop_attr    = hal_enc_set_chn_gop_attr,
-    .enc_get_chn_enc_type    = hal_enc_get_chn_enc_type,
+    .enc_get_chn_gop_attr = hal_enc_get_chn_gop_attr,
+    .enc_set_chn_gop_attr = hal_enc_set_chn_gop_attr,
+    .enc_get_chn_enc_type = hal_enc_get_chn_enc_type,
     .enc_get_chn_ave_bitrate = hal_enc_get_chn_ave_bitrate,
     .enc_set_chn_entropy_mode = hal_enc_set_chn_entropy_mode,
-    .enc_get_max_stream_cnt  = hal_enc_get_max_stream_cnt,
-    .enc_set_max_stream_cnt  = hal_enc_set_max_stream_cnt,
-    .enc_set_pool            = hal_enc_set_pool,
-    .enc_get_pool            = hal_enc_get_pool,
+    .enc_get_max_stream_cnt = hal_enc_get_max_stream_cnt,
+    .enc_set_max_stream_cnt = hal_enc_set_max_stream_cnt,
+    .enc_set_pool = hal_enc_set_pool,
+    .enc_get_pool = hal_enc_get_pool,
 
     /* ISP tuning */
-    .isp_set_brightness     = hal_isp_set_brightness,
-    .isp_set_contrast       = hal_isp_set_contrast,
-    .isp_set_saturation     = hal_isp_set_saturation,
-    .isp_set_sharpness      = hal_isp_set_sharpness,
-    .isp_set_hue            = hal_isp_set_hue,
-    .isp_set_hflip          = hal_isp_set_hflip,
-    .isp_set_vflip          = hal_isp_set_vflip,
-    .isp_set_running_mode   = hal_isp_set_running_mode,
-    .isp_set_sensor_fps     = hal_isp_set_sensor_fps,
-    .isp_set_antiflicker    = hal_isp_set_antiflicker,
-    .isp_set_wb             = hal_isp_set_wb,
-    .isp_get_exposure       = hal_isp_get_exposure,
-    .isp_set_sinter_strength    = hal_isp_set_sinter_strength,
-    .isp_set_temper_strength    = hal_isp_set_temper_strength,
-    .isp_set_defog              = hal_isp_set_defog,
-    .isp_set_dpc_strength       = hal_isp_set_dpc_strength,
-    .isp_set_drc_strength       = hal_isp_set_drc_strength,
-    .isp_set_ae_comp            = hal_isp_set_ae_comp,
-    .isp_set_max_again          = hal_isp_set_max_again,
-    .isp_set_max_dgain          = hal_isp_set_max_dgain,
-    .isp_set_highlight_depress  = hal_isp_set_highlight_depress,
+    .isp_set_brightness = hal_isp_set_brightness,
+    .isp_set_contrast = hal_isp_set_contrast,
+    .isp_set_saturation = hal_isp_set_saturation,
+    .isp_set_sharpness = hal_isp_set_sharpness,
+    .isp_set_hue = hal_isp_set_hue,
+    .isp_set_hflip = hal_isp_set_hflip,
+    .isp_set_vflip = hal_isp_set_vflip,
+    .isp_set_running_mode = hal_isp_set_running_mode,
+    .isp_set_sensor_fps = hal_isp_set_sensor_fps,
+    .isp_set_antiflicker = hal_isp_set_antiflicker,
+    .isp_set_wb = hal_isp_set_wb,
+    .isp_get_exposure = hal_isp_get_exposure,
+    .isp_set_sinter_strength = hal_isp_set_sinter_strength,
+    .isp_set_temper_strength = hal_isp_set_temper_strength,
+    .isp_set_defog = hal_isp_set_defog,
+    .isp_set_dpc_strength = hal_isp_set_dpc_strength,
+    .isp_set_drc_strength = hal_isp_set_drc_strength,
+    .isp_set_ae_comp = hal_isp_set_ae_comp,
+    .isp_set_max_again = hal_isp_set_max_again,
+    .isp_set_max_dgain = hal_isp_set_max_dgain,
+    .isp_set_highlight_depress = hal_isp_set_highlight_depress,
 
     /* ISP getters */
-    .isp_get_brightness         = hal_isp_get_brightness,
-    .isp_get_contrast           = hal_isp_get_contrast,
-    .isp_get_saturation         = hal_isp_get_saturation,
-    .isp_get_sharpness          = hal_isp_get_sharpness,
-    .isp_get_hue                = hal_isp_get_hue,
-    .isp_get_hvflip             = hal_isp_get_hvflip,
-    .isp_get_running_mode       = hal_isp_get_running_mode,
-    .isp_get_sensor_fps         = hal_isp_get_sensor_fps,
-    .isp_get_antiflicker        = hal_isp_get_antiflicker,
-    .isp_get_wb                 = hal_isp_get_wb,
-    .isp_get_max_again          = hal_isp_get_max_again,
-    .isp_get_max_dgain          = hal_isp_get_max_dgain,
-    .isp_get_sensor_attr        = hal_isp_get_sensor_attr,
-    .isp_get_ae_comp            = hal_isp_get_ae_comp,
-    .isp_get_module_control     = hal_isp_get_module_control,
-    .isp_get_sinter_strength    = hal_isp_get_sinter_strength,
-    .isp_get_temper_strength    = hal_isp_get_temper_strength,
-    .isp_get_defog_strength     = hal_isp_get_defog_strength,
-    .isp_get_dpc_strength       = hal_isp_get_dpc_strength,
-    .isp_get_drc_strength       = hal_isp_get_drc_strength,
-    .isp_get_highlight_depress  = hal_isp_get_highlight_depress,
-    .isp_get_backlight_comp     = hal_isp_get_backlight_comp,
+    .isp_get_brightness = hal_isp_get_brightness,
+    .isp_get_contrast = hal_isp_get_contrast,
+    .isp_get_saturation = hal_isp_get_saturation,
+    .isp_get_sharpness = hal_isp_get_sharpness,
+    .isp_get_hue = hal_isp_get_hue,
+    .isp_get_hvflip = hal_isp_get_hvflip,
+    .isp_get_running_mode = hal_isp_get_running_mode,
+    .isp_get_sensor_fps = hal_isp_get_sensor_fps,
+    .isp_get_antiflicker = hal_isp_get_antiflicker,
+    .isp_get_wb = hal_isp_get_wb,
+    .isp_get_max_again = hal_isp_get_max_again,
+    .isp_get_max_dgain = hal_isp_get_max_dgain,
+    .isp_get_sensor_attr = hal_isp_get_sensor_attr,
+    .isp_get_ae_comp = hal_isp_get_ae_comp,
+    .isp_get_module_control = hal_isp_get_module_control,
+    .isp_get_sinter_strength = hal_isp_get_sinter_strength,
+    .isp_get_temper_strength = hal_isp_get_temper_strength,
+    .isp_get_defog_strength = hal_isp_get_defog_strength,
+    .isp_get_dpc_strength = hal_isp_get_dpc_strength,
+    .isp_get_drc_strength = hal_isp_get_drc_strength,
+    .isp_get_highlight_depress = hal_isp_get_highlight_depress,
+    .isp_get_backlight_comp = hal_isp_get_backlight_comp,
 
     /* ISP AE advanced */
-    .isp_set_ae_weight          = hal_isp_set_ae_weight,
-    .isp_get_ae_weight          = hal_isp_get_ae_weight,
-    .isp_get_ae_zone            = hal_isp_get_ae_zone,
-    .isp_set_ae_roi             = hal_isp_set_ae_roi,
-    .isp_get_ae_roi             = hal_isp_get_ae_roi,
-    .isp_set_ae_hist            = hal_isp_set_ae_hist,
-    .isp_get_ae_hist            = hal_isp_get_ae_hist,
-    .isp_get_ae_hist_origin     = hal_isp_get_ae_hist_origin,
-    .isp_set_ae_it_max          = hal_isp_set_ae_it_max,
-    .isp_get_ae_it_max          = hal_isp_get_ae_it_max,
-    .isp_set_ae_min             = hal_isp_set_ae_min,
-    .isp_get_ae_min             = hal_isp_get_ae_min,
+    .isp_set_ae_weight = hal_isp_set_ae_weight,
+    .isp_get_ae_weight = hal_isp_get_ae_weight,
+    .isp_get_ae_zone = hal_isp_get_ae_zone,
+    .isp_set_ae_roi = hal_isp_set_ae_roi,
+    .isp_get_ae_roi = hal_isp_get_ae_roi,
+    .isp_set_ae_hist = hal_isp_set_ae_hist,
+    .isp_get_ae_hist = hal_isp_get_ae_hist,
+    .isp_get_ae_hist_origin = hal_isp_get_ae_hist_origin,
+    .isp_set_ae_it_max = hal_isp_set_ae_it_max,
+    .isp_get_ae_it_max = hal_isp_get_ae_it_max,
+    .isp_set_ae_min = hal_isp_set_ae_min,
+    .isp_get_ae_min = hal_isp_get_ae_min,
 
     /* ISP AWB advanced */
-    .isp_set_awb_weight         = hal_isp_set_awb_weight,
-    .isp_get_awb_weight         = hal_isp_get_awb_weight,
-    .isp_get_awb_zone           = hal_isp_get_awb_zone,
-    .isp_get_awb_ct             = hal_isp_get_awb_ct,
-    .isp_get_awb_rgb_coefft     = hal_isp_get_awb_rgb_coefft,
-    .isp_get_awb_hist           = hal_isp_get_awb_hist,
+    .isp_set_awb_weight = hal_isp_set_awb_weight,
+    .isp_get_awb_weight = hal_isp_get_awb_weight,
+    .isp_get_awb_zone = hal_isp_get_awb_zone,
+    .isp_get_awb_ct = hal_isp_get_awb_ct,
+    .isp_get_awb_rgb_coefft = hal_isp_get_awb_rgb_coefft,
+    .isp_get_awb_hist = hal_isp_get_awb_hist,
 
     /* ISP gamma / CCM / WDR */
-    .isp_set_gamma              = hal_isp_set_gamma,
-    .isp_get_gamma              = hal_isp_get_gamma,
-    .isp_set_ccm                = hal_isp_set_ccm,
-    .isp_get_ccm                = hal_isp_get_ccm,
-    .isp_set_wdr_mode           = hal_isp_set_wdr_mode,
-    .isp_get_wdr_mode           = hal_isp_get_wdr_mode,
-    .isp_wdr_enable             = hal_isp_wdr_enable,
-    .isp_wdr_get_enable         = hal_isp_wdr_get_enable,
-    .isp_set_bypass             = hal_isp_set_bypass,
-    .isp_set_module_control     = hal_isp_set_module_control,
+    .isp_set_gamma = hal_isp_set_gamma,
+    .isp_get_gamma = hal_isp_get_gamma,
+    .isp_set_ccm = hal_isp_set_ccm,
+    .isp_get_ccm = hal_isp_get_ccm,
+    .isp_set_wdr_mode = hal_isp_set_wdr_mode,
+    .isp_get_wdr_mode = hal_isp_get_wdr_mode,
+    .isp_wdr_enable = hal_isp_wdr_enable,
+    .isp_wdr_get_enable = hal_isp_wdr_get_enable,
+    .isp_set_bypass = hal_isp_set_bypass,
+    .isp_set_module_control = hal_isp_set_module_control,
 
     /* ISP misc */
-    .isp_set_default_bin_path   = hal_isp_set_default_bin_path,
-    .isp_get_default_bin_path   = hal_isp_get_default_bin_path,
-    .isp_set_frame_drop         = hal_isp_set_frame_drop,
-    .isp_get_frame_drop         = hal_isp_get_frame_drop,
-    .isp_set_sensor_register    = hal_isp_set_sensor_register,
-    .isp_get_sensor_register    = hal_isp_get_sensor_register,
-    .isp_set_auto_zoom          = hal_isp_set_auto_zoom,
-    .isp_set_video_drop         = hal_isp_set_video_drop,
-    .isp_set_mask               = hal_isp_set_mask,
-    .isp_get_mask               = hal_isp_get_mask,
+    .isp_set_default_bin_path = hal_isp_set_default_bin_path,
+    .isp_get_default_bin_path = hal_isp_get_default_bin_path,
+    .isp_set_frame_drop = hal_isp_set_frame_drop,
+    .isp_get_frame_drop = hal_isp_get_frame_drop,
+    .isp_set_sensor_register = hal_isp_set_sensor_register,
+    .isp_get_sensor_register = hal_isp_get_sensor_register,
+    .isp_set_auto_zoom = hal_isp_set_auto_zoom,
+    .isp_set_video_drop = hal_isp_set_video_drop,
+    .isp_set_mask = hal_isp_set_mask,
+    .isp_get_mask = hal_isp_get_mask,
 
     /* ISP advanced */
-    .isp_set_expr               = hal_isp_set_expr,
-    .isp_get_ae_attr            = hal_isp_get_ae_attr,
-    .isp_set_ae_attr            = hal_isp_set_ae_attr,
-    .isp_get_ae_state           = hal_isp_get_ae_state,
-    .isp_get_ae_target_list     = hal_isp_get_ae_target_list,
-    .isp_set_ae_target_list     = hal_isp_set_ae_target_list,
-    .isp_set_ae_freeze          = hal_isp_set_ae_freeze,
-    .isp_get_af_zone            = hal_isp_get_af_zone,
-    .isp_get_awb_clust          = hal_isp_get_awb_clust,
-    .isp_set_awb_clust          = hal_isp_set_awb_clust,
-    .isp_get_awb_ct_attr        = hal_isp_get_awb_ct_attr,
-    .isp_set_awb_ct_attr        = hal_isp_set_awb_ct_attr,
-    .isp_get_awb_ct_trend       = hal_isp_get_awb_ct_trend,
-    .isp_set_awb_ct_trend       = hal_isp_set_awb_ct_trend,
-    .isp_set_backlight_comp     = hal_isp_set_backlight_comp,
+    .isp_set_expr = hal_isp_set_expr,
+    .isp_get_ae_attr = hal_isp_get_ae_attr,
+    .isp_set_ae_attr = hal_isp_set_ae_attr,
+    .isp_get_ae_state = hal_isp_get_ae_state,
+    .isp_get_ae_target_list = hal_isp_get_ae_target_list,
+    .isp_set_ae_target_list = hal_isp_set_ae_target_list,
+    .isp_set_ae_freeze = hal_isp_set_ae_freeze,
+    .isp_get_af_zone = hal_isp_get_af_zone,
+    .isp_get_awb_clust = hal_isp_get_awb_clust,
+    .isp_set_awb_clust = hal_isp_set_awb_clust,
+    .isp_get_awb_ct_attr = hal_isp_get_awb_ct_attr,
+    .isp_set_awb_ct_attr = hal_isp_set_awb_ct_attr,
+    .isp_get_awb_ct_trend = hal_isp_get_awb_ct_trend,
+    .isp_set_awb_ct_trend = hal_isp_set_awb_ct_trend,
+    .isp_set_backlight_comp = hal_isp_set_backlight_comp,
     .isp_get_defog_strength_adv = hal_isp_get_defog_strength_adv,
     .isp_set_defog_strength_adv = hal_isp_set_defog_strength_adv,
-    .isp_get_front_crop         = hal_isp_get_front_crop,
-    .isp_set_front_crop         = hal_isp_set_front_crop,
-    .isp_get_blc_attr           = hal_isp_get_blc_attr,
-    .isp_get_csc_attr           = hal_isp_get_csc_attr,
-    .isp_set_csc_attr           = hal_isp_set_csc_attr,
-    .isp_set_custom_mode        = hal_isp_set_custom_mode,
-    .isp_get_custom_mode        = hal_isp_get_custom_mode,
-    .isp_enable_drc             = hal_isp_enable_drc,
-    .isp_get_af_hist            = hal_isp_get_af_hist,
-    .isp_set_af_hist            = hal_isp_set_af_hist,
-    .isp_get_af_metrics         = hal_isp_get_af_metrics,
-    .isp_enable_movestate       = hal_isp_enable_movestate,
-    .isp_disable_movestate      = hal_isp_disable_movestate,
-    .isp_set_shading            = hal_isp_set_shading,
-    .isp_wait_frame             = hal_isp_wait_frame,
-    .isp_get_af_weight          = hal_isp_get_af_weight,
-    .isp_set_af_weight          = hal_isp_set_af_weight,
-    .isp_get_wb_statis          = hal_isp_get_wb_statis,
-    .isp_set_awb_hist_adv       = hal_isp_set_awb_hist_adv,
-    .isp_get_wb_gol_statis      = hal_isp_get_wb_gol_statis,
-    .isp_set_wdr_output_mode    = hal_isp_set_wdr_output_mode,
-    .isp_get_wdr_output_mode    = hal_isp_get_wdr_output_mode,
-    .isp_set_scaler_lv          = hal_isp_set_scaler_lv,
+    .isp_get_front_crop = hal_isp_get_front_crop,
+    .isp_set_front_crop = hal_isp_set_front_crop,
+    .isp_get_blc_attr = hal_isp_get_blc_attr,
+    .isp_get_csc_attr = hal_isp_get_csc_attr,
+    .isp_set_csc_attr = hal_isp_set_csc_attr,
+    .isp_set_custom_mode = hal_isp_set_custom_mode,
+    .isp_get_custom_mode = hal_isp_get_custom_mode,
+    .isp_enable_drc = hal_isp_enable_drc,
+    .isp_get_af_hist = hal_isp_get_af_hist,
+    .isp_set_af_hist = hal_isp_set_af_hist,
+    .isp_get_af_metrics = hal_isp_get_af_metrics,
+    .isp_enable_movestate = hal_isp_enable_movestate,
+    .isp_disable_movestate = hal_isp_disable_movestate,
+    .isp_set_shading = hal_isp_set_shading,
+    .isp_wait_frame = hal_isp_wait_frame,
+    .isp_get_af_weight = hal_isp_get_af_weight,
+    .isp_set_af_weight = hal_isp_set_af_weight,
+    .isp_get_wb_statis = hal_isp_get_wb_statis,
+    .isp_set_awb_hist_adv = hal_isp_set_awb_hist_adv,
+    .isp_get_wb_gol_statis = hal_isp_get_wb_gol_statis,
+    .isp_set_wdr_output_mode = hal_isp_set_wdr_output_mode,
+    .isp_get_wdr_output_mode = hal_isp_get_wdr_output_mode,
+    .isp_set_scaler_lv = hal_isp_set_scaler_lv,
 
     /* Audio */
-    .audio_init             = hal_audio_init,
-    .audio_deinit           = hal_audio_deinit,
-    .audio_set_volume       = hal_audio_set_volume,
-    .audio_set_gain         = hal_audio_set_gain,
-    .audio_enable_ns        = hal_audio_enable_ns,
-    .audio_disable_ns       = hal_audio_disable_ns,
-    .audio_enable_hpf       = hal_audio_enable_hpf,
-    .audio_disable_hpf      = hal_audio_disable_hpf,
-    .audio_enable_agc       = hal_audio_enable_agc,
-    .audio_disable_agc      = hal_audio_disable_agc,
-    .audio_read_frame       = hal_audio_read_frame,
+    .audio_init = hal_audio_init,
+    .audio_deinit = hal_audio_deinit,
+    .audio_set_volume = hal_audio_set_volume,
+    .audio_set_gain = hal_audio_set_gain,
+    .audio_enable_ns = hal_audio_enable_ns,
+    .audio_disable_ns = hal_audio_disable_ns,
+    .audio_enable_hpf = hal_audio_enable_hpf,
+    .audio_disable_hpf = hal_audio_disable_hpf,
+    .audio_enable_agc = hal_audio_enable_agc,
+    .audio_disable_agc = hal_audio_disable_agc,
+    .audio_read_frame = hal_audio_read_frame,
     .audio_register_encoder = hal_audio_register_encoder,
     .audio_unregister_encoder = hal_audio_unregister_encoder,
-    .audio_enable_aec       = hal_audio_enable_aec,
-    .audio_disable_aec      = hal_audio_disable_aec,
-    .audio_get_volume       = hal_audio_get_volume,
-    .audio_get_gain         = hal_audio_get_gain,
-    .audio_set_mute         = hal_audio_set_mute,
-    .audio_set_alc_gain     = hal_audio_set_alc_gain,
-    .audio_get_alc_gain     = hal_audio_get_alc_gain,
-    .audio_set_agc_mode     = hal_audio_set_agc_mode,
-    .audio_set_hpf_co_freq  = hal_audio_set_hpf_co_freq,
-    .audio_enable_aec_ref_frame  = hal_audio_enable_aec_ref_frame,
+    .audio_enable_aec = hal_audio_enable_aec,
+    .audio_disable_aec = hal_audio_disable_aec,
+    .audio_get_volume = hal_audio_get_volume,
+    .audio_get_gain = hal_audio_get_gain,
+    .audio_set_mute = hal_audio_set_mute,
+    .audio_set_alc_gain = hal_audio_set_alc_gain,
+    .audio_get_alc_gain = hal_audio_get_alc_gain,
+    .audio_set_agc_mode = hal_audio_set_agc_mode,
+    .audio_set_hpf_co_freq = hal_audio_set_hpf_co_freq,
+    .audio_enable_aec_ref_frame = hal_audio_enable_aec_ref_frame,
     .audio_disable_aec_ref_frame = hal_audio_disable_aec_ref_frame,
-    .audio_get_chn_param    = hal_audio_get_chn_param,
+    .audio_get_chn_param = hal_audio_get_chn_param,
     .audio_get_frame_and_ref = hal_audio_get_frame_and_ref,
-    .aenc_create_channel    = hal_aenc_create_channel,
-    .aenc_destroy_channel   = hal_aenc_destroy_channel,
-    .aenc_send_frame        = hal_aenc_send_frame,
-    .aenc_poll_stream       = hal_aenc_poll_stream,
-    .aenc_get_stream        = hal_aenc_get_stream,
-    .aenc_release_stream    = hal_aenc_release_stream,
-    .adec_register_decoder  = hal_adec_register_decoder_real,
+    .aenc_create_channel = hal_aenc_create_channel,
+    .aenc_destroy_channel = hal_aenc_destroy_channel,
+    .aenc_send_frame = hal_aenc_send_frame,
+    .aenc_poll_stream = hal_aenc_poll_stream,
+    .aenc_get_stream = hal_aenc_get_stream,
+    .aenc_release_stream = hal_aenc_release_stream,
+    .adec_register_decoder = hal_adec_register_decoder_real,
     .adec_unregister_decoder = hal_adec_unregister_decoder,
-    .adec_create_channel    = hal_adec_create_channel,
-    .adec_destroy_channel   = hal_adec_destroy_channel,
-    .adec_send_stream       = hal_adec_send_stream,
-    .adec_clear_buf         = hal_adec_clear_buf,
-    .adec_poll_stream       = hal_adec_poll_stream,
-    .adec_get_stream        = hal_adec_get_stream,
-    .adec_release_stream    = hal_adec_release_stream,
-    .ao_init                = hal_ao_init,
-    .ao_deinit              = hal_ao_deinit,
-    .ao_set_volume          = hal_ao_set_volume,
-    .ao_set_gain            = hal_ao_set_gain,
-    .ao_send_frame          = hal_ao_send_frame,
-    .ao_pause               = hal_ao_pause,
-    .ao_resume              = hal_ao_resume,
-    .ao_clear_buf           = hal_ao_clear_buf,
-    .ao_flush_buf           = hal_ao_flush_buf,
-    .ao_get_volume          = hal_ao_get_volume,
-    .ao_get_gain            = hal_ao_get_gain,
-    .ao_set_mute            = hal_ao_set_mute,
-    .ao_enable_hpf          = hal_ao_enable_hpf,
-    .ao_disable_hpf         = hal_ao_disable_hpf,
-    .ao_enable_agc          = hal_ao_enable_agc,
-    .ao_disable_agc         = hal_ao_disable_agc,
-    .ao_set_hpf_co_freq     = hal_ao_set_hpf_co_freq,
-    .ao_query_chn_stat      = hal_ao_query_chn_stat,
-    .ao_soft_mute           = hal_ao_soft_mute,
-    .ao_soft_unmute         = hal_ao_soft_unmute,
-    .ao_cache_switch        = hal_ao_cache_switch,
+    .adec_create_channel = hal_adec_create_channel,
+    .adec_destroy_channel = hal_adec_destroy_channel,
+    .adec_send_stream = hal_adec_send_stream,
+    .adec_clear_buf = hal_adec_clear_buf,
+    .adec_poll_stream = hal_adec_poll_stream,
+    .adec_get_stream = hal_adec_get_stream,
+    .adec_release_stream = hal_adec_release_stream,
+    .ao_init = hal_ao_init,
+    .ao_deinit = hal_ao_deinit,
+    .ao_set_volume = hal_ao_set_volume,
+    .ao_set_gain = hal_ao_set_gain,
+    .ao_send_frame = hal_ao_send_frame,
+    .ao_pause = hal_ao_pause,
+    .ao_resume = hal_ao_resume,
+    .ao_clear_buf = hal_ao_clear_buf,
+    .ao_flush_buf = hal_ao_flush_buf,
+    .ao_get_volume = hal_ao_get_volume,
+    .ao_get_gain = hal_ao_get_gain,
+    .ao_set_mute = hal_ao_set_mute,
+    .ao_enable_hpf = hal_ao_enable_hpf,
+    .ao_disable_hpf = hal_ao_disable_hpf,
+    .ao_enable_agc = hal_ao_enable_agc,
+    .ao_disable_agc = hal_ao_disable_agc,
+    .ao_set_hpf_co_freq = hal_ao_set_hpf_co_freq,
+    .ao_query_chn_stat = hal_ao_query_chn_stat,
+    .ao_soft_mute = hal_ao_soft_mute,
+    .ao_soft_unmute = hal_ao_soft_unmute,
+    .ao_cache_switch = hal_ao_cache_switch,
 
     /* OSD */
-    .osd_set_pool_size      = hal_osd_set_pool_size,
-    .osd_create_group       = hal_osd_create_group,
-    .osd_destroy_group      = hal_osd_destroy_group,
-    .osd_create_region      = hal_osd_create_region,
-    .osd_destroy_region     = hal_osd_destroy_region,
-    .osd_register_region    = hal_osd_register_region,
-    .osd_unregister_region  = hal_osd_unregister_region,
-    .osd_set_region_attr    = hal_osd_set_region_attr,
+    .osd_set_pool_size = hal_osd_set_pool_size,
+    .osd_create_group = hal_osd_create_group,
+    .osd_destroy_group = hal_osd_destroy_group,
+    .osd_create_region = hal_osd_create_region,
+    .osd_destroy_region = hal_osd_destroy_region,
+    .osd_register_region = hal_osd_register_region,
+    .osd_unregister_region = hal_osd_unregister_region,
+    .osd_set_region_attr = hal_osd_set_region_attr,
     .osd_update_region_data = hal_osd_update_region_data,
-    .osd_show_region        = hal_osd_show_region,
-    .osd_get_region_attr    = hal_osd_get_region_attr,
+    .osd_show_region = hal_osd_show_region,
+    .osd_get_region_attr = hal_osd_get_region_attr,
     .osd_get_group_region_attr = hal_osd_get_group_region_attr,
-    .osd_show               = hal_osd_show,
-    .osd_start              = hal_osd_start,
-    .osd_stop               = hal_osd_stop,
+    .osd_show = hal_osd_show,
+    .osd_start = hal_osd_start,
+    .osd_stop = hal_osd_stop,
     .osd_set_region_attr_with_timestamp = hal_osd_set_region_attr_with_timestamp,
-    .osd_attach_to_group    = hal_osd_attach_to_group,
+    .osd_attach_to_group = hal_osd_attach_to_group,
     /* ISP OSD */
-    .isp_osd_init               = hal_isp_osd_init,
-    .isp_osd_exit               = hal_isp_osd_exit,
-    .isp_osd_set_pool_size      = hal_isp_osd_set_pool_size,
-    .isp_osd_create_region      = hal_isp_osd_create_region,
-    .isp_osd_destroy_region     = hal_isp_osd_destroy_region,
-    .isp_osd_set_region_attr    = hal_isp_osd_set_region_attr,
-    .isp_osd_get_region_attr    = hal_isp_osd_get_region_attr,
-    .isp_osd_show_region        = hal_isp_osd_show_region,
+    .isp_osd_init = hal_isp_osd_init,
+    .isp_osd_exit = hal_isp_osd_exit,
+    .isp_osd_set_pool_size = hal_isp_osd_set_pool_size,
+    .isp_osd_create_region = hal_isp_osd_create_region,
+    .isp_osd_destroy_region = hal_isp_osd_destroy_region,
+    .isp_osd_set_region_attr = hal_isp_osd_set_region_attr,
+    .isp_osd_get_region_attr = hal_isp_osd_get_region_attr,
+    .isp_osd_show_region = hal_isp_osd_show_region,
     .isp_osd_update_region_data = hal_isp_osd_update_region_data,
 
     /* GPIO / IR-cut */
-    .gpio_set               = hal_gpio_set,
-    .gpio_get               = hal_gpio_get,
-    .ircut_set              = hal_ircut_set,
+    .gpio_set = hal_gpio_set,
+    .gpio_get = hal_gpio_get,
+    .ircut_set = hal_ircut_set,
 
     /* IVS */
-    .ivs_create_group       = hal_ivs_create_group,
-    .ivs_destroy_group      = hal_ivs_destroy_group,
-    .ivs_create_channel     = hal_ivs_create_channel,
-    .ivs_destroy_channel    = hal_ivs_destroy_channel,
-    .ivs_register_channel   = hal_ivs_register_channel,
+    .ivs_create_group = hal_ivs_create_group,
+    .ivs_destroy_group = hal_ivs_destroy_group,
+    .ivs_create_channel = hal_ivs_create_channel,
+    .ivs_destroy_channel = hal_ivs_destroy_channel,
+    .ivs_register_channel = hal_ivs_register_channel,
     .ivs_unregister_channel = hal_ivs_unregister_channel,
-    .ivs_start              = hal_ivs_start,
-    .ivs_stop               = hal_ivs_stop,
-    .ivs_poll_result        = hal_ivs_poll_result,
-    .ivs_get_result         = hal_ivs_get_result,
-    .ivs_release_result     = hal_ivs_release_result,
-    .ivs_get_param          = hal_ivs_get_param,
-    .ivs_set_param          = hal_ivs_set_param,
-    .ivs_release_data       = hal_ivs_release_data,
-    .ivs_create_move_interface      = hal_ivs_create_move_interface,
-    .ivs_destroy_move_interface     = hal_ivs_destroy_move_interface,
+    .ivs_start = hal_ivs_start,
+    .ivs_stop = hal_ivs_stop,
+    .ivs_poll_result = hal_ivs_poll_result,
+    .ivs_get_result = hal_ivs_get_result,
+    .ivs_release_result = hal_ivs_release_result,
+    .ivs_get_param = hal_ivs_get_param,
+    .ivs_set_param = hal_ivs_set_param,
+    .ivs_release_data = hal_ivs_release_data,
+    .ivs_create_move_interface = hal_ivs_create_move_interface,
+    .ivs_destroy_move_interface = hal_ivs_destroy_move_interface,
     .ivs_create_base_move_interface = hal_ivs_create_base_move_interface,
     .ivs_destroy_base_move_interface = hal_ivs_destroy_base_move_interface,
 
     /* DMIC */
-    .dmic_init              = hal_dmic_init,
-    .dmic_deinit            = hal_dmic_deinit,
-    .dmic_set_volume        = hal_dmic_set_volume,
-    .dmic_get_volume        = hal_dmic_get_volume,
-    .dmic_set_gain          = hal_dmic_set_gain,
-    .dmic_get_gain          = hal_dmic_get_gain,
-    .dmic_set_chn_param     = hal_dmic_set_chn_param,
-    .dmic_get_chn_param     = hal_dmic_get_chn_param,
-    .dmic_read_frame        = hal_dmic_read_frame,
-    .dmic_release_frame     = hal_dmic_release_frame,
-    .dmic_poll_frame        = hal_dmic_poll_frame,
-    .dmic_enable_aec        = hal_dmic_enable_aec,
-    .dmic_disable_aec       = hal_dmic_disable_aec,
-    .dmic_enable_aec_ref_frame  = hal_dmic_enable_aec_ref_frame,
+    .dmic_init = hal_dmic_init,
+    .dmic_deinit = hal_dmic_deinit,
+    .dmic_set_volume = hal_dmic_set_volume,
+    .dmic_get_volume = hal_dmic_get_volume,
+    .dmic_set_gain = hal_dmic_set_gain,
+    .dmic_get_gain = hal_dmic_get_gain,
+    .dmic_set_chn_param = hal_dmic_set_chn_param,
+    .dmic_get_chn_param = hal_dmic_get_chn_param,
+    .dmic_read_frame = hal_dmic_read_frame,
+    .dmic_release_frame = hal_dmic_release_frame,
+    .dmic_poll_frame = hal_dmic_poll_frame,
+    .dmic_enable_aec = hal_dmic_enable_aec,
+    .dmic_disable_aec = hal_dmic_disable_aec,
+    .dmic_enable_aec_ref_frame = hal_dmic_enable_aec_ref_frame,
     .dmic_disable_aec_ref_frame = hal_dmic_disable_aec_ref_frame,
-    .dmic_get_pub_attr      = hal_dmic_get_pub_attr,
+    .dmic_get_pub_attr = hal_dmic_get_pub_attr,
     .dmic_get_frame_and_ref = hal_dmic_get_frame_and_ref,
 
     /* Memory */
-    .mem_alloc              = hal_mem_alloc,
-    .mem_free               = hal_mem_free,
-    .mem_flush_cache        = hal_mem_flush_cache,
-    .mem_phys_to_virt       = hal_mem_phys_to_virt,
-    .mem_virt_to_phys       = hal_mem_virt_to_phys,
-    .mem_pool_alloc         = hal_mem_pool_alloc,
-    .mem_pool_free          = hal_mem_pool_free,
-    .mem_pool_flush_cache   = hal_mem_pool_flush_cache,
-    .mem_pool_phys_to_virt  = hal_mem_pool_phys_to_virt,
-    .mem_pool_virt_to_phys  = hal_mem_pool_virt_to_phys,
+    .mem_alloc = hal_mem_alloc,
+    .mem_free = hal_mem_free,
+    .mem_flush_cache = hal_mem_flush_cache,
+    .mem_phys_to_virt = hal_mem_phys_to_virt,
+    .mem_virt_to_phys = hal_mem_virt_to_phys,
+    .mem_pool_alloc = hal_mem_pool_alloc,
+    .mem_pool_free = hal_mem_pool_free,
+    .mem_pool_flush_cache = hal_mem_pool_flush_cache,
+    .mem_pool_phys_to_virt = hal_mem_pool_phys_to_virt,
+    .mem_pool_virt_to_phys = hal_mem_pool_virt_to_phys,
 };
 
 /* ================================================================
@@ -884,8 +870,7 @@ static const rss_hal_ops_t g_ops = {
  *   T32/T40/T41: adds video_interface (IMPSensorVinType), mclk (IMPSensorMclk),
  *                default_boot, sensor_id; gpio fields are int instead of u16
  */
-static void hal_fill_sensor_info(IMPSensorInfo *info,
-                                 const rss_sensor_config_t *cfg)
+static void hal_fill_sensor_info(IMPSensorInfo *info, const rss_sensor_config_t *cfg)
 {
     memset(info, 0, sizeof(*info));
     strncpy(info->name, cfg->name, sizeof(info->name) - 1);
@@ -896,21 +881,21 @@ static void hal_fill_sensor_info(IMPSensorInfo *info,
 
 #if defined(HAL_MULTI_SENSOR)
     /* T32/T40/T41: extended sensor info fields */
-    info->rst_gpio   = cfg->rst_gpio;
-    info->pwdn_gpio  = cfg->pwdn_gpio;
-    info->sensor_id  = cfg->sensor_id;
+    info->rst_gpio = cfg->rst_gpio;
+    info->pwdn_gpio = cfg->pwdn_gpio;
+    info->sensor_id = cfg->sensor_id;
     info->video_interface = (IMPSensorVinType)cfg->vin_type;
-    info->mclk       = (IMPSensorMclk)cfg->mclk;
+    info->mclk = (IMPSensorMclk)cfg->mclk;
     info->default_boot = cfg->default_boot;
 #elif defined(PLATFORM_T23)
     /* T23: has sensor_id but gpio fields are still unsigned short */
-    info->rst_gpio   = (unsigned short)cfg->rst_gpio;
-    info->pwdn_gpio  = (unsigned short)cfg->pwdn_gpio;
-    info->sensor_id  = cfg->sensor_id;
+    info->rst_gpio = (unsigned short)cfg->rst_gpio;
+    info->pwdn_gpio = (unsigned short)cfg->pwdn_gpio;
+    info->sensor_id = cfg->sensor_id;
 #else
     /* T20/T21/T30/T31: gpio fields are unsigned short, no sensor_id */
-    info->rst_gpio   = (unsigned short)cfg->rst_gpio;
-    info->pwdn_gpio  = (unsigned short)cfg->pwdn_gpio;
+    info->rst_gpio = (unsigned short)cfg->rst_gpio;
+    info->pwdn_gpio = (unsigned short)cfg->pwdn_gpio;
 #endif
 }
 
@@ -921,12 +906,18 @@ static void hal_fill_sensor_info(IMPSensorInfo *info,
 static IMPDeviceID hal_translate_dev_id(rss_dev_id_t dev)
 {
     switch (dev) {
-    case RSS_DEV_FS:  return DEV_ID_FS;
-    case RSS_DEV_ENC: return DEV_ID_ENC;
-    case RSS_DEV_DEC: return DEV_ID_DEC;
-    case RSS_DEV_IVS: return DEV_ID_IVS;
-    case RSS_DEV_OSD: return DEV_ID_OSD;
-    default:          return DEV_ID_FS;
+    case RSS_DEV_FS:
+        return DEV_ID_FS;
+    case RSS_DEV_ENC:
+        return DEV_ID_ENC;
+    case RSS_DEV_DEC:
+        return DEV_ID_DEC;
+    case RSS_DEV_IVS:
+        return DEV_ID_IVS;
+    case RSS_DEV_OSD:
+        return DEV_ID_OSD;
+    default:
+        return DEV_ID_FS;
     }
 }
 
@@ -972,8 +963,7 @@ static int hal_init(void *ctx, const rss_sensor_config_t *sensor_cfg)
 
     /* Step 4: enable sensor */
 #if defined(HAL_MULTI_SENSOR)
-    HAL_CHECK(IMP_ISP_EnableSensor(IMPVI_MAIN, &c->imp_sensor),
-              err_del_sensor);
+    HAL_CHECK(IMP_ISP_EnableSensor(IMPVI_MAIN, &c->imp_sensor), err_del_sensor);
 #else
     HAL_CHECK(IMP_ISP_EnableSensor(), err_del_sensor);
 #endif
@@ -990,8 +980,8 @@ static int hal_init(void *ctx, const rss_sensor_config_t *sensor_cfg)
     return 0;
 
     /* ── Cleanup on failure (reverse order) ── */
-err_disable_tuning: __attribute__((unused))
-    IMP_ISP_DisableTuning();
+err_disable_tuning:
+    __attribute__((unused)) IMP_ISP_DisableTuning();
 err_system_exit:
     IMP_System_Exit();
 err_disable_sensor:
@@ -1086,11 +1076,11 @@ static int hal_bind(void *ctx, const rss_cell_t *src, const rss_cell_t *dst)
         return -EINVAL;
 
     imp_src.deviceID = hal_translate_dev_id(src->device);
-    imp_src.groupID  = src->group;
+    imp_src.groupID = src->group;
     imp_src.outputID = src->output;
 
     imp_dst.deviceID = hal_translate_dev_id(dst->device);
-    imp_dst.groupID  = dst->group;
+    imp_dst.groupID = dst->group;
     imp_dst.outputID = dst->output;
 
     return IMP_System_Bind(&imp_src, &imp_dst);
@@ -1111,11 +1101,11 @@ static int hal_unbind(void *ctx, const rss_cell_t *src, const rss_cell_t *dst)
         return -EINVAL;
 
     imp_src.deviceID = hal_translate_dev_id(src->device);
-    imp_src.groupID  = src->group;
+    imp_src.groupID = src->group;
     imp_src.outputID = src->output;
 
     imp_dst.deviceID = hal_translate_dev_id(dst->device);
-    imp_dst.groupID  = dst->group;
+    imp_dst.groupID = dst->group;
     imp_dst.outputID = dst->output;
 
     return IMP_System_UnBind(&imp_src, &imp_dst);

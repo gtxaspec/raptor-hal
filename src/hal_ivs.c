@@ -24,14 +24,14 @@
 
 int hal_ivs_create_group(void *ctx, int grp)
 {
-	(void)ctx;
-	return IMP_IVS_CreateGroup(grp);
+    (void)ctx;
+    return IMP_IVS_CreateGroup(grp);
 }
 
 int hal_ivs_destroy_group(void *ctx, int grp)
 {
-	(void)ctx;
-	return IMP_IVS_DestroyGroup(grp);
+    (void)ctx;
+    return IMP_IVS_DestroyGroup(grp);
 }
 
 /* ================================================================
@@ -44,26 +44,26 @@ int hal_ivs_destroy_group(void *ctx, int grp)
 
 int hal_ivs_create_channel(void *ctx, int chn, void *algo_handle)
 {
-	(void)ctx;
-	return IMP_IVS_CreateChn(chn, (IMPIVSInterface *)algo_handle);
+    (void)ctx;
+    return IMP_IVS_CreateChn(chn, (IMPIVSInterface *)algo_handle);
 }
 
 int hal_ivs_destroy_channel(void *ctx, int chn)
 {
-	(void)ctx;
-	return IMP_IVS_DestroyChn(chn);
+    (void)ctx;
+    return IMP_IVS_DestroyChn(chn);
 }
 
 int hal_ivs_register_channel(void *ctx, int grp, int chn)
 {
-	(void)ctx;
-	return IMP_IVS_RegisterChn(grp, chn);
+    (void)ctx;
+    return IMP_IVS_RegisterChn(grp, chn);
 }
 
 int hal_ivs_unregister_channel(void *ctx, int chn)
 {
-	(void)ctx;
-	return IMP_IVS_UnRegisterChn(chn);
+    (void)ctx;
+    return IMP_IVS_UnRegisterChn(chn);
 }
 
 /* ================================================================
@@ -75,14 +75,14 @@ int hal_ivs_unregister_channel(void *ctx, int chn)
 
 int hal_ivs_start(void *ctx, int chn)
 {
-	(void)ctx;
-	return IMP_IVS_StartRecvPic(chn);
+    (void)ctx;
+    return IMP_IVS_StartRecvPic(chn);
 }
 
 int hal_ivs_stop(void *ctx, int chn)
 {
-	(void)ctx;
-	return IMP_IVS_StopRecvPic(chn);
+    (void)ctx;
+    return IMP_IVS_StopRecvPic(chn);
 }
 
 /* ================================================================
@@ -96,22 +96,22 @@ int hal_ivs_stop(void *ctx, int chn)
 
 int hal_ivs_poll_result(void *ctx, int chn, uint32_t timeout_ms)
 {
-	(void)ctx;
-	return IMP_IVS_PollingResult(chn, (int)timeout_ms);
+    (void)ctx;
+    return IMP_IVS_PollingResult(chn, (int)timeout_ms);
 }
 
 int hal_ivs_get_result(void *ctx, int chn, void **result)
 {
-	(void)ctx;
-	if (!result)
-		return RSS_ERR_INVAL;
-	return IMP_IVS_GetResult(chn, result);
+    (void)ctx;
+    if (!result)
+        return RSS_ERR_INVAL;
+    return IMP_IVS_GetResult(chn, result);
 }
 
 int hal_ivs_release_result(void *ctx, int chn, void *result)
 {
-	(void)ctx;
-	return IMP_IVS_ReleaseResult(chn, result);
+    (void)ctx;
+    return IMP_IVS_ReleaseResult(chn, result);
 }
 
 /* ================================================================
@@ -123,18 +123,18 @@ int hal_ivs_release_result(void *ctx, int chn, void *result)
 
 int hal_ivs_get_param(void *ctx, int chn, void *param)
 {
-	(void)ctx;
-	if (!param)
-		return RSS_ERR_INVAL;
-	return IMP_IVS_GetParam(chn, param);
+    (void)ctx;
+    if (!param)
+        return RSS_ERR_INVAL;
+    return IMP_IVS_GetParam(chn, param);
 }
 
 int hal_ivs_set_param(void *ctx, int chn, void *param)
 {
-	(void)ctx;
-	if (!param)
-		return RSS_ERR_INVAL;
-	return IMP_IVS_SetParam(chn, param);
+    (void)ctx;
+    if (!param)
+        return RSS_ERR_INVAL;
+    return IMP_IVS_SetParam(chn, param);
 }
 
 /* ================================================================
@@ -147,11 +147,11 @@ int hal_ivs_set_param(void *ctx, int chn, void *param)
 
 int hal_ivs_release_data(void *ctx, int chn, void *data)
 {
-	(void)ctx;
-	(void)chn;
-	if (!data)
-		return RSS_ERR_INVAL;
-	return IMP_IVS_ReleaseData(data);
+    (void)ctx;
+    (void)chn;
+    if (!data)
+        return RSS_ERR_INVAL;
+    return IMP_IVS_ReleaseData(data);
 }
 
 /* ================================================================
@@ -168,19 +168,19 @@ int hal_ivs_release_data(void *ctx, int chn, void *data)
 
 void *hal_ivs_create_move_interface(void *ctx, void *param)
 {
-	(void)ctx;
-	if (!param)
-		return NULL;
-	return (void *)IMP_IVS_CreateMoveInterface((IMP_IVS_MoveParam *)param);
+    (void)ctx;
+    if (!param)
+        return NULL;
+    return (void *)IMP_IVS_CreateMoveInterface((IMP_IVS_MoveParam *)param);
 }
 
 int hal_ivs_destroy_move_interface(void *ctx, void *handle)
 {
-	(void)ctx;
-	if (!handle)
-		return RSS_ERR_INVAL;
-	IMP_IVS_DestroyMoveInterface((IMPIVSInterface *)handle);
-	return RSS_OK;
+    (void)ctx;
+    if (!handle)
+        return RSS_ERR_INVAL;
+    IMP_IVS_DestroyMoveInterface((IMPIVSInterface *)handle);
+    return RSS_OK;
 }
 
 /* ================================================================
@@ -201,17 +201,17 @@ extern void IMP_IVS_DestroyBaseMoveInterface(IMPIVSInterface *iface);
 
 void *hal_ivs_create_base_move_interface(void *ctx, void *param)
 {
-	(void)ctx;
-	if (!param)
-		return NULL;
-	return (void *)IMP_IVS_CreateBaseMoveInterface(param);
+    (void)ctx;
+    if (!param)
+        return NULL;
+    return (void *)IMP_IVS_CreateBaseMoveInterface(param);
 }
 
 int hal_ivs_destroy_base_move_interface(void *ctx, void *handle)
 {
-	(void)ctx;
-	if (!handle)
-		return RSS_ERR_INVAL;
-	IMP_IVS_DestroyBaseMoveInterface((IMPIVSInterface *)handle);
-	return RSS_OK;
+    (void)ctx;
+    if (!handle)
+        return RSS_ERR_INVAL;
+    IMP_IVS_DestroyBaseMoveInterface((IMPIVSInterface *)handle);
+    return RSS_OK;
 }

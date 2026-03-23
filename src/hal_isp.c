@@ -29,41 +29,41 @@ extern const rss_hal_caps_t g_hal_caps;
 
 int hal_isp_set_brightness(void *ctx, uint8_t val)
 {
-	(void)ctx;
+    (void)ctx;
 #if defined(HAL_ISP_PTR_ARGS)
-	return IMP_ISP_Tuning_SetBrightness(IMPVI_MAIN, &val);
+    return IMP_ISP_Tuning_SetBrightness(IMPVI_MAIN, &val);
 #else
-	return IMP_ISP_Tuning_SetBrightness(val);
+    return IMP_ISP_Tuning_SetBrightness(val);
 #endif
 }
 
 int hal_isp_set_contrast(void *ctx, uint8_t val)
 {
-	(void)ctx;
+    (void)ctx;
 #if defined(HAL_ISP_PTR_ARGS)
-	return IMP_ISP_Tuning_SetContrast(IMPVI_MAIN, &val);
+    return IMP_ISP_Tuning_SetContrast(IMPVI_MAIN, &val);
 #else
-	return IMP_ISP_Tuning_SetContrast(val);
+    return IMP_ISP_Tuning_SetContrast(val);
 #endif
 }
 
 int hal_isp_set_saturation(void *ctx, uint8_t val)
 {
-	(void)ctx;
+    (void)ctx;
 #if defined(HAL_ISP_PTR_ARGS)
-	return IMP_ISP_Tuning_SetSaturation(IMPVI_MAIN, &val);
+    return IMP_ISP_Tuning_SetSaturation(IMPVI_MAIN, &val);
 #else
-	return IMP_ISP_Tuning_SetSaturation(val);
+    return IMP_ISP_Tuning_SetSaturation(val);
 #endif
 }
 
 int hal_isp_set_sharpness(void *ctx, uint8_t val)
 {
-	(void)ctx;
+    (void)ctx;
 #if defined(HAL_ISP_PTR_ARGS)
-	return IMP_ISP_Tuning_SetSharpness(IMPVI_MAIN, &val);
+    return IMP_ISP_Tuning_SetSharpness(IMPVI_MAIN, &val);
 #else
-	return IMP_ISP_Tuning_SetSharpness(val);
+    return IMP_ISP_Tuning_SetSharpness(val);
 #endif
 }
 
@@ -76,17 +76,17 @@ int hal_isp_set_sharpness(void *ctx, uint8_t val)
 
 int hal_isp_set_hue(void *ctx, uint8_t val)
 {
-	(void)ctx;
+    (void)ctx;
 #if defined(HAL_ISP_PTR_ARGS)
-	/* Gen3: T32/T40/T41 */
-	return IMP_ISP_Tuning_SetBcshHue(IMPVI_MAIN, &val);
+    /* Gen3: T32/T40/T41 */
+    return IMP_ISP_Tuning_SetBcshHue(IMPVI_MAIN, &val);
 #elif defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	/* Gen2: scalar */
-	return IMP_ISP_Tuning_SetBcshHue(val);
+    /* Gen2: scalar */
+    return IMP_ISP_Tuning_SetBcshHue(val);
 #else
-	/* T20/T21/T30: not supported */
-	(void)val;
-	return RSS_ERR_NOTSUP;
+    /* T20/T21/T30: not supported */
+    (void)val;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -105,65 +105,63 @@ int hal_isp_set_hue(void *ctx, uint8_t val)
 
 int hal_isp_set_hflip(void *ctx, int enable)
 {
-	rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
 
-	c->hflip_state = enable ? 1 : 0;
+    c->hflip_state = enable ? 1 : 0;
 
 #if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T30)
-	/* Separate H/V flip calls */
-	IMPISPTuningOpsMode h = enable ? IMPISP_TUNING_OPS_MODE_ENABLE
-	                               : IMPISP_TUNING_OPS_MODE_DISABLE;
-	return IMP_ISP_Tuning_SetISPHflip(h);
+    /* Separate H/V flip calls */
+    IMPISPTuningOpsMode h = enable ? IMPISP_TUNING_OPS_MODE_ENABLE : IMPISP_TUNING_OPS_MODE_DISABLE;
+    return IMP_ISP_Tuning_SetISPHflip(h);
 
 #elif defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	/* Combined HVFLIP enum: 0=normal, 1=H, 2=V, 3=HV */
-	int mode = (c->hflip_state ? 1 : 0) | (c->vflip_state ? 2 : 0);
-	IMPISPHVFLIP hvflip = (IMPISPHVFLIP)mode;
-	return IMP_ISP_Tuning_SetHVFLIP(hvflip);
+    /* Combined HVFLIP enum: 0=normal, 1=H, 2=V, 3=HV */
+    int mode = (c->hflip_state ? 1 : 0) | (c->vflip_state ? 2 : 0);
+    IMPISPHVFLIP hvflip = (IMPISPHVFLIP)mode;
+    return IMP_ISP_Tuning_SetHVFLIP(hvflip);
 
 #elif defined(PLATFORM_T40)
-	int mode = (c->hflip_state ? 1 : 0) | (c->vflip_state ? 2 : 0);
-	IMPISPHVFLIP hvflip = (IMPISPHVFLIP)mode;
-	return IMP_ISP_Tuning_SetHVFLIP(IMPVI_MAIN, &hvflip);
+    int mode = (c->hflip_state ? 1 : 0) | (c->vflip_state ? 2 : 0);
+    IMPISPHVFLIP hvflip = (IMPISPHVFLIP)mode;
+    return IMP_ISP_Tuning_SetHVFLIP(IMPVI_MAIN, &hvflip);
 
 #elif defined(PLATFORM_T32) || defined(PLATFORM_T41)
-	int mode = (c->hflip_state ? 1 : 0) | (c->vflip_state ? 2 : 0);
-	IMPISPHVFLIPAttr attr;
-	memset(&attr, 0, sizeof(attr));
-	attr.sensor_mode = (IMPISPHVFLIP)mode;
-	attr.isp_mode[0] = (IMPISPHVFLIP)mode;
-	return IMP_ISP_Tuning_SetHVFLIP(IMPVI_MAIN, &attr);
+    int mode = (c->hflip_state ? 1 : 0) | (c->vflip_state ? 2 : 0);
+    IMPISPHVFLIPAttr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.sensor_mode = (IMPISPHVFLIP)mode;
+    attr.isp_mode[0] = (IMPISPHVFLIP)mode;
+    return IMP_ISP_Tuning_SetHVFLIP(IMPVI_MAIN, &attr);
 #endif
 }
 
 int hal_isp_set_vflip(void *ctx, int enable)
 {
-	rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
 
-	c->vflip_state = enable ? 1 : 0;
+    c->vflip_state = enable ? 1 : 0;
 
 #if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T30)
-	IMPISPTuningOpsMode v = enable ? IMPISP_TUNING_OPS_MODE_ENABLE
-	                               : IMPISP_TUNING_OPS_MODE_DISABLE;
-	return IMP_ISP_Tuning_SetISPVflip(v);
+    IMPISPTuningOpsMode v = enable ? IMPISP_TUNING_OPS_MODE_ENABLE : IMPISP_TUNING_OPS_MODE_DISABLE;
+    return IMP_ISP_Tuning_SetISPVflip(v);
 
 #elif defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	int mode = (c->hflip_state ? 1 : 0) | (c->vflip_state ? 2 : 0);
-	IMPISPHVFLIP hvflip = (IMPISPHVFLIP)mode;
-	return IMP_ISP_Tuning_SetHVFLIP(hvflip);
+    int mode = (c->hflip_state ? 1 : 0) | (c->vflip_state ? 2 : 0);
+    IMPISPHVFLIP hvflip = (IMPISPHVFLIP)mode;
+    return IMP_ISP_Tuning_SetHVFLIP(hvflip);
 
 #elif defined(PLATFORM_T40)
-	int mode = (c->hflip_state ? 1 : 0) | (c->vflip_state ? 2 : 0);
-	IMPISPHVFLIP hvflip = (IMPISPHVFLIP)mode;
-	return IMP_ISP_Tuning_SetHVFLIP(IMPVI_MAIN, &hvflip);
+    int mode = (c->hflip_state ? 1 : 0) | (c->vflip_state ? 2 : 0);
+    IMPISPHVFLIP hvflip = (IMPISPHVFLIP)mode;
+    return IMP_ISP_Tuning_SetHVFLIP(IMPVI_MAIN, &hvflip);
 
 #elif defined(PLATFORM_T32) || defined(PLATFORM_T41)
-	int mode = (c->hflip_state ? 1 : 0) | (c->vflip_state ? 2 : 0);
-	IMPISPHVFLIPAttr attr;
-	memset(&attr, 0, sizeof(attr));
-	attr.sensor_mode = (IMPISPHVFLIP)mode;
-	attr.isp_mode[0] = (IMPISPHVFLIP)mode;
-	return IMP_ISP_Tuning_SetHVFLIP(IMPVI_MAIN, &attr);
+    int mode = (c->hflip_state ? 1 : 0) | (c->vflip_state ? 2 : 0);
+    IMPISPHVFLIPAttr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.sensor_mode = (IMPISPHVFLIP)mode;
+    attr.isp_mode[0] = (IMPISPHVFLIP)mode;
+    return IMP_ISP_Tuning_SetHVFLIP(IMPVI_MAIN, &attr);
 #endif
 }
 
@@ -176,16 +174,15 @@ int hal_isp_set_vflip(void *ctx, int enable)
 
 int hal_isp_set_running_mode(void *ctx, rss_isp_mode_t mode)
 {
-	(void)ctx;
+    (void)ctx;
 
-	IMPISPRunningMode imp_mode = (mode == RSS_ISP_NIGHT)
-	    ? IMPISP_RUNNING_MODE_NIGHT
-	    : IMPISP_RUNNING_MODE_DAY;
+    IMPISPRunningMode imp_mode =
+        (mode == RSS_ISP_NIGHT) ? IMPISP_RUNNING_MODE_NIGHT : IMPISP_RUNNING_MODE_DAY;
 
 #if defined(HAL_ISP_PTR_ARGS)
-	return IMP_ISP_Tuning_SetISPRunningMode(IMPVI_MAIN, &imp_mode);
+    return IMP_ISP_Tuning_SetISPRunningMode(IMPVI_MAIN, &imp_mode);
 #else
-	return IMP_ISP_Tuning_SetISPRunningMode(imp_mode);
+    return IMP_ISP_Tuning_SetISPRunningMode(imp_mode);
 #endif
 }
 
@@ -199,15 +196,15 @@ int hal_isp_set_running_mode(void *ctx, rss_isp_mode_t mode)
 
 int hal_isp_set_sensor_fps(void *ctx, uint32_t fps_num, uint32_t fps_den)
 {
-	(void)ctx;
+    (void)ctx;
 
 #if defined(PLATFORM_T40)
-	return IMP_ISP_Tuning_SetSensorFPS(IMPVI_MAIN, &fps_num, &fps_den);
+    return IMP_ISP_Tuning_SetSensorFPS(IMPVI_MAIN, &fps_num, &fps_den);
 #elif defined(PLATFORM_T32) || defined(PLATFORM_T41)
-	IMPISPSensorFps fps = { .num = fps_num, .den = fps_den };
-	return IMP_ISP_Tuning_SetSensorFPS(IMPVI_MAIN, &fps);
+    IMPISPSensorFps fps = {.num = fps_num, .den = fps_den};
+    return IMP_ISP_Tuning_SetSensorFPS(IMPVI_MAIN, &fps);
 #else
-	return IMP_ISP_Tuning_SetSensorFPS(fps_num, fps_den);
+    return IMP_ISP_Tuning_SetSensorFPS(fps_num, fps_den);
 #endif
 }
 
@@ -220,51 +217,51 @@ int hal_isp_set_sensor_fps(void *ctx, uint32_t fps_num, uint32_t fps_den)
 
 int hal_isp_set_antiflicker(void *ctx, rss_antiflicker_t mode)
 {
-	(void)ctx;
+    (void)ctx;
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	/* Gen3: IMPISPAntiflickerAttr is a struct with .mode and .freq */
-	{
-		IMPISPAntiflickerAttr attr;
-		memset(&attr, 0, sizeof(attr));
-		switch (mode) {
-		case RSS_ANTIFLICKER_50HZ:
-			attr.mode = IMPISP_ANTIFLICKER_NORMAL_MODE;
+    /* Gen3: IMPISPAntiflickerAttr is a struct with .mode and .freq */
+    {
+        IMPISPAntiflickerAttr attr;
+        memset(&attr, 0, sizeof(attr));
+        switch (mode) {
+        case RSS_ANTIFLICKER_50HZ:
+            attr.mode = IMPISP_ANTIFLICKER_NORMAL_MODE;
 #if defined(PLATFORM_T32)
-			attr.freq = IMPISP_ANTIFLICKER_FREQ_50HZ;
+            attr.freq = IMPISP_ANTIFLICKER_FREQ_50HZ;
 #else
-			attr.freq = 50;
+            attr.freq = 50;
 #endif
-			break;
-		case RSS_ANTIFLICKER_60HZ:
-			attr.mode = IMPISP_ANTIFLICKER_NORMAL_MODE;
+            break;
+        case RSS_ANTIFLICKER_60HZ:
+            attr.mode = IMPISP_ANTIFLICKER_NORMAL_MODE;
 #if defined(PLATFORM_T32)
-			attr.freq = IMPISP_ANTIFLICKER_FREQ_60HZ;
+            attr.freq = IMPISP_ANTIFLICKER_FREQ_60HZ;
 #else
-			attr.freq = 60;
+            attr.freq = 60;
 #endif
-			break;
-		default:
-			attr.mode = IMPISP_ANTIFLICKER_DISABLE_MODE;
-			break;
-		}
-		return IMP_ISP_Tuning_SetAntiFlickerAttr(IMPVI_MAIN, &attr);
-	}
+            break;
+        default:
+            attr.mode = IMPISP_ANTIFLICKER_DISABLE_MODE;
+            break;
+        }
+        return IMP_ISP_Tuning_SetAntiFlickerAttr(IMPVI_MAIN, &attr);
+    }
 #else
-	/* Gen1/Gen2: IMPISPAntiflickerAttr is an enum */
-	IMPISPAntiflickerAttr attr;
-	switch (mode) {
-	case RSS_ANTIFLICKER_50HZ:
-		attr = IMPISP_ANTIFLICKER_50HZ;
-		break;
-	case RSS_ANTIFLICKER_60HZ:
-		attr = IMPISP_ANTIFLICKER_60HZ;
-		break;
-	default:
-		attr = IMPISP_ANTIFLICKER_DISABLE;
-		break;
-	}
-	return IMP_ISP_Tuning_SetAntiFlickerAttr(attr);
+    /* Gen1/Gen2: IMPISPAntiflickerAttr is an enum */
+    IMPISPAntiflickerAttr attr;
+    switch (mode) {
+    case RSS_ANTIFLICKER_50HZ:
+        attr = IMPISP_ANTIFLICKER_50HZ;
+        break;
+    case RSS_ANTIFLICKER_60HZ:
+        attr = IMPISP_ANTIFLICKER_60HZ;
+        break;
+    default:
+        attr = IMPISP_ANTIFLICKER_DISABLE;
+        break;
+    }
+    return IMP_ISP_Tuning_SetAntiFlickerAttr(attr);
 #endif
 }
 
@@ -283,43 +280,42 @@ int hal_isp_set_antiflicker(void *ctx, rss_antiflicker_t mode)
 
 int hal_isp_set_wb(void *ctx, const rss_wb_config_t *wb_cfg)
 {
-	(void)ctx;
+    (void)ctx;
 
-	if (!wb_cfg)
-		return RSS_ERR_INVAL;
+    if (!wb_cfg)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	/*
-	 * T40/T41: Use Awb_SetRgbCoefft for manual gain control.
-	 */
-	if (wb_cfg->mode == RSS_WB_AUTO)
-		return RSS_OK;
-	IMPISPCOEFFTWB coefft;
-	memset(&coefft, 0, sizeof(coefft));
-	coefft.rgb_coefft_wb_r = wb_cfg->r_gain;
-	coefft.rgb_coefft_wb_b = wb_cfg->b_gain;
-	coefft.rgb_coefft_wb_g = wb_cfg->g_gain;
-	return IMP_ISP_Tuning_Awb_SetRgbCoefft(IMPVI_MAIN, &coefft);
+    /*
+     * T40/T41: Use Awb_SetRgbCoefft for manual gain control.
+     */
+    if (wb_cfg->mode == RSS_WB_AUTO)
+        return RSS_OK;
+    IMPISPCOEFFTWB coefft;
+    memset(&coefft, 0, sizeof(coefft));
+    coefft.rgb_coefft_wb_r = wb_cfg->r_gain;
+    coefft.rgb_coefft_wb_b = wb_cfg->b_gain;
+    coefft.rgb_coefft_wb_g = wb_cfg->g_gain;
+    return IMP_ISP_Tuning_Awb_SetRgbCoefft(IMPVI_MAIN, &coefft);
 #elif defined(PLATFORM_T32)
-	/*
-	 * T32: Awb_SetRgbCoefft is absent, use SetAwbAttr instead.
-	 */
-	if (wb_cfg->mode == RSS_WB_AUTO)
-		return RSS_OK;
-	{
-		IMPISPWBAttr awb_attr;
-		memset(&awb_attr, 0, sizeof(awb_attr));
-		return IMP_ISP_Tuning_SetAwbAttr(IMPVI_MAIN, &awb_attr);
-	}
+    /*
+     * T32: Awb_SetRgbCoefft is absent, use SetAwbAttr instead.
+     */
+    if (wb_cfg->mode == RSS_WB_AUTO)
+        return RSS_OK;
+    {
+        IMPISPWBAttr awb_attr;
+        memset(&awb_attr, 0, sizeof(awb_attr));
+        return IMP_ISP_Tuning_SetAwbAttr(IMPVI_MAIN, &awb_attr);
+    }
 #else
-	/* Gen1/Gen2: SetWB takes IMPISPWB* */
-	IMPISPWB wb;
-	memset(&wb, 0, sizeof(wb));
-	wb.mode = (wb_cfg->mode == RSS_WB_AUTO) ? ISP_CORE_WB_MODE_AUTO
-	                                        : ISP_CORE_WB_MODE_MANUAL;
-	wb.rgain = wb_cfg->r_gain;
-	wb.bgain = wb_cfg->b_gain;
-	return IMP_ISP_Tuning_SetWB(&wb);
+    /* Gen1/Gen2: SetWB takes IMPISPWB* */
+    IMPISPWB wb;
+    memset(&wb, 0, sizeof(wb));
+    wb.mode = (wb_cfg->mode == RSS_WB_AUTO) ? ISP_CORE_WB_MODE_AUTO : ISP_CORE_WB_MODE_MANUAL;
+    wb.rgain = wb_cfg->r_gain;
+    wb.bgain = wb_cfg->b_gain;
+    return IMP_ISP_Tuning_SetWB(&wb);
 #endif
 }
 
@@ -338,75 +334,75 @@ int hal_isp_set_wb(void *ctx, const rss_wb_config_t *wb_cfg)
 
 int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
 {
-	(void)ctx;
+    (void)ctx;
 
-	if (!exposure)
-		return RSS_ERR_INVAL;
+    if (!exposure)
+        return RSS_ERR_INVAL;
 
-	memset(exposure, 0, sizeof(*exposure));
+    memset(exposure, 0, sizeof(*exposure));
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	/*
-	 * Gen3: single call to GetAeExprInfo.
-	 * The struct layout is SoC-specific but includes at minimum:
-	 *   - total gain (analog * digital * isp_dgain)
-	 *   - exposure time in microseconds
-	 *   - AE luma
-	 */
-	IMPISPAeExprInfo expr_info;
-	memset(&expr_info, 0, sizeof(expr_info));
-	int ret = IMP_ISP_Tuning_GetAeExprInfo(IMPVI_MAIN, &expr_info);
-	if (ret != 0)
-		return ret;
+    /*
+     * Gen3: single call to GetAeExprInfo.
+     * The struct layout is SoC-specific but includes at minimum:
+     *   - total gain (analog * digital * isp_dgain)
+     *   - exposure time in microseconds
+     *   - AE luma
+     */
+    IMPISPAeExprInfo expr_info;
+    memset(&expr_info, 0, sizeof(expr_info));
+    int ret = IMP_ISP_Tuning_GetAeExprInfo(IMPVI_MAIN, &expr_info);
+    if (ret != 0)
+        return ret;
 
-	exposure->exposure_time = expr_info.AeIntegrationTime;
+    exposure->exposure_time = expr_info.AeIntegrationTime;
 #if defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	/* T40/T41 AEExprInfo has TotalGainDb (read-only dB total gain) */
-	exposure->total_gain    = expr_info.TotalGainDb;
+    /* T40/T41 AEExprInfo has TotalGainDb (read-only dB total gain) */
+    exposure->total_gain = expr_info.TotalGainDb;
 #else
-	/* T32 AEExprInfo lacks TotalGainDb; approximate from analog gain */
-	exposure->total_gain    = expr_info.AeAGain;
+    /* T32 AEExprInfo lacks TotalGainDb; approximate from analog gain */
+    exposure->total_gain = expr_info.AeAGain;
 #endif
-	/* AE luma is not available in AEExprInfo; leave as 0 */
-	exposure->ae_luma       = 0;
-	return RSS_OK;
+    /* AE luma is not available in AEExprInfo; leave as 0 */
+    exposure->ae_luma = 0;
+    return RSS_OK;
 #else
-	/* Gen1/Gen2: two separate calls */
-	int ret;
+    /* Gen1/Gen2: two separate calls */
+    int ret;
 
-	/* Total gain: [24.8] fixed-point format */
-	uint32_t total_gain = 0;
-	ret = IMP_ISP_Tuning_GetTotalGain(&total_gain);
-	if (ret != 0)
-		return ret;
-	exposure->total_gain = total_gain;
+    /* Total gain: [24.8] fixed-point format */
+    uint32_t total_gain = 0;
+    ret = IMP_ISP_Tuning_GetTotalGain(&total_gain);
+    if (ret != 0)
+        return ret;
+    exposure->total_gain = total_gain;
 
-	/* Exposure time from GetExpr */
-	IMPISPExpr expr;
-	memset(&expr, 0, sizeof(expr));
-	ret = IMP_ISP_Tuning_GetExpr(&expr);
-	if (ret != 0)
-		return ret;
-	/* g_attr.one_line_expr_in_us * integration_time gives microseconds */
-	exposure->exposure_time = (uint32_t)expr.g_attr.integration_time
-	    * (uint32_t)expr.g_attr.one_line_expr_in_us;
+    /* Exposure time from GetExpr */
+    IMPISPExpr expr;
+    memset(&expr, 0, sizeof(expr));
+    ret = IMP_ISP_Tuning_GetExpr(&expr);
+    if (ret != 0)
+        return ret;
+    /* g_attr.one_line_expr_in_us * integration_time gives microseconds */
+    exposure->exposure_time =
+        (uint32_t)expr.g_attr.integration_time * (uint32_t)expr.g_attr.one_line_expr_in_us;
 
-	/* AE luma */
+    /* AE luma */
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	int luma = 0;
-	ret = IMP_ISP_Tuning_GetAeLuma(&luma);
-	if (ret == 0)
-		exposure->ae_luma = (uint32_t)luma;
+    int luma = 0;
+    ret = IMP_ISP_Tuning_GetAeLuma(&luma);
+    if (ret == 0)
+        exposure->ae_luma = (uint32_t)luma;
 #else
-	/* T20/T21/T30: use EV attr for luma approximation */
-	IMPISPEVAttr ev_attr;
-	memset(&ev_attr, 0, sizeof(ev_attr));
-	ret = IMP_ISP_Tuning_GetEVAttr(&ev_attr);
-	if (ret == 0)
-		exposure->ae_luma = ev_attr.ev;
+    /* T20/T21/T30: use EV attr for luma approximation */
+    IMPISPEVAttr ev_attr;
+    memset(&ev_attr, 0, sizeof(ev_attr));
+    ret = IMP_ISP_Tuning_GetEVAttr(&ev_attr);
+    if (ret == 0)
+        exposure->ae_luma = ev_attr.ev;
 #endif
 
-	return RSS_OK;
+    return RSS_OK;
 #endif
 }
 
@@ -419,17 +415,17 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
 
 int hal_isp_set_sinter_strength(void *ctx, uint8_t val)
 {
-	(void)ctx;
+    (void)ctx;
 
-	if (!g_hal_caps.has_sinter)
-		return RSS_ERR_NOTSUP;
+    if (!g_hal_caps.has_sinter)
+        return RSS_ERR_NOTSUP;
 
-#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || \
-    defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_SetSinterStrength((uint32_t)val);
+#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    return IMP_ISP_Tuning_SetSinterStrength((uint32_t)val);
 #else
-	(void)val;
-	return RSS_ERR_NOTSUP;
+    (void)val;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -442,17 +438,17 @@ int hal_isp_set_sinter_strength(void *ctx, uint8_t val)
 
 int hal_isp_set_temper_strength(void *ctx, uint8_t val)
 {
-	(void)ctx;
+    (void)ctx;
 
-	if (!g_hal_caps.has_temper)
-		return RSS_ERR_NOTSUP;
+    if (!g_hal_caps.has_temper)
+        return RSS_ERR_NOTSUP;
 
-#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || \
-    defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_SetTemperStrength((uint32_t)val);
+#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    return IMP_ISP_Tuning_SetTemperStrength((uint32_t)val);
 #else
-	(void)val;
-	return RSS_ERR_NOTSUP;
+    (void)val;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -466,18 +462,18 @@ int hal_isp_set_temper_strength(void *ctx, uint8_t val)
 
 int hal_isp_set_defog(void *ctx, int enable)
 {
-	(void)ctx;
+    (void)ctx;
 
-	if (!g_hal_caps.has_defog)
-		return RSS_ERR_NOTSUP;
+    if (!g_hal_caps.has_defog)
+        return RSS_ERR_NOTSUP;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	IMPISPTuningOpsMode mode = enable ? IMPISP_TUNING_OPS_MODE_ENABLE
-	                                  : IMPISP_TUNING_OPS_MODE_DISABLE;
-	return IMP_ISP_Tuning_EnableDefog(mode);
+    IMPISPTuningOpsMode mode =
+        enable ? IMPISP_TUNING_OPS_MODE_ENABLE : IMPISP_TUNING_OPS_MODE_DISABLE;
+    return IMP_ISP_Tuning_EnableDefog(mode);
 #else
-	(void)enable;
-	return RSS_ERR_NOTSUP;
+    (void)enable;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -490,16 +486,16 @@ int hal_isp_set_defog(void *ctx, int enable)
 
 int hal_isp_set_dpc_strength(void *ctx, uint8_t val)
 {
-	(void)ctx;
+    (void)ctx;
 
-	if (!g_hal_caps.has_dpc)
-		return RSS_ERR_NOTSUP;
+    if (!g_hal_caps.has_dpc)
+        return RSS_ERR_NOTSUP;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_SetDPC_Strength((unsigned int)val);
+    return IMP_ISP_Tuning_SetDPC_Strength((unsigned int)val);
 #else
-	(void)val;
-	return RSS_ERR_NOTSUP;
+    (void)val;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -512,16 +508,16 @@ int hal_isp_set_dpc_strength(void *ctx, uint8_t val)
 
 int hal_isp_set_drc_strength(void *ctx, uint8_t val)
 {
-	(void)ctx;
+    (void)ctx;
 
-	if (!g_hal_caps.has_drc)
-		return RSS_ERR_NOTSUP;
+    if (!g_hal_caps.has_drc)
+        return RSS_ERR_NOTSUP;
 
 #if defined(PLATFORM_T21) || defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_SetDRC_Strength((unsigned int)val);
+    return IMP_ISP_Tuning_SetDRC_Strength((unsigned int)val);
 #else
-	(void)val;
-	return RSS_ERR_NOTSUP;
+    (void)val;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -535,14 +531,13 @@ int hal_isp_set_drc_strength(void *ctx, uint8_t val)
 
 int hal_isp_set_ae_comp(void *ctx, int val)
 {
-	(void)ctx;
+    (void)ctx;
 
-#if defined(PLATFORM_T20) || defined(PLATFORM_T23) || \
-    defined(PLATFORM_T30) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_SetAeComp(val);
+#if defined(PLATFORM_T20) || defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    return IMP_ISP_Tuning_SetAeComp(val);
 #else
-	(void)val;
-	return RSS_ERR_NOTSUP;
+    (void)val;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -556,14 +551,14 @@ int hal_isp_set_ae_comp(void *ctx, int val)
 
 int hal_isp_set_max_again(void *ctx, uint32_t gain)
 {
-	(void)ctx;
+    (void)ctx;
 
-#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || \
-    defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_SetMaxAgain(gain);
+#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    return IMP_ISP_Tuning_SetMaxAgain(gain);
 #else
-	(void)gain;
-	return RSS_ERR_NOTSUP;
+    (void)gain;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -577,14 +572,14 @@ int hal_isp_set_max_again(void *ctx, uint32_t gain)
 
 int hal_isp_set_max_dgain(void *ctx, uint32_t gain)
 {
-	(void)ctx;
+    (void)ctx;
 
-#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || \
-    defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_SetMaxDgain(gain);
+#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    return IMP_ISP_Tuning_SetMaxDgain(gain);
 #else
-	(void)gain;
-	return RSS_ERR_NOTSUP;
+    (void)gain;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -598,14 +593,14 @@ int hal_isp_set_max_dgain(void *ctx, uint32_t gain)
 
 int hal_isp_set_highlight_depress(void *ctx, uint8_t val)
 {
-	(void)ctx;
+    (void)ctx;
 
-#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || \
-    defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_SetHiLightDepress((uint32_t)val);
+#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    return IMP_ISP_Tuning_SetHiLightDepress((uint32_t)val);
 #else
-	(void)val;
-	return RSS_ERR_NOTSUP;
+    (void)val;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -621,57 +616,61 @@ int hal_isp_set_highlight_depress(void *ctx, uint8_t val)
 
 int hal_isp_get_brightness(void *ctx, uint8_t *val)
 {
-	(void)ctx;
-	if (!val) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!val)
+        return RSS_ERR_INVAL;
 #if defined(HAL_ISP_PTR_ARGS)
-	return IMP_ISP_Tuning_GetBrightness(IMPVI_MAIN, val);
+    return IMP_ISP_Tuning_GetBrightness(IMPVI_MAIN, val);
 #else
-	unsigned char v;
-	int ret = IMP_ISP_Tuning_GetBrightness(&v);
-	*val = v;
-	return ret;
+    unsigned char v;
+    int ret = IMP_ISP_Tuning_GetBrightness(&v);
+    *val = v;
+    return ret;
 #endif
 }
 
 int hal_isp_get_contrast(void *ctx, uint8_t *val)
 {
-	(void)ctx;
-	if (!val) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!val)
+        return RSS_ERR_INVAL;
 #if defined(HAL_ISP_PTR_ARGS)
-	return IMP_ISP_Tuning_GetContrast(IMPVI_MAIN, val);
+    return IMP_ISP_Tuning_GetContrast(IMPVI_MAIN, val);
 #else
-	unsigned char v;
-	int ret = IMP_ISP_Tuning_GetContrast(&v);
-	*val = v;
-	return ret;
+    unsigned char v;
+    int ret = IMP_ISP_Tuning_GetContrast(&v);
+    *val = v;
+    return ret;
 #endif
 }
 
 int hal_isp_get_saturation(void *ctx, uint8_t *val)
 {
-	(void)ctx;
-	if (!val) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!val)
+        return RSS_ERR_INVAL;
 #if defined(HAL_ISP_PTR_ARGS)
-	return IMP_ISP_Tuning_GetSaturation(IMPVI_MAIN, val);
+    return IMP_ISP_Tuning_GetSaturation(IMPVI_MAIN, val);
 #else
-	unsigned char v;
-	int ret = IMP_ISP_Tuning_GetSaturation(&v);
-	*val = v;
-	return ret;
+    unsigned char v;
+    int ret = IMP_ISP_Tuning_GetSaturation(&v);
+    *val = v;
+    return ret;
 #endif
 }
 
 int hal_isp_get_sharpness(void *ctx, uint8_t *val)
 {
-	(void)ctx;
-	if (!val) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!val)
+        return RSS_ERR_INVAL;
 #if defined(HAL_ISP_PTR_ARGS)
-	return IMP_ISP_Tuning_GetSharpness(IMPVI_MAIN, val);
+    return IMP_ISP_Tuning_GetSharpness(IMPVI_MAIN, val);
 #else
-	unsigned char v;
-	int ret = IMP_ISP_Tuning_GetSharpness(&v);
-	*val = v;
-	return ret;
+    unsigned char v;
+    int ret = IMP_ISP_Tuning_GetSharpness(&v);
+    *val = v;
+    return ret;
 #endif
 }
 
@@ -683,18 +682,19 @@ int hal_isp_get_sharpness(void *ctx, uint8_t *val)
 
 int hal_isp_get_hue(void *ctx, uint8_t *val)
 {
-	(void)ctx;
-	if (!val) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!val)
+        return RSS_ERR_INVAL;
 #if defined(HAL_ISP_PTR_ARGS)
-	return IMP_ISP_Tuning_GetBcshHue(IMPVI_MAIN, val);
+    return IMP_ISP_Tuning_GetBcshHue(IMPVI_MAIN, val);
 #elif defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	unsigned char v;
-	int ret = IMP_ISP_Tuning_GetBcshHue(&v);
-	*val = v;
-	return ret;
+    unsigned char v;
+    int ret = IMP_ISP_Tuning_GetBcshHue(&v);
+    *val = v;
+    return ret;
 #else
-	(void)val;
-	return RSS_ERR_NOTSUP;
+    (void)val;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -709,43 +709,49 @@ int hal_isp_get_hue(void *ctx, uint8_t *val)
 
 int hal_isp_get_hvflip(void *ctx, int *hflip, int *vflip)
 {
-	(void)ctx;
-	if (!hflip || !vflip) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!hflip || !vflip)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T30)
-	IMPISPTuningOpsMode h, v;
-	int ret = IMP_ISP_Tuning_GetISPHflip(&h);
-	if (ret != 0) return ret;
-	ret = IMP_ISP_Tuning_GetISPVflip(&v);
-	if (ret != 0) return ret;
-	*hflip = (h == IMPISP_TUNING_OPS_MODE_ENABLE) ? 1 : 0;
-	*vflip = (v == IMPISP_TUNING_OPS_MODE_ENABLE) ? 1 : 0;
-	return RSS_OK;
+    IMPISPTuningOpsMode h, v;
+    int ret = IMP_ISP_Tuning_GetISPHflip(&h);
+    if (ret != 0)
+        return ret;
+    ret = IMP_ISP_Tuning_GetISPVflip(&v);
+    if (ret != 0)
+        return ret;
+    *hflip = (h == IMPISP_TUNING_OPS_MODE_ENABLE) ? 1 : 0;
+    *vflip = (v == IMPISP_TUNING_OPS_MODE_ENABLE) ? 1 : 0;
+    return RSS_OK;
 
 #elif defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	IMPISPHVFLIP hvflip;
-	int ret = IMP_ISP_Tuning_GetHVFlip(&hvflip);
-	if (ret != 0) return ret;
-	*hflip = ((int)hvflip & 1) ? 1 : 0;
-	*vflip = ((int)hvflip & 2) ? 1 : 0;
-	return RSS_OK;
+    IMPISPHVFLIP hvflip;
+    int ret = IMP_ISP_Tuning_GetHVFlip(&hvflip);
+    if (ret != 0)
+        return ret;
+    *hflip = ((int)hvflip & 1) ? 1 : 0;
+    *vflip = ((int)hvflip & 2) ? 1 : 0;
+    return RSS_OK;
 
 #elif defined(PLATFORM_T40)
-	IMPISPHVFLIP hvf;
-	int ret = IMP_ISP_Tuning_GetHVFlip(IMPVI_MAIN, &hvf);
-	if (ret != 0) return ret;
-	*hflip = ((int)hvf & 1) ? 1 : 0;
-	*vflip = ((int)hvf & 2) ? 1 : 0;
-	return RSS_OK;
+    IMPISPHVFLIP hvf;
+    int ret = IMP_ISP_Tuning_GetHVFlip(IMPVI_MAIN, &hvf);
+    if (ret != 0)
+        return ret;
+    *hflip = ((int)hvf & 1) ? 1 : 0;
+    *vflip = ((int)hvf & 2) ? 1 : 0;
+    return RSS_OK;
 
 #elif defined(PLATFORM_T32) || defined(PLATFORM_T41)
-	IMPISPHVFLIPAttr attr;
-	memset(&attr, 0, sizeof(attr));
-	int ret = IMP_ISP_Tuning_GetHVFLIP(IMPVI_MAIN, &attr);
-	if (ret != 0) return ret;
-	*hflip = ((int)attr.sensor_mode & 1) ? 1 : 0;
-	*vflip = ((int)attr.sensor_mode & 2) ? 1 : 0;
-	return RSS_OK;
+    IMPISPHVFLIPAttr attr;
+    memset(&attr, 0, sizeof(attr));
+    int ret = IMP_ISP_Tuning_GetHVFLIP(IMPVI_MAIN, &attr);
+    if (ret != 0)
+        return ret;
+    *hflip = ((int)attr.sensor_mode & 1) ? 1 : 0;
+    *vflip = ((int)attr.sensor_mode & 2) ? 1 : 0;
+    return RSS_OK;
 #endif
 }
 
@@ -758,19 +764,20 @@ int hal_isp_get_hvflip(void *ctx, int *hflip, int *vflip)
 
 int hal_isp_get_running_mode(void *ctx, rss_isp_mode_t *mode)
 {
-	(void)ctx;
-	if (!mode) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!mode)
+        return RSS_ERR_INVAL;
 
-	IMPISPRunningMode imp_mode;
+    IMPISPRunningMode imp_mode;
 #if defined(HAL_ISP_PTR_ARGS)
-	int ret = IMP_ISP_Tuning_GetISPRunningMode(IMPVI_MAIN, &imp_mode);
+    int ret = IMP_ISP_Tuning_GetISPRunningMode(IMPVI_MAIN, &imp_mode);
 #else
-	int ret = IMP_ISP_Tuning_GetISPRunningMode(&imp_mode);
+    int ret = IMP_ISP_Tuning_GetISPRunningMode(&imp_mode);
 #endif
-	if (ret != 0) return ret;
-	*mode = (imp_mode == IMPISP_RUNNING_MODE_NIGHT) ? RSS_ISP_NIGHT
-	                                                : RSS_ISP_DAY;
-	return RSS_OK;
+    if (ret != 0)
+        return ret;
+    *mode = (imp_mode == IMPISP_RUNNING_MODE_NIGHT) ? RSS_ISP_NIGHT : RSS_ISP_DAY;
+    return RSS_OK;
 }
 
 /* ================================================================
@@ -783,23 +790,25 @@ int hal_isp_get_running_mode(void *ctx, rss_isp_mode_t *mode)
 
 int hal_isp_get_sensor_fps(void *ctx, uint32_t *fps_num, uint32_t *fps_den)
 {
-	(void)ctx;
-	if (!fps_num || !fps_den) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!fps_num || !fps_den)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T40)
-	return IMP_ISP_Tuning_GetSensorFPS(IMPVI_MAIN, fps_num, fps_den);
+    return IMP_ISP_Tuning_GetSensorFPS(IMPVI_MAIN, fps_num, fps_den);
 #elif defined(PLATFORM_T32) || defined(PLATFORM_T41)
-	{
-		IMPISPSensorFps fps;
-		memset(&fps, 0, sizeof(fps));
-		int ret = IMP_ISP_Tuning_GetSensorFPS(IMPVI_MAIN, &fps);
-		if (ret != 0) return ret;
-		*fps_num = fps.num;
-		*fps_den = fps.den;
-		return RSS_OK;
-	}
+    {
+        IMPISPSensorFps fps;
+        memset(&fps, 0, sizeof(fps));
+        int ret = IMP_ISP_Tuning_GetSensorFPS(IMPVI_MAIN, &fps);
+        if (ret != 0)
+            return ret;
+        *fps_num = fps.num;
+        *fps_den = fps.den;
+        return RSS_OK;
+    }
 #else
-	return IMP_ISP_Tuning_GetSensorFPS(fps_num, fps_den);
+    return IMP_ISP_Tuning_GetSensorFPS(fps_num, fps_den);
 #endif
 }
 
@@ -814,37 +823,40 @@ int hal_isp_get_sensor_fps(void *ctx, uint32_t *fps_num, uint32_t *fps_den)
 
 int hal_isp_get_antiflicker(void *ctx, rss_antiflicker_t *mode)
 {
-	(void)ctx;
-	if (!mode) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!mode)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	IMPISPAntiflickerAttr attr;
-	memset(&attr, 0, sizeof(attr));
-	int ret = IMP_ISP_Tuning_GetAntiFlickerAttr(IMPVI_MAIN, &attr);
-	if (ret != 0) return ret;
-	if (attr.freq == 50)
-		*mode = RSS_ANTIFLICKER_50HZ;
-	else if (attr.freq == 60)
-		*mode = RSS_ANTIFLICKER_60HZ;
-	else
-		*mode = RSS_ANTIFLICKER_OFF;
-	return RSS_OK;
+    IMPISPAntiflickerAttr attr;
+    memset(&attr, 0, sizeof(attr));
+    int ret = IMP_ISP_Tuning_GetAntiFlickerAttr(IMPVI_MAIN, &attr);
+    if (ret != 0)
+        return ret;
+    if (attr.freq == 50)
+        *mode = RSS_ANTIFLICKER_50HZ;
+    else if (attr.freq == 60)
+        *mode = RSS_ANTIFLICKER_60HZ;
+    else
+        *mode = RSS_ANTIFLICKER_OFF;
+    return RSS_OK;
 #else
-	IMPISPAntiflickerAttr attr;
-	int ret = IMP_ISP_Tuning_GetAntiFlickerAttr(&attr);
-	if (ret != 0) return ret;
-	switch (attr) {
-	case IMPISP_ANTIFLICKER_50HZ:
-		*mode = RSS_ANTIFLICKER_50HZ;
-		break;
-	case IMPISP_ANTIFLICKER_60HZ:
-		*mode = RSS_ANTIFLICKER_60HZ;
-		break;
-	default:
-		*mode = RSS_ANTIFLICKER_OFF;
-		break;
-	}
-	return RSS_OK;
+    IMPISPAntiflickerAttr attr;
+    int ret = IMP_ISP_Tuning_GetAntiFlickerAttr(&attr);
+    if (ret != 0)
+        return ret;
+    switch (attr) {
+    case IMPISP_ANTIFLICKER_50HZ:
+        *mode = RSS_ANTIFLICKER_50HZ;
+        break;
+    case IMPISP_ANTIFLICKER_60HZ:
+        *mode = RSS_ANTIFLICKER_60HZ;
+        break;
+    default:
+        *mode = RSS_ANTIFLICKER_OFF;
+        break;
+    }
+    return RSS_OK;
 #endif
 }
 
@@ -857,31 +869,32 @@ int hal_isp_get_antiflicker(void *ctx, rss_antiflicker_t *mode)
 
 int hal_isp_get_wb(void *ctx, rss_wb_config_t *wb_cfg)
 {
-	(void)ctx;
-	if (!wb_cfg) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!wb_cfg)
+        return RSS_ERR_INVAL;
 
-	memset(wb_cfg, 0, sizeof(*wb_cfg));
+    memset(wb_cfg, 0, sizeof(*wb_cfg));
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	IMPISPWBAttr attr;
-	memset(&attr, 0, sizeof(attr));
-	int ret = IMP_ISP_Tuning_GetAwbAttr(IMPVI_MAIN, &attr);
-	if (ret != 0) return ret;
-	wb_cfg->mode = (attr.mode == ISP_CORE_WB_MODE_AUTO) ? RSS_WB_AUTO
-	                                                     : RSS_WB_MANUAL;
-	wb_cfg->r_gain = attr.gain_val.rgain;
-	wb_cfg->b_gain = attr.gain_val.bgain;
-	return RSS_OK;
+    IMPISPWBAttr attr;
+    memset(&attr, 0, sizeof(attr));
+    int ret = IMP_ISP_Tuning_GetAwbAttr(IMPVI_MAIN, &attr);
+    if (ret != 0)
+        return ret;
+    wb_cfg->mode = (attr.mode == ISP_CORE_WB_MODE_AUTO) ? RSS_WB_AUTO : RSS_WB_MANUAL;
+    wb_cfg->r_gain = attr.gain_val.rgain;
+    wb_cfg->b_gain = attr.gain_val.bgain;
+    return RSS_OK;
 #else
-	IMPISPWB wb;
-	memset(&wb, 0, sizeof(wb));
-	int ret = IMP_ISP_Tuning_GetWB(&wb);
-	if (ret != 0) return ret;
-	wb_cfg->mode = (wb.mode == ISP_CORE_WB_MODE_AUTO) ? RSS_WB_AUTO
-	                                                   : RSS_WB_MANUAL;
-	wb_cfg->r_gain = wb.rgain;
-	wb_cfg->b_gain = wb.bgain;
-	return RSS_OK;
+    IMPISPWB wb;
+    memset(&wb, 0, sizeof(wb));
+    int ret = IMP_ISP_Tuning_GetWB(&wb);
+    if (ret != 0)
+        return ret;
+    wb_cfg->mode = (wb.mode == ISP_CORE_WB_MODE_AUTO) ? RSS_WB_AUTO : RSS_WB_MANUAL;
+    wb_cfg->r_gain = wb.rgain;
+    wb_cfg->b_gain = wb.bgain;
+    return RSS_OK;
 #endif
 }
 
@@ -894,29 +907,31 @@ int hal_isp_get_wb(void *ctx, rss_wb_config_t *wb_cfg)
 
 int hal_isp_get_max_again(void *ctx, uint32_t *gain)
 {
-	(void)ctx;
-	if (!gain) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!gain)
+        return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || \
-    defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_GetMaxAgain(gain);
+#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    return IMP_ISP_Tuning_GetMaxAgain(gain);
 #else
-	(void)gain;
-	return RSS_ERR_NOTSUP;
+    (void)gain;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_get_max_dgain(void *ctx, uint32_t *gain)
 {
-	(void)ctx;
-	if (!gain) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!gain)
+        return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || \
-    defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_GetMaxDgain(gain);
+#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    return IMP_ISP_Tuning_GetMaxDgain(gain);
 #else
-	(void)gain;
-	return RSS_ERR_NOTSUP;
+    (void)gain;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -929,21 +944,23 @@ int hal_isp_get_max_dgain(void *ctx, uint32_t *gain)
 
 int hal_isp_get_sensor_attr(void *ctx, uint32_t *width, uint32_t *height)
 {
-	(void)ctx;
-	if (!width || !height) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!width || !height)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	IMPISPSENSORAttr attr;
-	memset(&attr, 0, sizeof(attr));
-	int ret = IMP_ISP_Tuning_GetSensorAttr(IMPVI_MAIN, &attr);
-	if (ret != 0) return ret;
-	*width = attr.width;
-	*height = attr.height;
-	return RSS_OK;
+    IMPISPSENSORAttr attr;
+    memset(&attr, 0, sizeof(attr));
+    int ret = IMP_ISP_Tuning_GetSensorAttr(IMPVI_MAIN, &attr);
+    if (ret != 0)
+        return ret;
+    *width = attr.width;
+    *height = attr.height;
+    return RSS_OK;
 #else
-	(void)width;
-	(void)height;
-	return RSS_ERR_NOTSUP;
+    (void)width;
+    (void)height;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -956,15 +973,15 @@ int hal_isp_get_sensor_attr(void *ctx, uint32_t *width, uint32_t *height)
 
 int hal_isp_get_ae_comp(void *ctx, int *val)
 {
-	(void)ctx;
-	if (!val) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!val)
+        return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T20) || defined(PLATFORM_T23) || \
-    defined(PLATFORM_T30) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_GetAeComp(val);
+#if defined(PLATFORM_T20) || defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    return IMP_ISP_Tuning_GetAeComp(val);
 #else
-	(void)val;
-	return RSS_ERR_NOTSUP;
+    (void)val;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -977,46 +994,49 @@ int hal_isp_get_ae_comp(void *ctx, int *val)
 
 int hal_isp_get_module_control(void *ctx, uint32_t *modules)
 {
-	(void)ctx;
-	if (!modules) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!modules)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	IMPISPModuleCtl ctl;
-	memset(&ctl, 0, sizeof(ctl));
-	int ret = IMP_ISP_Tuning_GetModuleControl(IMPVI_MAIN, &ctl);
-	if (ret != 0) return ret;
-	*modules = ctl.key;
-	return RSS_OK;
+    IMPISPModuleCtl ctl;
+    memset(&ctl, 0, sizeof(ctl));
+    int ret = IMP_ISP_Tuning_GetModuleControl(IMPVI_MAIN, &ctl);
+    if (ret != 0)
+        return ret;
+    *modules = ctl.key;
+    return RSS_OK;
 #elif defined(PLATFORM_T31)
-	IMPISPModuleCtl ctl;
-	memset(&ctl, 0, sizeof(ctl));
-	int ret = IMP_ISP_Tuning_GetModuleControl(&ctl);
-	if (ret != 0) return ret;
-	*modules = ctl.key;
-	return RSS_OK;
+    IMPISPModuleCtl ctl;
+    memset(&ctl, 0, sizeof(ctl));
+    int ret = IMP_ISP_Tuning_GetModuleControl(&ctl);
+    if (ret != 0)
+        return ret;
+    *modules = ctl.key;
+    return RSS_OK;
 #else
-	(void)modules;
-	return RSS_ERR_NOTSUP;
+    (void)modules;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_set_module_control(void *ctx, uint32_t modules)
 {
-	(void)ctx;
+    (void)ctx;
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	IMPISPModuleCtl ctl;
-	memset(&ctl, 0, sizeof(ctl));
-	ctl.key = modules;
-	return IMP_ISP_Tuning_SetModuleControl(IMPVI_MAIN, &ctl);
+    IMPISPModuleCtl ctl;
+    memset(&ctl, 0, sizeof(ctl));
+    ctl.key = modules;
+    return IMP_ISP_Tuning_SetModuleControl(IMPVI_MAIN, &ctl);
 #elif defined(PLATFORM_T31)
-	IMPISPModuleCtl ctl;
-	memset(&ctl, 0, sizeof(ctl));
-	ctl.key = modules;
-	return IMP_ISP_Tuning_SetModuleControl(&ctl);
+    IMPISPModuleCtl ctl;
+    memset(&ctl, 0, sizeof(ctl));
+    ctl.key = modules;
+    return IMP_ISP_Tuning_SetModuleControl(&ctl);
 #else
-	(void)modules;
-	return RSS_ERR_NOTSUP;
+    (void)modules;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -1032,63 +1052,70 @@ int hal_isp_set_module_control(void *ctx, uint32_t modules)
 
 int hal_isp_get_sinter_strength(void *ctx, uint8_t *val)
 {
-	(void)ctx;
-	if (!val) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!val)
+        return RSS_ERR_INVAL;
 
-	/* No getter API available on any generation for sinter strength */
-	(void)val;
-	return RSS_ERR_NOTSUP;
+    /* No getter API available on any generation for sinter strength */
+    (void)val;
+    return RSS_ERR_NOTSUP;
 }
 
 int hal_isp_get_temper_strength(void *ctx, uint8_t *val)
 {
-	(void)ctx;
-	if (!val) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!val)
+        return RSS_ERR_INVAL;
 
-	/* No getter API available on any generation for temper strength */
-	(void)val;
-	return RSS_ERR_NOTSUP;
+    /* No getter API available on any generation for temper strength */
+    (void)val;
+    return RSS_ERR_NOTSUP;
 }
 
 int hal_isp_get_defog_strength(void *ctx, uint8_t *val)
 {
-	(void)ctx;
-	if (!val) return RSS_ERR_INVAL;
-	(void)val;
-	return RSS_ERR_NOTSUP;
+    (void)ctx;
+    if (!val)
+        return RSS_ERR_INVAL;
+    (void)val;
+    return RSS_ERR_NOTSUP;
 }
 
 int hal_isp_get_dpc_strength(void *ctx, uint8_t *val)
 {
-	(void)ctx;
-	if (!val) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!val)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	unsigned int ratio;
-	int ret = IMP_ISP_Tuning_GetDPC_Strength(&ratio);
-	if (ret != 0) return ret;
-	*val = (uint8_t)ratio;
-	return RSS_OK;
+    unsigned int ratio;
+    int ret = IMP_ISP_Tuning_GetDPC_Strength(&ratio);
+    if (ret != 0)
+        return ret;
+    *val = (uint8_t)ratio;
+    return RSS_OK;
 #else
-	(void)val;
-	return RSS_ERR_NOTSUP;
+    (void)val;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_get_drc_strength(void *ctx, uint8_t *val)
 {
-	(void)ctx;
-	if (!val) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!val)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T21) || defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	unsigned int ratio;
-	int ret = IMP_ISP_Tuning_GetDRC_Strength(&ratio);
-	if (ret != 0) return ret;
-	*val = (uint8_t)ratio;
-	return RSS_OK;
+    unsigned int ratio;
+    int ret = IMP_ISP_Tuning_GetDRC_Strength(&ratio);
+    if (ret != 0)
+        return ret;
+    *val = (uint8_t)ratio;
+    return RSS_OK;
 #else
-	(void)val;
-	return RSS_ERR_NOTSUP;
+    (void)val;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -1101,18 +1128,20 @@ int hal_isp_get_drc_strength(void *ctx, uint8_t *val)
 
 int hal_isp_get_highlight_depress(void *ctx, uint8_t *val)
 {
-	(void)ctx;
-	if (!val) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!val)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T21) || defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	uint32_t strength;
-	int ret = IMP_ISP_Tuning_GetHiLightDepress(&strength);
-	if (ret != 0) return ret;
-	*val = (uint8_t)strength;
-	return RSS_OK;
+    uint32_t strength;
+    int ret = IMP_ISP_Tuning_GetHiLightDepress(&strength);
+    if (ret != 0)
+        return ret;
+    *val = (uint8_t)strength;
+    return RSS_OK;
 #else
-	(void)val;
-	return RSS_ERR_NOTSUP;
+    (void)val;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -1125,18 +1154,20 @@ int hal_isp_get_highlight_depress(void *ctx, uint8_t *val)
 
 int hal_isp_get_backlight_comp(void *ctx, uint8_t *val)
 {
-	(void)ctx;
-	if (!val) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!val)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T31)
-	uint32_t strength;
-	int ret = IMP_ISP_Tuning_GetBacklightComp(&strength);
-	if (ret != 0) return ret;
-	*val = (uint8_t)strength;
-	return RSS_OK;
+    uint32_t strength;
+    int ret = IMP_ISP_Tuning_GetBacklightComp(&strength);
+    if (ret != 0)
+        return ret;
+    *val = (uint8_t)strength;
+    return RSS_OK;
 #else
-	(void)val;
-	return RSS_ERR_NOTSUP;
+    (void)val;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -1150,46 +1181,50 @@ int hal_isp_get_backlight_comp(void *ctx, uint8_t *val)
 
 int hal_isp_set_ae_weight(void *ctx, const uint8_t weight[15][15])
 {
-	(void)ctx;
-	if (!weight) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!weight)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	IMPISPAEWeightAttr attr;
-	memset(&attr, 0, sizeof(attr));
-	attr.weight_enable = IMPISP_TUNING_OPS_MODE_ENABLE;
-	memcpy(attr.ae_weight.weight, weight, sizeof(attr.ae_weight.weight));
-	return IMP_ISP_Tuning_SetAeWeight(IMPVI_MAIN, &attr);
-#elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || \
-      defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
-	IMPISPWeight w;
-	memcpy(w.weight, weight, sizeof(w.weight));
-	return IMP_ISP_Tuning_SetAeWeight(&w);
+    IMPISPAEWeightAttr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.weight_enable = IMPISP_TUNING_OPS_MODE_ENABLE;
+    memcpy(attr.ae_weight.weight, weight, sizeof(attr.ae_weight.weight));
+    return IMP_ISP_Tuning_SetAeWeight(IMPVI_MAIN, &attr);
+#elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                   \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    IMPISPWeight w;
+    memcpy(w.weight, weight, sizeof(w.weight));
+    return IMP_ISP_Tuning_SetAeWeight(&w);
 #else
-	return RSS_ERR_NOTSUP;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_get_ae_weight(void *ctx, uint8_t weight[15][15])
 {
-	(void)ctx;
-	if (!weight) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!weight)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	IMPISPAEWeightAttr attr;
-	memset(&attr, 0, sizeof(attr));
-	int ret = IMP_ISP_Tuning_GetAeWeight(IMPVI_MAIN, &attr);
-	if (ret != 0) return ret;
-	memcpy(weight, attr.ae_weight.weight, 15 * 15);
-	return RSS_OK;
-#elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || \
-      defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
-	IMPISPWeight w;
-	int ret = IMP_ISP_Tuning_GetAeWeight(&w);
-	if (ret != 0) return ret;
-	memcpy(weight, w.weight, 15 * 15);
-	return RSS_OK;
+    IMPISPAEWeightAttr attr;
+    memset(&attr, 0, sizeof(attr));
+    int ret = IMP_ISP_Tuning_GetAeWeight(IMPVI_MAIN, &attr);
+    if (ret != 0)
+        return ret;
+    memcpy(weight, attr.ae_weight.weight, 15 * 15);
+    return RSS_OK;
+#elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                   \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    IMPISPWeight w;
+    int ret = IMP_ISP_Tuning_GetAeWeight(&w);
+    if (ret != 0)
+        return ret;
+    memcpy(weight, w.weight, 15 * 15);
+    return RSS_OK;
 #else
-	return RSS_ERR_NOTSUP;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -1202,30 +1237,34 @@ int hal_isp_get_ae_weight(void *ctx, uint8_t weight[15][15])
 
 int hal_isp_get_ae_zone(void *ctx, uint32_t zone[15][15])
 {
-	(void)ctx;
-	if (!zone) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!zone)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	IMPISPAEStatisInfo info;
-	memset(&info, 0, sizeof(info));
-	int ret = IMP_ISP_Tuning_GetAeStatistics(IMPVI_MAIN, &info);
-	if (ret != 0) return ret;
-	memcpy(zone, info.ae_statis.statis, sizeof(info.ae_statis.statis));
-	return RSS_OK;
+    IMPISPAEStatisInfo info;
+    memset(&info, 0, sizeof(info));
+    int ret = IMP_ISP_Tuning_GetAeStatistics(IMPVI_MAIN, &info);
+    if (ret != 0)
+        return ret;
+    memcpy(zone, info.ae_statis.statis, sizeof(info.ae_statis.statis));
+    return RSS_OK;
 #elif defined(PLATFORM_T20)
-	IMPISPAEZone ae_zone;
-	int ret = IMP_ISP_Tuning_GetAeZone(&ae_zone);
-	if (ret != 0) return ret;
-	memcpy(zone, ae_zone.ae_sta_zone, sizeof(ae_zone.ae_sta_zone));
-	return RSS_OK;
+    IMPISPAEZone ae_zone;
+    int ret = IMP_ISP_Tuning_GetAeZone(&ae_zone);
+    if (ret != 0)
+        return ret;
+    memcpy(zone, ae_zone.ae_sta_zone, sizeof(ae_zone.ae_sta_zone));
+    return RSS_OK;
 #elif defined(PLATFORM_T21) || defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	IMPISPZone ae_zone;
-	int ret = IMP_ISP_Tuning_GetAeZone(&ae_zone);
-	if (ret != 0) return ret;
-	memcpy(zone, ae_zone.zone, sizeof(ae_zone.zone));
-	return RSS_OK;
+    IMPISPZone ae_zone;
+    int ret = IMP_ISP_Tuning_GetAeZone(&ae_zone);
+    if (ret != 0)
+        return ret;
+    memcpy(zone, ae_zone.zone, sizeof(ae_zone.zone));
+    return RSS_OK;
 #else
-	return RSS_ERR_NOTSUP;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -1238,66 +1277,71 @@ int hal_isp_get_ae_zone(void *ctx, uint32_t zone[15][15])
 
 int hal_isp_set_ae_roi(void *ctx, const uint8_t roi[15][15])
 {
-	(void)ctx;
-	if (!roi) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!roi)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	{
-		IMPISPAEWeightAttr attr;
-		memset(&attr, 0, sizeof(attr));
-		attr.roi_enable = IMPISP_TUNING_OPS_MODE_ENABLE;
-		memcpy(attr.ae_roi.weight, roi, sizeof(attr.ae_roi.weight));
-		return IMP_ISP_Tuning_SetAeWeight(IMPVI_MAIN, &attr);
-	}
+    {
+        IMPISPAEWeightAttr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.roi_enable = IMPISP_TUNING_OPS_MODE_ENABLE;
+        memcpy(attr.ae_roi.weight, roi, sizeof(attr.ae_roi.weight));
+        return IMP_ISP_Tuning_SetAeWeight(IMPVI_MAIN, &attr);
+    }
 #elif defined(PLATFORM_T32)
-	{
-		IMPISPAEWeightAttr attr;
-		memset(&attr, 0, sizeof(attr));
-		attr.weight_enable = IMPISP_TUNING_OPS_MODE_ENABLE;
-		memcpy(attr.ae_weight.weight, roi, sizeof(attr.ae_weight.weight));
-		return IMP_ISP_Tuning_SetAeWeight(IMPVI_MAIN, &attr);
-	}
+    {
+        IMPISPAEWeightAttr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.weight_enable = IMPISP_TUNING_OPS_MODE_ENABLE;
+        memcpy(attr.ae_weight.weight, roi, sizeof(attr.ae_weight.weight));
+        return IMP_ISP_Tuning_SetAeWeight(IMPVI_MAIN, &attr);
+    }
 #elif defined(PLATFORM_T21) || defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	IMPISPWeight w;
-	memcpy(w.weight, roi, sizeof(w.weight));
-	return IMP_ISP_Tuning_AE_SetROI(&w);
+    IMPISPWeight w;
+    memcpy(w.weight, roi, sizeof(w.weight));
+    return IMP_ISP_Tuning_AE_SetROI(&w);
 #else
-	/* T20/T30: AE_SetROI uses IMPISPAERoi, not IMPISPWeight; unsupported here */
-	return RSS_ERR_NOTSUP;
+    /* T20/T30: AE_SetROI uses IMPISPAERoi, not IMPISPWeight; unsupported here */
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_get_ae_roi(void *ctx, uint8_t roi[15][15])
 {
-	(void)ctx;
-	if (!roi) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!roi)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	{
-		IMPISPAEWeightAttr attr;
-		memset(&attr, 0, sizeof(attr));
-		int ret = IMP_ISP_Tuning_GetAeWeight(IMPVI_MAIN, &attr);
-		if (ret != 0) return ret;
-		memcpy(roi, attr.ae_roi.weight, 15 * 15);
-		return RSS_OK;
-	}
+    {
+        IMPISPAEWeightAttr attr;
+        memset(&attr, 0, sizeof(attr));
+        int ret = IMP_ISP_Tuning_GetAeWeight(IMPVI_MAIN, &attr);
+        if (ret != 0)
+            return ret;
+        memcpy(roi, attr.ae_roi.weight, 15 * 15);
+        return RSS_OK;
+    }
 #elif defined(PLATFORM_T32)
-	{
-		IMPISPAEWeightAttr attr;
-		memset(&attr, 0, sizeof(attr));
-		int ret = IMP_ISP_Tuning_GetAeWeight(IMPVI_MAIN, &attr);
-		if (ret != 0) return ret;
-		memcpy(roi, attr.ae_weight.weight, 15 * 15);
-		return RSS_OK;
-	}
+    {
+        IMPISPAEWeightAttr attr;
+        memset(&attr, 0, sizeof(attr));
+        int ret = IMP_ISP_Tuning_GetAeWeight(IMPVI_MAIN, &attr);
+        if (ret != 0)
+            return ret;
+        memcpy(roi, attr.ae_weight.weight, 15 * 15);
+        return RSS_OK;
+    }
 #elif defined(PLATFORM_T21) || defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	IMPISPWeight w;
-	int ret = IMP_ISP_Tuning_AE_GetROI(&w);
-	if (ret != 0) return ret;
-	memcpy(roi, w.weight, 15 * 15);
-	return RSS_OK;
+    IMPISPWeight w;
+    int ret = IMP_ISP_Tuning_AE_GetROI(&w);
+    if (ret != 0)
+        return ret;
+    memcpy(roi, w.weight, 15 * 15);
+    return RSS_OK;
 #else
-	return RSS_ERR_NOTSUP;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -1310,45 +1354,49 @@ int hal_isp_get_ae_roi(void *ctx, uint8_t roi[15][15])
 
 int hal_isp_set_ae_hist(void *ctx, const uint8_t thresholds[4])
 {
-	(void)ctx;
-	if (!thresholds) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!thresholds)
+        return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || \
-    defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
-	IMPISPAEHist hist;
-	memset(&hist, 0, sizeof(hist));
-	memcpy(hist.ae_histhresh, thresholds, 4);
-	return IMP_ISP_Tuning_SetAeHist(&hist);
+#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    IMPISPAEHist hist;
+    memset(&hist, 0, sizeof(hist));
+    memcpy(hist.ae_histhresh, thresholds, 4);
+    return IMP_ISP_Tuning_SetAeHist(&hist);
 #else
-	(void)thresholds;
-	return RSS_ERR_NOTSUP;
+    (void)thresholds;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_get_ae_hist(void *ctx, uint8_t thresholds[4], uint16_t bins[5])
 {
-	(void)ctx;
-	if (!thresholds || !bins) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!thresholds || !bins)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	IMPISPAEStatisInfo info;
-	memset(&info, 0, sizeof(info));
-	int ret = IMP_ISP_Tuning_GetAeStatistics(IMPVI_MAIN, &info);
-	if (ret != 0) return ret;
-	memset(thresholds, 0, 4);  /* Gen3 thresholds set via StatisConfig */
-	memcpy(bins, info.ae_hist_5bin, sizeof(info.ae_hist_5bin));
-	return RSS_OK;
-#elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || \
-      defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
-	IMPISPAEHist hist;
-	memset(&hist, 0, sizeof(hist));
-	int ret = IMP_ISP_Tuning_GetAeHist(&hist);
-	if (ret != 0) return ret;
-	memcpy(thresholds, hist.ae_histhresh, 4);
-	memcpy(bins, hist.ae_hist, sizeof(hist.ae_hist));
-	return RSS_OK;
+    IMPISPAEStatisInfo info;
+    memset(&info, 0, sizeof(info));
+    int ret = IMP_ISP_Tuning_GetAeStatistics(IMPVI_MAIN, &info);
+    if (ret != 0)
+        return ret;
+    memset(thresholds, 0, 4); /* Gen3 thresholds set via StatisConfig */
+    memcpy(bins, info.ae_hist_5bin, sizeof(info.ae_hist_5bin));
+    return RSS_OK;
+#elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                   \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    IMPISPAEHist hist;
+    memset(&hist, 0, sizeof(hist));
+    int ret = IMP_ISP_Tuning_GetAeHist(&hist);
+    if (ret != 0)
+        return ret;
+    memcpy(thresholds, hist.ae_histhresh, 4);
+    memcpy(bins, hist.ae_hist, sizeof(hist.ae_hist));
+    return RSS_OK;
 #else
-	return RSS_ERR_NOTSUP;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -1361,26 +1409,29 @@ int hal_isp_get_ae_hist(void *ctx, uint8_t thresholds[4], uint16_t bins[5])
 
 int hal_isp_get_ae_hist_origin(void *ctx, uint32_t bins[256])
 {
-	(void)ctx;
-	if (!bins) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!bins)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	IMPISPAEStatisInfo info;
-	memset(&info, 0, sizeof(info));
-	int ret = IMP_ISP_Tuning_GetAeStatistics(IMPVI_MAIN, &info);
-	if (ret != 0) return ret;
-	memcpy(bins, info.ae_hist_256bin, sizeof(info.ae_hist_256bin));
-	return RSS_OK;
+    IMPISPAEStatisInfo info;
+    memset(&info, 0, sizeof(info));
+    int ret = IMP_ISP_Tuning_GetAeStatistics(IMPVI_MAIN, &info);
+    if (ret != 0)
+        return ret;
+    memcpy(bins, info.ae_hist_256bin, sizeof(info.ae_hist_256bin));
+    return RSS_OK;
 #elif defined(PLATFORM_T31)
-	IMPISPAEHistOrigin hist;
-	memset(&hist, 0, sizeof(hist));
-	int ret = IMP_ISP_Tuning_GetAeHist_Origin(&hist);
-	if (ret != 0) return ret;
-	memcpy(bins, hist.ae_hist, sizeof(hist.ae_hist));
-	return RSS_OK;
+    IMPISPAEHistOrigin hist;
+    memset(&hist, 0, sizeof(hist));
+    int ret = IMP_ISP_Tuning_GetAeHist_Origin(&hist);
+    if (ret != 0)
+        return ret;
+    memcpy(bins, hist.ae_hist, sizeof(hist.ae_hist));
+    return RSS_OK;
 #else
-	(void)bins;
-	return RSS_ERR_NOTSUP;
+    (void)bins;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -1393,41 +1444,44 @@ int hal_isp_get_ae_hist_origin(void *ctx, uint32_t bins[256])
 
 int hal_isp_set_ae_it_max(void *ctx, uint32_t it_max)
 {
-	(void)ctx;
+    (void)ctx;
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	IMPISPAEExprInfo info;
-	memset(&info, 0, sizeof(info));
-	int ret = IMP_ISP_Tuning_GetAeExprInfo(IMPVI_MAIN, &info);
-	if (ret != 0) return ret;
-	info.AeMaxIntegrationTimeMode = IMPISP_TUNING_OPS_TYPE_MANUAL;
-	info.AeMaxIntegrationTime = it_max;
-	return IMP_ISP_Tuning_SetAeExprInfo(IMPVI_MAIN, &info);
+    IMPISPAEExprInfo info;
+    memset(&info, 0, sizeof(info));
+    int ret = IMP_ISP_Tuning_GetAeExprInfo(IMPVI_MAIN, &info);
+    if (ret != 0)
+        return ret;
+    info.AeMaxIntegrationTimeMode = IMPISP_TUNING_OPS_TYPE_MANUAL;
+    info.AeMaxIntegrationTime = it_max;
+    return IMP_ISP_Tuning_SetAeExprInfo(IMPVI_MAIN, &info);
 #elif defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_SetAe_IT_MAX(it_max);
+    return IMP_ISP_Tuning_SetAe_IT_MAX(it_max);
 #else
-	(void)it_max;
-	return RSS_ERR_NOTSUP;
+    (void)it_max;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_get_ae_it_max(void *ctx, uint32_t *it_max)
 {
-	(void)ctx;
-	if (!it_max) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!it_max)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	IMPISPAEExprInfo info;
-	memset(&info, 0, sizeof(info));
-	int ret = IMP_ISP_Tuning_GetAeExprInfo(IMPVI_MAIN, &info);
-	if (ret != 0) return ret;
-	*it_max = info.AeMaxIntegrationTime;
-	return RSS_OK;
+    IMPISPAEExprInfo info;
+    memset(&info, 0, sizeof(info));
+    int ret = IMP_ISP_Tuning_GetAeExprInfo(IMPVI_MAIN, &info);
+    if (ret != 0)
+        return ret;
+    *it_max = info.AeMaxIntegrationTime;
+    return RSS_OK;
 #elif defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_GetAE_IT_MAX(it_max);
+    return IMP_ISP_Tuning_GetAE_IT_MAX(it_max);
 #else
-	(void)it_max;
-	return RSS_ERR_NOTSUP;
+    (void)it_max;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -1440,56 +1494,60 @@ int hal_isp_get_ae_it_max(void *ctx, uint32_t *it_max)
 
 int hal_isp_set_ae_min(void *ctx, int min_it, int min_again)
 {
-	(void)ctx;
+    (void)ctx;
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	IMPISPAEExprInfo info;
-	memset(&info, 0, sizeof(info));
-	int ret = IMP_ISP_Tuning_GetAeExprInfo(IMPVI_MAIN, &info);
-	if (ret != 0) return ret;
-	info.AeMinIntegrationTimeMode = IMPISP_TUNING_OPS_TYPE_MANUAL;
-	info.AeMinIntegrationTime = (uint32_t)min_it;
-	info.AeMinAGainMode = IMPISP_TUNING_OPS_TYPE_MANUAL;
-	info.AeMinAGain = (uint32_t)min_again;
-	return IMP_ISP_Tuning_SetAeExprInfo(IMPVI_MAIN, &info);
+    IMPISPAEExprInfo info;
+    memset(&info, 0, sizeof(info));
+    int ret = IMP_ISP_Tuning_GetAeExprInfo(IMPVI_MAIN, &info);
+    if (ret != 0)
+        return ret;
+    info.AeMinIntegrationTimeMode = IMPISP_TUNING_OPS_TYPE_MANUAL;
+    info.AeMinIntegrationTime = (uint32_t)min_it;
+    info.AeMinAGainMode = IMPISP_TUNING_OPS_TYPE_MANUAL;
+    info.AeMinAGain = (uint32_t)min_again;
+    return IMP_ISP_Tuning_SetAeExprInfo(IMPVI_MAIN, &info);
 #elif defined(PLATFORM_T31)
-	IMPISPAEMin ae_min;
-	memset(&ae_min, 0, sizeof(ae_min));
-	ae_min.min_it = (unsigned int)min_it;
-	ae_min.min_again = (unsigned int)min_again;
-	return IMP_ISP_Tuning_SetAeMin(&ae_min);
+    IMPISPAEMin ae_min;
+    memset(&ae_min, 0, sizeof(ae_min));
+    ae_min.min_it = (unsigned int)min_it;
+    ae_min.min_again = (unsigned int)min_again;
+    return IMP_ISP_Tuning_SetAeMin(&ae_min);
 #else
-	(void)min_it;
-	(void)min_again;
-	return RSS_ERR_NOTSUP;
+    (void)min_it;
+    (void)min_again;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_get_ae_min(void *ctx, int *min_it, int *min_again)
 {
-	(void)ctx;
-	if (!min_it || !min_again) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!min_it || !min_again)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	IMPISPAEExprInfo info;
-	memset(&info, 0, sizeof(info));
-	int ret = IMP_ISP_Tuning_GetAeExprInfo(IMPVI_MAIN, &info);
-	if (ret != 0) return ret;
-	*min_it = (int)info.AeMinIntegrationTime;
-	*min_again = (int)info.AeMinAGain;
-	return RSS_OK;
+    IMPISPAEExprInfo info;
+    memset(&info, 0, sizeof(info));
+    int ret = IMP_ISP_Tuning_GetAeExprInfo(IMPVI_MAIN, &info);
+    if (ret != 0)
+        return ret;
+    *min_it = (int)info.AeMinIntegrationTime;
+    *min_again = (int)info.AeMinAGain;
+    return RSS_OK;
 #elif defined(PLATFORM_T31)
-	IMPISPAEMin ae_min;
-	memset(&ae_min, 0, sizeof(ae_min));
-	int ret = IMP_ISP_Tuning_GetAeMin(&ae_min);
-	if (ret != 0) return ret;
-	*min_it = (int)ae_min.min_it;
-	*min_again = (int)ae_min.min_again;
-	return RSS_OK;
+    IMPISPAEMin ae_min;
+    memset(&ae_min, 0, sizeof(ae_min));
+    int ret = IMP_ISP_Tuning_GetAeMin(&ae_min);
+    if (ret != 0)
+        return ret;
+    *min_it = (int)ae_min.min_it;
+    *min_again = (int)ae_min.min_again;
+    return RSS_OK;
 #else
-	(void)min_it;
-	(void)min_again;
-	return RSS_ERR_NOTSUP;
+    (void)min_it;
+    (void)min_again;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -1502,68 +1560,73 @@ int hal_isp_get_ae_min(void *ctx, int *min_it, int *min_again)
 
 int hal_isp_set_awb_weight(void *ctx, const uint8_t weight[15][15])
 {
-	(void)ctx;
-	if (!weight) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!weight)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T32)
-	{
-		IMPISPAwbWeight w;
-		memset(&w, 0, sizeof(w));
-		/* Copy 15x15 into the 32x32 array (zero-padded) */
-		int r;
-		for (r = 0; r < 15; r++)
-			memcpy(w.weight[r], &weight[r * 15], 15);
-		return IMP_ISP_Tuning_SetAwbWeight(IMPVI_MAIN, &w);
-	}
+    {
+        IMPISPAwbWeight w;
+        memset(&w, 0, sizeof(w));
+        /* Copy 15x15 into the 32x32 array (zero-padded) */
+        int r;
+        for (r = 0; r < 15; r++)
+            memcpy(w.weight[r], &weight[r * 15], 15);
+        return IMP_ISP_Tuning_SetAwbWeight(IMPVI_MAIN, &w);
+    }
 #elif defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	{
-		IMPISPWeight w;
-		memcpy(w.weight, weight, sizeof(w.weight));
-		return IMP_ISP_Tuning_SetAwbWeight(IMPVI_MAIN, &w);
-	}
+    {
+        IMPISPWeight w;
+        memcpy(w.weight, weight, sizeof(w.weight));
+        return IMP_ISP_Tuning_SetAwbWeight(IMPVI_MAIN, &w);
+    }
 #else
-	{
-		IMPISPWeight w;
-		memcpy(w.weight, weight, sizeof(w.weight));
-		return IMP_ISP_Tuning_SetAwbWeight(&w);
-	}
+    {
+        IMPISPWeight w;
+        memcpy(w.weight, weight, sizeof(w.weight));
+        return IMP_ISP_Tuning_SetAwbWeight(&w);
+    }
 #endif
 }
 
 int hal_isp_get_awb_weight(void *ctx, uint8_t weight[15][15])
 {
-	(void)ctx;
-	if (!weight) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!weight)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T32)
-	{
-		IMPISPAwbWeight w;
-		memset(&w, 0, sizeof(w));
-		int ret = IMP_ISP_Tuning_GetAwbWeight(IMPVI_MAIN, &w);
-		if (ret != 0) return ret;
-		int r;
-		for (r = 0; r < 15; r++)
-			memcpy(&weight[r * 15], w.weight[r], 15);
-		return RSS_OK;
-	}
+    {
+        IMPISPAwbWeight w;
+        memset(&w, 0, sizeof(w));
+        int ret = IMP_ISP_Tuning_GetAwbWeight(IMPVI_MAIN, &w);
+        if (ret != 0)
+            return ret;
+        int r;
+        for (r = 0; r < 15; r++)
+            memcpy(&weight[r * 15], w.weight[r], 15);
+        return RSS_OK;
+    }
 #elif defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	{
-		IMPISPWeight w;
-		memset(&w, 0, sizeof(w));
-		int ret = IMP_ISP_Tuning_GetAwbWeight(IMPVI_MAIN, &w);
-		if (ret != 0) return ret;
-		memcpy(weight, w.weight, 15 * 15);
-		return RSS_OK;
-	}
+    {
+        IMPISPWeight w;
+        memset(&w, 0, sizeof(w));
+        int ret = IMP_ISP_Tuning_GetAwbWeight(IMPVI_MAIN, &w);
+        if (ret != 0)
+            return ret;
+        memcpy(weight, w.weight, 15 * 15);
+        return RSS_OK;
+    }
 #else
-	{
-		IMPISPWeight w;
-		memset(&w, 0, sizeof(w));
-		int ret = IMP_ISP_Tuning_GetAwbWeight(&w);
-		if (ret != 0) return ret;
-		memcpy(weight, w.weight, 15 * 15);
-		return RSS_OK;
-	}
+    {
+        IMPISPWeight w;
+        memset(&w, 0, sizeof(w));
+        int ret = IMP_ISP_Tuning_GetAwbWeight(&w);
+        if (ret != 0)
+            return ret;
+        memcpy(weight, w.weight, 15 * 15);
+        return RSS_OK;
+    }
 #endif
 }
 
@@ -1574,51 +1637,54 @@ int hal_isp_get_awb_weight(void *ctx, uint8_t weight[15][15])
  * Gen3 (T32/T40/T41):  GetAwbStatistics(IMPVI_NUM, IMPISPAWBStatisInfo*)
  * ================================================================ */
 
-int hal_isp_get_awb_zone(void *ctx, uint8_t zone_r[225],
-                          uint8_t zone_g[225], uint8_t zone_b[225])
+int hal_isp_get_awb_zone(void *ctx, uint8_t zone_r[225], uint8_t zone_g[225], uint8_t zone_b[225])
 {
-	(void)ctx;
-	if (!zone_r || !zone_g || !zone_b) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!zone_r || !zone_g || !zone_b)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T32)
-	{
-		IMPISPAWBStatisInfo info;
-		memset(&info, 0, sizeof(info));
-		int ret = IMP_ISP_Tuning_GetAwbStatistics(IMPVI_MAIN, &info);
-		if (ret != 0) return ret;
-		int i;
-		for (i = 0; i < 225; i++) {
-			zone_r[i] = (uint8_t)info.awb_r.zone[i / 15][i % 15];
-			zone_g[i] = (uint8_t)info.awb_g.zone[i / 15][i % 15];
-			zone_b[i] = (uint8_t)info.awb_b.zone[i / 15][i % 15];
-		}
-		return RSS_OK;
-	}
+    {
+        IMPISPAWBStatisInfo info;
+        memset(&info, 0, sizeof(info));
+        int ret = IMP_ISP_Tuning_GetAwbStatistics(IMPVI_MAIN, &info);
+        if (ret != 0)
+            return ret;
+        int i;
+        for (i = 0; i < 225; i++) {
+            zone_r[i] = (uint8_t)info.awb_r.zone[i / 15][i % 15];
+            zone_g[i] = (uint8_t)info.awb_g.zone[i / 15][i % 15];
+            zone_b[i] = (uint8_t)info.awb_b.zone[i / 15][i % 15];
+        }
+        return RSS_OK;
+    }
 #elif defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	{
-		IMPISPAWBStatisInfo info;
-		memset(&info, 0, sizeof(info));
-		int ret = IMP_ISP_Tuning_GetAwbStatistics(IMPVI_MAIN, &info);
-		if (ret != 0) return ret;
-		int i;
-		for (i = 0; i < 225; i++) {
-			zone_r[i] = (uint8_t)info.awb_r.statis[i / 15][i % 15];
-			zone_g[i] = (uint8_t)info.awb_g.statis[i / 15][i % 15];
-			zone_b[i] = (uint8_t)info.awb_b.statis[i / 15][i % 15];
-		}
-		return RSS_OK;
-	}
+    {
+        IMPISPAWBStatisInfo info;
+        memset(&info, 0, sizeof(info));
+        int ret = IMP_ISP_Tuning_GetAwbStatistics(IMPVI_MAIN, &info);
+        if (ret != 0)
+            return ret;
+        int i;
+        for (i = 0; i < 225; i++) {
+            zone_r[i] = (uint8_t)info.awb_r.statis[i / 15][i % 15];
+            zone_g[i] = (uint8_t)info.awb_g.statis[i / 15][i % 15];
+            zone_b[i] = (uint8_t)info.awb_b.statis[i / 15][i % 15];
+        }
+        return RSS_OK;
+    }
 #elif defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	IMPISPAWBZone awb_zone;
-	memset(&awb_zone, 0, sizeof(awb_zone));
-	int ret = IMP_ISP_Tuning_GetAwbZone(&awb_zone);
-	if (ret != 0) return ret;
-	memcpy(zone_r, awb_zone.zone_r, 225);
-	memcpy(zone_g, awb_zone.zone_g, 225);
-	memcpy(zone_b, awb_zone.zone_b, 225);
-	return RSS_OK;
+    IMPISPAWBZone awb_zone;
+    memset(&awb_zone, 0, sizeof(awb_zone));
+    int ret = IMP_ISP_Tuning_GetAwbZone(&awb_zone);
+    if (ret != 0)
+        return ret;
+    memcpy(zone_r, awb_zone.zone_r, 225);
+    memcpy(zone_g, awb_zone.zone_g, 225);
+    memcpy(zone_b, awb_zone.zone_b, 225);
+    return RSS_OK;
 #else
-	return RSS_ERR_NOTSUP;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -1631,22 +1697,24 @@ int hal_isp_get_awb_zone(void *ctx, uint8_t zone_r[225],
 
 int hal_isp_get_awb_ct(void *ctx, uint32_t *color_temp)
 {
-	(void)ctx;
-	if (!color_temp) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!color_temp)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	{
-		IMPISPWBAttr attr;
-		memset(&attr, 0, sizeof(attr));
-		int ret = IMP_ISP_Tuning_GetAwbAttr(IMPVI_MAIN, &attr);
-		if (ret != 0) return ret;
-		*color_temp = attr.ct;
-		return RSS_OK;
-	}
+    {
+        IMPISPWBAttr attr;
+        memset(&attr, 0, sizeof(attr));
+        int ret = IMP_ISP_Tuning_GetAwbAttr(IMPVI_MAIN, &attr);
+        if (ret != 0)
+            return ret;
+        *color_temp = attr.ct;
+        return RSS_OK;
+    }
 #else
-	/* T32: no ct field in IMPISPWBAttr; T20-T31: no GetAwbAttr */
-	(void)color_temp;
-	return RSS_ERR_NOTSUP;
+    /* T32: no ct field in IMPISPWBAttr; T20-T31: no GetAwbAttr */
+    (void)color_temp;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -1658,33 +1726,35 @@ int hal_isp_get_awb_ct(void *ctx, uint32_t *color_temp)
  * T32:       no Awb_GetRgbCoefft, use GetAwbAttr
  * ================================================================ */
 
-int hal_isp_get_awb_rgb_coefft(void *ctx, uint16_t *rgain,
-                                uint16_t *ggain, uint16_t *bgain)
+int hal_isp_get_awb_rgb_coefft(void *ctx, uint16_t *rgain, uint16_t *ggain, uint16_t *bgain)
 {
-	(void)ctx;
-	if (!rgain || !ggain || !bgain) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!rgain || !ggain || !bgain)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	IMPISPCOEFFTWB coefft;
-	memset(&coefft, 0, sizeof(coefft));
-	int ret = IMP_ISP_Tuning_Awb_GetRgbCoefft(IMPVI_MAIN, &coefft);
-	if (ret != 0) return ret;
-	*rgain = coefft.rgb_coefft_wb_r;
-	*ggain = coefft.rgb_coefft_wb_g;
-	*bgain = coefft.rgb_coefft_wb_b;
-	return RSS_OK;
-#elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || \
-      defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
-	IMPISPCOEFFTWB coefft;
-	memset(&coefft, 0, sizeof(coefft));
-	int ret = IMP_ISP_Tuning_Awb_GetRgbCoefft(&coefft);
-	if (ret != 0) return ret;
-	*rgain = coefft.rgb_coefft_wb_r;
-	*ggain = coefft.rgb_coefft_wb_g;
-	*bgain = coefft.rgb_coefft_wb_b;
-	return RSS_OK;
+    IMPISPCOEFFTWB coefft;
+    memset(&coefft, 0, sizeof(coefft));
+    int ret = IMP_ISP_Tuning_Awb_GetRgbCoefft(IMPVI_MAIN, &coefft);
+    if (ret != 0)
+        return ret;
+    *rgain = coefft.rgb_coefft_wb_r;
+    *ggain = coefft.rgb_coefft_wb_g;
+    *bgain = coefft.rgb_coefft_wb_b;
+    return RSS_OK;
+#elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                   \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    IMPISPCOEFFTWB coefft;
+    memset(&coefft, 0, sizeof(coefft));
+    int ret = IMP_ISP_Tuning_Awb_GetRgbCoefft(&coefft);
+    if (ret != 0)
+        return ret;
+    *rgain = coefft.rgb_coefft_wb_r;
+    *ggain = coefft.rgb_coefft_wb_g;
+    *bgain = coefft.rgb_coefft_wb_b;
+    return RSS_OK;
 #else
-	return RSS_ERR_NOTSUP;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -1697,15 +1767,16 @@ int hal_isp_get_awb_rgb_coefft(void *ctx, uint16_t *rgain,
 
 int hal_isp_get_awb_hist(void *ctx, void *hist_data)
 {
-	(void)ctx;
-	if (!hist_data) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!hist_data)
+        return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || \
-    defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_GetAwbHist((IMPISPAWBHist *)hist_data);
+#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    return IMP_ISP_Tuning_GetAwbHist((IMPISPAWBHist *)hist_data);
 #else
-	(void)hist_data;
-	return RSS_ERR_NOTSUP;
+    (void)hist_data;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -1718,47 +1789,51 @@ int hal_isp_get_awb_hist(void *ctx, void *hist_data)
 
 int hal_isp_set_gamma(void *ctx, const uint16_t gamma[129])
 {
-	(void)ctx;
-	if (!gamma) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!gamma)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	IMPISPGammaAttr attr;
-	memset(&attr, 0, sizeof(attr));
-	attr.Curve_type = IMP_ISP_GAMMA_CURVE_USER;
-	memcpy(attr.gamma, gamma, sizeof(attr.gamma));
-	return IMP_ISP_Tuning_SetGammaAttr(IMPVI_MAIN, &attr);
-#elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || \
-      defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
-	IMPISPGamma g;
-	memcpy(g.gamma, gamma, sizeof(g.gamma));
-	return IMP_ISP_Tuning_SetGamma(&g);
+    IMPISPGammaAttr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.Curve_type = IMP_ISP_GAMMA_CURVE_USER;
+    memcpy(attr.gamma, gamma, sizeof(attr.gamma));
+    return IMP_ISP_Tuning_SetGammaAttr(IMPVI_MAIN, &attr);
+#elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                   \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    IMPISPGamma g;
+    memcpy(g.gamma, gamma, sizeof(g.gamma));
+    return IMP_ISP_Tuning_SetGamma(&g);
 #else
-	return RSS_ERR_NOTSUP;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_get_gamma(void *ctx, uint16_t gamma[129])
 {
-	(void)ctx;
-	if (!gamma) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!gamma)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	IMPISPGammaAttr attr;
-	memset(&attr, 0, sizeof(attr));
-	int ret = IMP_ISP_Tuning_GetGammaAttr(IMPVI_MAIN, &attr);
-	if (ret != 0) return ret;
-	memcpy(gamma, attr.gamma, sizeof(attr.gamma));
-	return RSS_OK;
-#elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || \
-      defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
-	IMPISPGamma g;
-	memset(&g, 0, sizeof(g));
-	int ret = IMP_ISP_Tuning_GetGamma(&g);
-	if (ret != 0) return ret;
-	memcpy(gamma, g.gamma, sizeof(g.gamma));
-	return RSS_OK;
+    IMPISPGammaAttr attr;
+    memset(&attr, 0, sizeof(attr));
+    int ret = IMP_ISP_Tuning_GetGammaAttr(IMPVI_MAIN, &attr);
+    if (ret != 0)
+        return ret;
+    memcpy(gamma, attr.gamma, sizeof(attr.gamma));
+    return RSS_OK;
+#elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                   \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    IMPISPGamma g;
+    memset(&g, 0, sizeof(g));
+    int ret = IMP_ISP_Tuning_GetGamma(&g);
+    if (ret != 0)
+        return ret;
+    memcpy(gamma, g.gamma, sizeof(g.gamma));
+    return RSS_OK;
 #else
-	return RSS_ERR_NOTSUP;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -1771,29 +1846,29 @@ int hal_isp_get_gamma(void *ctx, uint16_t gamma[129])
 
 int hal_isp_set_ccm(void *ctx, const void *ccm_attr)
 {
-	(void)ctx;
-	if (!ccm_attr) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!ccm_attr)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	return IMP_ISP_Tuning_SetCCMAttr(IMPVI_MAIN,
-	    (IMPISPCCMAttr *)(uintptr_t)ccm_attr);
+    return IMP_ISP_Tuning_SetCCMAttr(IMPVI_MAIN, (IMPISPCCMAttr *)(uintptr_t)ccm_attr);
 #else
-	(void)ccm_attr;
-	return RSS_ERR_NOTSUP;
+    (void)ccm_attr;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_get_ccm(void *ctx, void *ccm_attr)
 {
-	(void)ctx;
-	if (!ccm_attr) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!ccm_attr)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	return IMP_ISP_Tuning_GetCCMAttr(IMPVI_MAIN,
-	    (IMPISPCCMAttr *)ccm_attr);
+    return IMP_ISP_Tuning_GetCCMAttr(IMPVI_MAIN, (IMPISPCCMAttr *)ccm_attr);
 #else
-	(void)ccm_attr;
-	return RSS_ERR_NOTSUP;
+    (void)ccm_attr;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -1807,42 +1882,43 @@ int hal_isp_get_ccm(void *ctx, void *ccm_attr)
 
 int hal_isp_set_wdr_mode(void *ctx, int mode)
 {
-	(void)ctx;
+    (void)ctx;
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	IMPISPTuningOpsMode ops = mode ? IMPISP_TUNING_OPS_MODE_ENABLE
-	                               : IMPISP_TUNING_OPS_MODE_DISABLE;
-	return IMP_ISP_WDR_ENABLE(IMPVI_MAIN, &ops);
+    IMPISPTuningOpsMode ops = mode ? IMPISP_TUNING_OPS_MODE_ENABLE : IMPISP_TUNING_OPS_MODE_DISABLE;
+    return IMP_ISP_WDR_ENABLE(IMPVI_MAIN, &ops);
 #elif defined(PLATFORM_T31)
-	IMPISPTuningOpsMode ops = mode ? IMPISP_TUNING_OPS_MODE_ENABLE
-	                               : IMPISP_TUNING_OPS_MODE_DISABLE;
-	return IMP_ISP_WDR_ENABLE(ops);
+    IMPISPTuningOpsMode ops = mode ? IMPISP_TUNING_OPS_MODE_ENABLE : IMPISP_TUNING_OPS_MODE_DISABLE;
+    return IMP_ISP_WDR_ENABLE(ops);
 #else
-	(void)mode;
-	return RSS_ERR_NOTSUP;
+    (void)mode;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_get_wdr_mode(void *ctx, int *mode)
 {
-	(void)ctx;
-	if (!mode) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!mode)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	IMPISPTuningOpsMode ops;
-	int ret = IMP_ISP_WDR_ENABLE_GET(IMPVI_MAIN, &ops);
-	if (ret != 0) return ret;
-	*mode = (ops == IMPISP_TUNING_OPS_MODE_ENABLE) ? 1 : 0;
-	return RSS_OK;
+    IMPISPTuningOpsMode ops;
+    int ret = IMP_ISP_WDR_ENABLE_GET(IMPVI_MAIN, &ops);
+    if (ret != 0)
+        return ret;
+    *mode = (ops == IMPISP_TUNING_OPS_MODE_ENABLE) ? 1 : 0;
+    return RSS_OK;
 #elif defined(PLATFORM_T31)
-	IMPISPTuningOpsMode ops;
-	int ret = IMP_ISP_WDR_ENABLE_Get(&ops);
-	if (ret != 0) return ret;
-	*mode = (ops == IMPISP_TUNING_OPS_MODE_ENABLE) ? 1 : 0;
-	return RSS_OK;
+    IMPISPTuningOpsMode ops;
+    int ret = IMP_ISP_WDR_ENABLE_Get(&ops);
+    if (ret != 0)
+        return ret;
+    *mode = (ops == IMPISP_TUNING_OPS_MODE_ENABLE) ? 1 : 0;
+    return RSS_OK;
 #else
-	(void)mode;
-	return RSS_ERR_NOTSUP;
+    (void)mode;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -1854,12 +1930,12 @@ int hal_isp_get_wdr_mode(void *ctx, int *mode)
 
 int hal_isp_wdr_enable(void *ctx, int enable)
 {
-	return hal_isp_set_wdr_mode(ctx, enable);
+    return hal_isp_set_wdr_mode(ctx, enable);
 }
 
 int hal_isp_wdr_get_enable(void *ctx, int *enabled)
 {
-	return hal_isp_get_wdr_mode(ctx, enabled);
+    return hal_isp_get_wdr_mode(ctx, enabled);
 }
 
 /* ================================================================
@@ -1871,23 +1947,23 @@ int hal_isp_wdr_get_enable(void *ctx, int *enabled)
 
 int hal_isp_set_bypass(void *ctx, int enable)
 {
-	(void)ctx;
+    (void)ctx;
 
 #if defined(PLATFORM_T40)
-	IMPISPTuningOpsMode mode = enable ? IMPISP_TUNING_OPS_MODE_ENABLE
-	                                  : IMPISP_TUNING_OPS_MODE_DISABLE;
-	return IMP_ISP_Tuning_SetISPBypass(IMPVI_MAIN, &mode);
+    IMPISPTuningOpsMode mode =
+        enable ? IMPISP_TUNING_OPS_MODE_ENABLE : IMPISP_TUNING_OPS_MODE_DISABLE;
+    return IMP_ISP_Tuning_SetISPBypass(IMPVI_MAIN, &mode);
 #elif defined(PLATFORM_T32) || defined(PLATFORM_T41)
-	(void)enable;
-	return RSS_ERR_NOTSUP;
-#elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || \
-      defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
-	IMPISPTuningOpsMode mode = enable ? IMPISP_TUNING_OPS_MODE_ENABLE
-	                                  : IMPISP_TUNING_OPS_MODE_DISABLE;
-	return IMP_ISP_Tuning_SetISPBypass(mode);
+    (void)enable;
+    return RSS_ERR_NOTSUP;
+#elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                   \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    IMPISPTuningOpsMode mode =
+        enable ? IMPISP_TUNING_OPS_MODE_ENABLE : IMPISP_TUNING_OPS_MODE_DISABLE;
+    return IMP_ISP_Tuning_SetISPBypass(mode);
 #else
-	(void)enable;
-	return RSS_ERR_NOTSUP;
+    (void)enable;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -1900,49 +1976,52 @@ int hal_isp_set_bypass(void *ctx, int enable)
 
 int hal_isp_set_default_bin_path(void *ctx, const char *path)
 {
-	(void)ctx;
-	if (!path) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!path)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T32)
-	{
-		IMPISPDefaultBinAttr attr;
-		memset(&attr, 0, sizeof(attr));
-		strncpy(attr.bname, path, sizeof(attr.bname) - 1);
-		return IMP_ISP_SetDefaultBinPath(IMPVI_MAIN, &attr);
-	}
+    {
+        IMPISPDefaultBinAttr attr;
+        memset(&attr, 0, sizeof(attr));
+        strncpy(attr.bname, path, sizeof(attr.bname) - 1);
+        return IMP_ISP_SetDefaultBinPath(IMPVI_MAIN, &attr);
+    }
 #elif defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	return IMP_ISP_SetDefaultBinPath(IMPVI_MAIN, (char *)(uintptr_t)path);
+    return IMP_ISP_SetDefaultBinPath(IMPVI_MAIN, (char *)(uintptr_t)path);
 #elif defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_SetDefaultBinPath((char *)(uintptr_t)path);
+    return IMP_ISP_SetDefaultBinPath((char *)(uintptr_t)path);
 #else
-	(void)path;
-	return RSS_ERR_NOTSUP;
+    (void)path;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_get_default_bin_path(void *ctx, char *path, int path_len)
 {
-	(void)ctx;
-	if (!path || path_len <= 0) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!path || path_len <= 0)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T32)
-	{
-		IMPISPDefaultBinAttr attr;
-		memset(&attr, 0, sizeof(attr));
-		int ret = IMP_ISP_GetDefaultBinPath(IMPVI_MAIN, &attr);
-		if (ret != 0) return ret;
-		strncpy(path, attr.bname, (size_t)path_len - 1);
-		path[path_len - 1] = '\0';
-		return RSS_OK;
-	}
+    {
+        IMPISPDefaultBinAttr attr;
+        memset(&attr, 0, sizeof(attr));
+        int ret = IMP_ISP_GetDefaultBinPath(IMPVI_MAIN, &attr);
+        if (ret != 0)
+            return ret;
+        strncpy(path, attr.bname, (size_t)path_len - 1);
+        path[path_len - 1] = '\0';
+        return RSS_OK;
+    }
 #elif defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	return IMP_ISP_GetDefaultBinPath(IMPVI_MAIN, path);
+    return IMP_ISP_GetDefaultBinPath(IMPVI_MAIN, path);
 #elif defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_GetDefaultBinPath(path);
+    return IMP_ISP_GetDefaultBinPath(path);
 #else
-	(void)path;
-	(void)path_len;
-	return RSS_ERR_NOTSUP;
+    (void)path;
+    (void)path_len;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -1956,45 +2035,46 @@ int hal_isp_get_default_bin_path(void *ctx, char *path, int path_len)
 
 int hal_isp_set_frame_drop(void *ctx, int drop)
 {
-	(void)ctx;
+    (void)ctx;
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	IMPISPFrameDropAttr fd;
-	memset(&fd, 0, sizeof(fd));
-	/* Set frame drop on channel 0 */
-	fd.fdrop[0].enable = drop ? IMPISP_TUNING_OPS_MODE_ENABLE
-	                          : IMPISP_TUNING_OPS_MODE_DISABLE;
-	fd.fdrop[0].lsize = (uint8_t)drop;
-	return IMP_ISP_SetFrameDrop(IMPVI_MAIN, &fd);
+    IMPISPFrameDropAttr fd;
+    memset(&fd, 0, sizeof(fd));
+    /* Set frame drop on channel 0 */
+    fd.fdrop[0].enable = drop ? IMPISP_TUNING_OPS_MODE_ENABLE : IMPISP_TUNING_OPS_MODE_DISABLE;
+    fd.fdrop[0].lsize = (uint8_t)drop;
+    return IMP_ISP_SetFrameDrop(IMPVI_MAIN, &fd);
 #elif defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	/* FrameDrop uses opaque struct — caller must pass pre-built attr */
-	(void)drop;
-	return RSS_ERR_NOTSUP; /* TODO: expose via void* API */
+    /* FrameDrop uses opaque struct — caller must pass pre-built attr */
+    (void)drop;
+    return RSS_ERR_NOTSUP; /* TODO: expose via void* API */
 #else
-	(void)drop;
-	return RSS_ERR_NOTSUP;
+    (void)drop;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_get_frame_drop(void *ctx, int *drop)
 {
-	(void)ctx;
-	if (!drop) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!drop)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	IMPISPFrameDropAttr fd;
-	memset(&fd, 0, sizeof(fd));
-	int ret = IMP_ISP_GetFrameDrop(IMPVI_MAIN, &fd);
-	if (ret != 0) return ret;
-	*drop = (int)fd.fdrop[0].lsize;
-	return RSS_OK;
+    IMPISPFrameDropAttr fd;
+    memset(&fd, 0, sizeof(fd));
+    int ret = IMP_ISP_GetFrameDrop(IMPVI_MAIN, &fd);
+    if (ret != 0)
+        return ret;
+    *drop = (int)fd.fdrop[0].lsize;
+    return RSS_OK;
 #elif defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	/* FrameDrop uses opaque struct — caller must use void* API */
-	(void)drop;
-	return RSS_ERR_NOTSUP; /* TODO: expose via void* API */
+    /* FrameDrop uses opaque struct — caller must use void* API */
+    (void)drop;
+    return RSS_ERR_NOTSUP; /* TODO: expose via void* API */
 #else
-	(void)drop;
-	return RSS_ERR_NOTSUP;
+    (void)drop;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2009,45 +2089,47 @@ int hal_isp_get_frame_drop(void *ctx, int *drop)
 
 int hal_isp_set_sensor_register(void *ctx, uint32_t reg, uint32_t val)
 {
-	(void)ctx;
+    (void)ctx;
 
 #if defined(PLATFORM_T40)
-	/* T40: separate uint32_t* args */
-	return IMP_ISP_SetSensorRegister(IMPVI_MAIN, &reg, &val);
+    /* T40: separate uint32_t* args */
+    return IMP_ISP_SetSensorRegister(IMPVI_MAIN, &reg, &val);
 #elif defined(PLATFORM_T32) || defined(PLATFORM_T41)
-	/* T32/T41: IMPISPSensorRegister struct */
-	{
-		IMPISPSensorRegister sr;
-		sr.addr = reg;
-		sr.value = val;
-		return IMP_ISP_SetSensorRegister(IMPVI_MAIN, &sr);
-	}
+    /* T32/T41: IMPISPSensorRegister struct */
+    {
+        IMPISPSensorRegister sr;
+        sr.addr = reg;
+        sr.value = val;
+        return IMP_ISP_SetSensorRegister(IMPVI_MAIN, &sr);
+    }
 #else
-	return IMP_ISP_SetSensorRegister(reg, val);
+    return IMP_ISP_SetSensorRegister(reg, val);
 #endif
 }
 
 int hal_isp_get_sensor_register(void *ctx, uint32_t reg, uint32_t *val)
 {
-	(void)ctx;
-	if (!val) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!val)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T40)
-	/* T40: separate uint32_t* args */
-	return IMP_ISP_GetSensorRegister(IMPVI_MAIN, &reg, val);
+    /* T40: separate uint32_t* args */
+    return IMP_ISP_GetSensorRegister(IMPVI_MAIN, &reg, val);
 #elif defined(PLATFORM_T32) || defined(PLATFORM_T41)
-	/* T32/T41: IMPISPSensorRegister struct */
-	{
-		IMPISPSensorRegister sr;
-		sr.addr = reg;
-		sr.value = 0;
-		int ret = IMP_ISP_GetSensorRegister(IMPVI_MAIN, &sr);
-		if (ret != 0) return ret;
-		*val = sr.value;
-		return RSS_OK;
-	}
+    /* T32/T41: IMPISPSensorRegister struct */
+    {
+        IMPISPSensorRegister sr;
+        sr.addr = reg;
+        sr.value = 0;
+        int ret = IMP_ISP_GetSensorRegister(IMPVI_MAIN, &sr);
+        if (ret != 0)
+            return ret;
+        *val = sr.value;
+        return RSS_OK;
+    }
 #else
-	return IMP_ISP_GetSensorRegister(reg, val);
+    return IMP_ISP_GetSensorRegister(reg, val);
 #endif
 }
 
@@ -2060,15 +2142,15 @@ int hal_isp_get_sensor_register(void *ctx, uint32_t reg, uint32_t *val)
 
 int hal_isp_set_auto_zoom(void *ctx, const void *zoom_attr)
 {
-	(void)ctx;
-	if (!zoom_attr) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!zoom_attr)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_SetAutoZoom(
-	    (IMPISPAutoZoom *)(uintptr_t)zoom_attr);
+    return IMP_ISP_Tuning_SetAutoZoom((IMPISPAutoZoom *)(uintptr_t)zoom_attr);
 #else
-	(void)zoom_attr;
-	return RSS_ERR_NOTSUP;
+    (void)zoom_attr;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2081,10 +2163,11 @@ int hal_isp_set_auto_zoom(void *ctx, const void *zoom_attr)
 
 int hal_isp_set_video_drop(void *ctx, void (*callback)(void))
 {
-	(void)ctx;
-	if (!callback) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!callback)
+        return RSS_ERR_INVAL;
 
-	return IMP_ISP_Tuning_SetVideoDrop(callback);
+    return IMP_ISP_Tuning_SetVideoDrop(callback);
 }
 
 /* ================================================================
@@ -2097,34 +2180,33 @@ int hal_isp_set_video_drop(void *ctx, void (*callback)(void))
 
 int hal_isp_set_mask(void *ctx, const void *mask_attr)
 {
-	(void)ctx;
-	if (!mask_attr) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!mask_attr)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T40)
-	return IMP_ISP_Tuning_SetMask(IMPVI_MAIN,
-	    (IMPISPMASKAttr *)(uintptr_t)mask_attr);
+    return IMP_ISP_Tuning_SetMask(IMPVI_MAIN, (IMPISPMASKAttr *)(uintptr_t)mask_attr);
 #elif defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_SetMask(
-	    (IMPISPMASKAttr *)(uintptr_t)mask_attr);
+    return IMP_ISP_Tuning_SetMask((IMPISPMASKAttr *)(uintptr_t)mask_attr);
 #else
-	(void)mask_attr;
-	return RSS_ERR_NOTSUP;
+    (void)mask_attr;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_get_mask(void *ctx, void *mask_attr)
 {
-	(void)ctx;
-	if (!mask_attr) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!mask_attr)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T40)
-	return IMP_ISP_Tuning_GetMask(IMPVI_MAIN,
-	    (IMPISPMASKAttr *)mask_attr);
+    return IMP_ISP_Tuning_GetMask(IMPVI_MAIN, (IMPISPMASKAttr *)mask_attr);
 #elif defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_GetMask((IMPISPMASKAttr *)mask_attr);
+    return IMP_ISP_Tuning_GetMask((IMPISPMASKAttr *)mask_attr);
 #else
-	(void)mask_attr;
-	return RSS_ERR_NOTSUP;
+    (void)mask_attr;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2147,15 +2229,15 @@ int hal_isp_get_mask(void *ctx, void *mask_attr)
 
 int hal_isp_set_expr(void *ctx, const void *expr_attr)
 {
-	(void)ctx;
-	if (!expr_attr) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!expr_attr)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_SetExpr(
-	    (IMPISPExpr *)(uintptr_t)expr_attr);
+    return IMP_ISP_Tuning_SetExpr((IMPISPExpr *)(uintptr_t)expr_attr);
 #else
-	(void)expr_attr;
-	return RSS_ERR_NOTSUP;
+    (void)expr_attr;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2168,28 +2250,29 @@ int hal_isp_set_expr(void *ctx, const void *expr_attr)
 
 int hal_isp_get_ae_attr(void *ctx, void *ae_attr)
 {
-	(void)ctx;
-	if (!ae_attr) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!ae_attr)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_GetAeAttr((IMPISPAEAttr *)ae_attr);
+    return IMP_ISP_Tuning_GetAeAttr((IMPISPAEAttr *)ae_attr);
 #else
-	(void)ae_attr;
-	return RSS_ERR_NOTSUP;
+    (void)ae_attr;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_set_ae_attr(void *ctx, const void *ae_attr)
 {
-	(void)ctx;
-	if (!ae_attr) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!ae_attr)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_SetAeAttr(
-	    (IMPISPAEAttr *)(uintptr_t)ae_attr);
+    return IMP_ISP_Tuning_SetAeAttr((IMPISPAEAttr *)(uintptr_t)ae_attr);
 #else
-	(void)ae_attr;
-	return RSS_ERR_NOTSUP;
+    (void)ae_attr;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2202,14 +2285,15 @@ int hal_isp_set_ae_attr(void *ctx, const void *ae_attr)
 
 int hal_isp_get_ae_state(void *ctx, void *ae_state)
 {
-	(void)ctx;
-	if (!ae_state) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!ae_state)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_GetAeState((IMPISPAEState *)ae_state);
+    return IMP_ISP_Tuning_GetAeState((IMPISPAEState *)ae_state);
 #else
-	(void)ae_state;
-	return RSS_ERR_NOTSUP;
+    (void)ae_state;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2222,29 +2306,29 @@ int hal_isp_get_ae_state(void *ctx, void *ae_state)
 
 int hal_isp_get_ae_target_list(void *ctx, void *target_list)
 {
-	(void)ctx;
-	if (!target_list) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!target_list)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_GetAeTargetList(
-	    (IMPISPAETargetList *)target_list);
+    return IMP_ISP_Tuning_GetAeTargetList((IMPISPAETargetList *)target_list);
 #else
-	(void)target_list;
-	return RSS_ERR_NOTSUP;
+    (void)target_list;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_set_ae_target_list(void *ctx, const void *target_list)
 {
-	(void)ctx;
-	if (!target_list) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!target_list)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_SetAeTargetList(
-	    (IMPISPAETargetList *)(uintptr_t)target_list);
+    return IMP_ISP_Tuning_SetAeTargetList((IMPISPAETargetList *)(uintptr_t)target_list);
 #else
-	(void)target_list;
-	return RSS_ERR_NOTSUP;
+    (void)target_list;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2257,15 +2341,15 @@ int hal_isp_set_ae_target_list(void *ctx, const void *target_list)
 
 int hal_isp_set_ae_freeze(void *ctx, int enable)
 {
-	(void)ctx;
+    (void)ctx;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	IMPISPTuningOpsMode mode = enable ? IMPISP_TUNING_OPS_MODE_ENABLE
-	                                  : IMPISP_TUNING_OPS_MODE_DISABLE;
-	return IMP_ISP_Tuning_SetAeFreeze(mode);
+    IMPISPTuningOpsMode mode =
+        enable ? IMPISP_TUNING_OPS_MODE_ENABLE : IMPISP_TUNING_OPS_MODE_DISABLE;
+    return IMP_ISP_Tuning_SetAeFreeze(mode);
 #else
-	(void)enable;
-	return RSS_ERR_NOTSUP;
+    (void)enable;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2278,14 +2362,15 @@ int hal_isp_set_ae_freeze(void *ctx, int enable)
 
 int hal_isp_get_af_zone(void *ctx, void *af_zone)
 {
-	(void)ctx;
-	if (!af_zone) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!af_zone)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_GetAfZone((void *)af_zone);
+    return IMP_ISP_Tuning_GetAfZone((void *)af_zone);
 #else
-	(void)af_zone;
-	return RSS_ERR_NOTSUP;
+    (void)af_zone;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2298,28 +2383,29 @@ int hal_isp_get_af_zone(void *ctx, void *af_zone)
 
 int hal_isp_get_awb_clust(void *ctx, void *clust)
 {
-	(void)ctx;
-	if (!clust) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!clust)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_GetAwbClust((void *)clust);
+    return IMP_ISP_Tuning_GetAwbClust((void *)clust);
 #else
-	(void)clust;
-	return RSS_ERR_NOTSUP;
+    (void)clust;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_set_awb_clust(void *ctx, const void *clust)
 {
-	(void)ctx;
-	if (!clust) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!clust)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_SetAwbClust(
-	    (void *)(uintptr_t)clust);
+    return IMP_ISP_Tuning_SetAwbClust((void *)(uintptr_t)clust);
 #else
-	(void)clust;
-	return RSS_ERR_NOTSUP;
+    (void)clust;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2332,28 +2418,29 @@ int hal_isp_set_awb_clust(void *ctx, const void *clust)
 
 int hal_isp_get_awb_ct_attr(void *ctx, void *ct_attr)
 {
-	(void)ctx;
-	if (!ct_attr) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!ct_attr)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_GetAWBCt((void *)ct_attr);
+    return IMP_ISP_Tuning_GetAWBCt((void *)ct_attr);
 #else
-	(void)ct_attr;
-	return RSS_ERR_NOTSUP;
+    (void)ct_attr;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_set_awb_ct_attr(void *ctx, const void *ct_attr)
 {
-	(void)ctx;
-	if (!ct_attr) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!ct_attr)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_SetAwbCt(
-	    (void *)(uintptr_t)ct_attr);
+    return IMP_ISP_Tuning_SetAwbCt((void *)(uintptr_t)ct_attr);
 #else
-	(void)ct_attr;
-	return RSS_ERR_NOTSUP;
+    (void)ct_attr;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2366,28 +2453,29 @@ int hal_isp_set_awb_ct_attr(void *ctx, const void *ct_attr)
 
 int hal_isp_get_awb_ct_trend(void *ctx, void *trend)
 {
-	(void)ctx;
-	if (!trend) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!trend)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_GetAwbCtTrend((IMPISPAWBCtTrend *)trend);
+    return IMP_ISP_Tuning_GetAwbCtTrend((IMPISPAWBCtTrend *)trend);
 #else
-	(void)trend;
-	return RSS_ERR_NOTSUP;
+    (void)trend;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_set_awb_ct_trend(void *ctx, const void *trend)
 {
-	(void)ctx;
-	if (!trend) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!trend)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_SetAwbCtTrend(
-	    (IMPISPAWBCtTrend *)(uintptr_t)trend);
+    return IMP_ISP_Tuning_SetAwbCtTrend((IMPISPAWBCtTrend *)(uintptr_t)trend);
 #else
-	(void)trend;
-	return RSS_ERR_NOTSUP;
+    (void)trend;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2400,13 +2488,13 @@ int hal_isp_set_awb_ct_trend(void *ctx, const void *trend)
 
 int hal_isp_set_backlight_comp(void *ctx, uint32_t strength)
 {
-	(void)ctx;
+    (void)ctx;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_SetBacklightComp(strength);
+    return IMP_ISP_Tuning_SetBacklightComp(strength);
 #else
-	(void)strength;
-	return RSS_ERR_NOTSUP;
+    (void)strength;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2419,29 +2507,29 @@ int hal_isp_set_backlight_comp(void *ctx, uint32_t strength)
 
 int hal_isp_get_defog_strength_adv(void *ctx, void *defog_attr)
 {
-	(void)ctx;
-	if (!defog_attr) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!defog_attr)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_GetDefog_Strength(
-	    (void *)defog_attr);
+    return IMP_ISP_Tuning_GetDefog_Strength((void *)defog_attr);
 #else
-	(void)defog_attr;
-	return RSS_ERR_NOTSUP;
+    (void)defog_attr;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_set_defog_strength_adv(void *ctx, const void *defog_attr)
 {
-	(void)ctx;
-	if (!defog_attr) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!defog_attr)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_SetDefog_Strength(
-	    (void *)(uintptr_t)defog_attr);
+    return IMP_ISP_Tuning_SetDefog_Strength((void *)(uintptr_t)defog_attr);
 #else
-	(void)defog_attr;
-	return RSS_ERR_NOTSUP;
+    (void)defog_attr;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2454,28 +2542,29 @@ int hal_isp_set_defog_strength_adv(void *ctx, const void *defog_attr)
 
 int hal_isp_get_front_crop(void *ctx, void *crop_attr)
 {
-	(void)ctx;
-	if (!crop_attr) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!crop_attr)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_GetFrontCrop((IMPISPFrontCrop *)crop_attr);
+    return IMP_ISP_Tuning_GetFrontCrop((IMPISPFrontCrop *)crop_attr);
 #else
-	(void)crop_attr;
-	return RSS_ERR_NOTSUP;
+    (void)crop_attr;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_set_front_crop(void *ctx, const void *crop_attr)
 {
-	(void)ctx;
-	if (!crop_attr) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!crop_attr)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_SetFrontCrop(
-	    (IMPISPFrontCrop *)(uintptr_t)crop_attr);
+    return IMP_ISP_Tuning_SetFrontCrop((IMPISPFrontCrop *)(uintptr_t)crop_attr);
 #else
-	(void)crop_attr;
-	return RSS_ERR_NOTSUP;
+    (void)crop_attr;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2488,14 +2577,15 @@ int hal_isp_set_front_crop(void *ctx, const void *crop_attr)
 
 int hal_isp_get_blc_attr(void *ctx, void *blc_attr)
 {
-	(void)ctx;
-	if (!blc_attr) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!blc_attr)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_GetBlcAttr((IMPISPBlcAttr *)blc_attr);
+    return IMP_ISP_Tuning_GetBlcAttr((IMPISPBlcAttr *)blc_attr);
 #else
-	(void)blc_attr;
-	return RSS_ERR_NOTSUP;
+    (void)blc_attr;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2508,28 +2598,29 @@ int hal_isp_get_blc_attr(void *ctx, void *blc_attr)
 
 int hal_isp_get_csc_attr(void *ctx, void *csc_attr)
 {
-	(void)ctx;
-	if (!csc_attr) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!csc_attr)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_GetCsc_Attr((IMPISPCscAttr *)csc_attr);
+    return IMP_ISP_Tuning_GetCsc_Attr((IMPISPCscAttr *)csc_attr);
 #else
-	(void)csc_attr;
-	return RSS_ERR_NOTSUP;
+    (void)csc_attr;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_set_csc_attr(void *ctx, const void *csc_attr)
 {
-	(void)ctx;
-	if (!csc_attr) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!csc_attr)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_SetCsc_Attr(
-	    (IMPISPCscAttr *)(uintptr_t)csc_attr);
+    return IMP_ISP_Tuning_SetCsc_Attr((IMPISPCscAttr *)(uintptr_t)csc_attr);
 #else
-	(void)csc_attr;
-	return RSS_ERR_NOTSUP;
+    (void)csc_attr;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2542,32 +2633,33 @@ int hal_isp_set_csc_attr(void *ctx, const void *csc_attr)
 
 int hal_isp_set_custom_mode(void *ctx, int mode)
 {
-	(void)ctx;
+    (void)ctx;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	IMPISPTuningOpsMode ops = mode ? IMPISP_TUNING_OPS_MODE_ENABLE
-	                               : IMPISP_TUNING_OPS_MODE_DISABLE;
-	return IMP_ISP_Tuning_SetISPCustomMode(ops);
+    IMPISPTuningOpsMode ops = mode ? IMPISP_TUNING_OPS_MODE_ENABLE : IMPISP_TUNING_OPS_MODE_DISABLE;
+    return IMP_ISP_Tuning_SetISPCustomMode(ops);
 #else
-	(void)mode;
-	return RSS_ERR_NOTSUP;
+    (void)mode;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_get_custom_mode(void *ctx, int *mode)
 {
-	(void)ctx;
-	if (!mode) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!mode)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	IMPISPTuningOpsMode ops;
-	int ret = IMP_ISP_Tuning_GetISPCustomMode(&ops);
-	if (ret != 0) return ret;
-	*mode = (ops == IMPISP_TUNING_OPS_MODE_ENABLE) ? 1 : 0;
-	return RSS_OK;
+    IMPISPTuningOpsMode ops;
+    int ret = IMP_ISP_Tuning_GetISPCustomMode(&ops);
+    if (ret != 0)
+        return ret;
+    *mode = (ops == IMPISP_TUNING_OPS_MODE_ENABLE) ? 1 : 0;
+    return RSS_OK;
 #else
-	(void)mode;
-	return RSS_ERR_NOTSUP;
+    (void)mode;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2580,15 +2672,15 @@ int hal_isp_get_custom_mode(void *ctx, int *mode)
 
 int hal_isp_enable_drc(void *ctx, int enable)
 {
-	(void)ctx;
+    (void)ctx;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	IMPISPTuningOpsMode mode = enable ? IMPISP_TUNING_OPS_MODE_ENABLE
-	                                  : IMPISP_TUNING_OPS_MODE_DISABLE;
-	return IMP_ISP_Tuning_EnableDRC(mode);
+    IMPISPTuningOpsMode mode =
+        enable ? IMPISP_TUNING_OPS_MODE_ENABLE : IMPISP_TUNING_OPS_MODE_DISABLE;
+    return IMP_ISP_Tuning_EnableDRC(mode);
 #else
-	(void)enable;
-	return RSS_ERR_NOTSUP;
+    (void)enable;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2600,30 +2692,31 @@ int hal_isp_enable_drc(void *ctx, int enable)
 
 int hal_isp_get_af_hist(void *ctx, void *af_hist)
 {
-	(void)ctx;
-	if (!af_hist) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!af_hist)
+        return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || \
-    defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_GetAfHist((IMPISPAFHist *)af_hist);
+#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    return IMP_ISP_Tuning_GetAfHist((IMPISPAFHist *)af_hist);
 #else
-	(void)af_hist;
-	return RSS_ERR_NOTSUP;
+    (void)af_hist;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_set_af_hist(void *ctx, const void *af_hist)
 {
-	(void)ctx;
-	if (!af_hist) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!af_hist)
+        return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || \
-    defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_SetAfHist(
-	    (IMPISPAFHist *)(uintptr_t)af_hist);
+#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    return IMP_ISP_Tuning_SetAfHist((IMPISPAFHist *)(uintptr_t)af_hist);
 #else
-	(void)af_hist;
-	return RSS_ERR_NOTSUP;
+    (void)af_hist;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2635,14 +2728,15 @@ int hal_isp_set_af_hist(void *ctx, const void *af_hist)
 
 int hal_isp_get_af_metrics(void *ctx, void *metrics)
 {
-	(void)ctx;
-	if (!metrics) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!metrics)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T21) || defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_GetAFMetrices((void *)metrics);
+    return IMP_ISP_Tuning_GetAFMetrices((void *)metrics);
 #else
-	(void)metrics;
-	return RSS_ERR_NOTSUP;
+    (void)metrics;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2654,25 +2748,25 @@ int hal_isp_get_af_metrics(void *ctx, void *metrics)
 
 int hal_isp_enable_movestate(void *ctx)
 {
-	(void)ctx;
+    (void)ctx;
 
-#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || \
-    defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_EnableMovestate();
+#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    return IMP_ISP_Tuning_EnableMovestate();
 #else
-	return RSS_ERR_NOTSUP;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_disable_movestate(void *ctx)
 {
-	(void)ctx;
+    (void)ctx;
 
-#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || \
-    defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_DisableMovestate();
+#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    return IMP_ISP_Tuning_DisableMovestate();
 #else
-	return RSS_ERR_NOTSUP;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2684,19 +2778,13 @@ int hal_isp_disable_movestate(void *ctx)
 
 int hal_isp_set_shading(void *ctx, const void *shading_attr)
 {
-	(void)ctx;
-	if (!shading_attr) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!shading_attr)
+        return RSS_ERR_INVAL;
 
-	/* Shading control not yet implemented */
-	return RSS_ERR_NOTSUP;
+    /* Shading control not yet implemented */
+    return RSS_ERR_NOTSUP;
 }
-
-
-
-
-
-
-
 
 /* ================================================================
  * WAIT FRAME (T20-T31, not T32+)
@@ -2706,15 +2794,15 @@ int hal_isp_set_shading(void *ctx, const void *shading_attr)
 
 int hal_isp_wait_frame(void *ctx, int timeout_ms)
 {
-	(void)ctx;
-	(void)timeout_ms;
+    (void)ctx;
+    (void)timeout_ms;
 
-#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || \
-    defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_WaitFrame(NULL);
+#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    return IMP_ISP_Tuning_WaitFrame(NULL);
 #else
-	(void)timeout_ms;
-	return RSS_ERR_NOTSUP;
+    (void)timeout_ms;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2727,34 +2815,33 @@ int hal_isp_wait_frame(void *ctx, int timeout_ms)
 
 int hal_isp_get_af_weight(void *ctx, void *af_weight)
 {
-	(void)ctx;
-	if (!af_weight) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!af_weight)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	return IMP_ISP_Tuning_GetAfWeight(IMPVI_MAIN,
-	    (IMPISPWeight *)af_weight);
+    return IMP_ISP_Tuning_GetAfWeight(IMPVI_MAIN, (IMPISPWeight *)af_weight);
 #elif defined(PLATFORM_T21) || defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_GetAfWeight((IMPISPWeight *)af_weight);
+    return IMP_ISP_Tuning_GetAfWeight((IMPISPWeight *)af_weight);
 #else
-	(void)af_weight;
-	return RSS_ERR_NOTSUP;
+    (void)af_weight;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_set_af_weight(void *ctx, const void *af_weight)
 {
-	(void)ctx;
-	if (!af_weight) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!af_weight)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-	return IMP_ISP_Tuning_SetAfWeight(IMPVI_MAIN,
-	    (IMPISPWeight *)(uintptr_t)af_weight);
+    return IMP_ISP_Tuning_SetAfWeight(IMPVI_MAIN, (IMPISPWeight *)(uintptr_t)af_weight);
 #elif defined(PLATFORM_T21) || defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_SetAfWeight(
-	    (IMPISPWeight *)(uintptr_t)af_weight);
+    return IMP_ISP_Tuning_SetAfWeight((IMPISPWeight *)(uintptr_t)af_weight);
 #else
-	(void)af_weight;
-	return RSS_ERR_NOTSUP;
+    (void)af_weight;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2766,15 +2853,16 @@ int hal_isp_set_af_weight(void *ctx, const void *af_weight)
 
 int hal_isp_get_wb_statis(void *ctx, void *wb_statis)
 {
-	(void)ctx;
-	if (!wb_statis) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!wb_statis)
+        return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || \
-    defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_GetWB_Statis((IMPISPWB *)wb_statis);
+#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    return IMP_ISP_Tuning_GetWB_Statis((IMPISPWB *)wb_statis);
 #else
-	(void)wb_statis;
-	return RSS_ERR_NOTSUP;
+    (void)wb_statis;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2786,16 +2874,16 @@ int hal_isp_get_wb_statis(void *ctx, void *wb_statis)
 
 int hal_isp_set_awb_hist_adv(void *ctx, const void *awb_hist)
 {
-	(void)ctx;
-	if (!awb_hist) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!awb_hist)
+        return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || \
-    defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_SetAwbHist(
-	    (IMPISPAWBHist *)(uintptr_t)awb_hist);
+#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    return IMP_ISP_Tuning_SetAwbHist((IMPISPAWBHist *)(uintptr_t)awb_hist);
 #else
-	(void)awb_hist;
-	return RSS_ERR_NOTSUP;
+    (void)awb_hist;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2807,14 +2895,15 @@ int hal_isp_set_awb_hist_adv(void *ctx, const void *awb_hist)
 
 int hal_isp_get_wb_gol_statis(void *ctx, void *gol_statis)
 {
-	(void)ctx;
-	if (!gol_statis) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!gol_statis)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T21) || defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	return IMP_ISP_Tuning_GetWB_GOL_Statis((IMPISPWB *)gol_statis);
+    return IMP_ISP_Tuning_GetWB_GOL_Statis((IMPISPWB *)gol_statis);
 #else
-	(void)gol_statis;
-	return RSS_ERR_NOTSUP;
+    (void)gol_statis;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2827,31 +2916,33 @@ int hal_isp_get_wb_gol_statis(void *ctx, void *gol_statis)
 
 int hal_isp_set_wdr_output_mode(void *ctx, int mode)
 {
-	(void)ctx;
+    (void)ctx;
 
 #if defined(PLATFORM_T31)
-	IMPISPWdrOutputMode wdr_mode = (IMPISPWdrOutputMode)mode;
-	return IMP_ISP_Tuning_SetWdr_OutputMode(&wdr_mode);
+    IMPISPWdrOutputMode wdr_mode = (IMPISPWdrOutputMode)mode;
+    return IMP_ISP_Tuning_SetWdr_OutputMode(&wdr_mode);
 #else
-	(void)mode;
-	return RSS_ERR_NOTSUP;
+    (void)mode;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_get_wdr_output_mode(void *ctx, int *mode)
 {
-	(void)ctx;
-	if (!mode) return RSS_ERR_INVAL;
+    (void)ctx;
+    if (!mode)
+        return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T31)
-	IMPISPWdrOutputMode wdr_mode;
-	int ret = IMP_ISP_Tuning_GetWdr_OutputMode(&wdr_mode);
-	if (ret != 0) return ret;
-	*mode = (int)wdr_mode;
-	return RSS_OK;
+    IMPISPWdrOutputMode wdr_mode;
+    int ret = IMP_ISP_Tuning_GetWdr_OutputMode(&wdr_mode);
+    if (ret != 0)
+        return ret;
+    *mode = (int)wdr_mode;
+    return RSS_OK;
 #else
-	(void)mode;
-	return RSS_ERR_NOTSUP;
+    (void)mode;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
@@ -2864,26 +2955,26 @@ int hal_isp_get_wdr_output_mode(void *ctx, int *mode)
 
 int hal_isp_set_scaler_lv(void *ctx, int chn, int level)
 {
-	(void)ctx;
+    (void)ctx;
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T41)
-	{
-		IMPISPScalerLvAttr attr;
-		memset(&attr, 0, sizeof(attr));
-		attr.chx = (uint8_t)chn;
-		attr.mode = IMPISP_SCALER_FIXED_WEIGHT;
-		attr.level = (uint8_t)level;
-		return IMP_ISP_Tuning_SetScalerLv(IMPVI_MAIN, &attr);
-	}
+    {
+        IMPISPScalerLvAttr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.chx = (uint8_t)chn;
+        attr.mode = IMPISP_SCALER_FIXED_WEIGHT;
+        attr.level = (uint8_t)level;
+        return IMP_ISP_Tuning_SetScalerLv(IMPVI_MAIN, &attr);
+    }
 #elif defined(PLATFORM_T23) || defined(PLATFORM_T31)
-	IMPISPScalerLv lv;
-	memset(&lv, 0, sizeof(lv));
-	(void)chn;
-	(void)level;
-	return IMP_ISP_Tuning_SetScalerLv(&lv);
+    IMPISPScalerLv lv;
+    memset(&lv, 0, sizeof(lv));
+    (void)chn;
+    (void)level;
+    return IMP_ISP_Tuning_SetScalerLv(&lv);
 #else
-	(void)chn;
-	(void)level;
-	return RSS_ERR_NOTSUP;
+    (void)chn;
+    (void)level;
+    return RSS_ERR_NOTSUP;
 #endif
 }

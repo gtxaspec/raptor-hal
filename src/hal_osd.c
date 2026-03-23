@@ -23,26 +23,26 @@
 
 static IMPOsdRgnType hal_translate_osd_type(rss_osd_type_t type)
 {
-	switch (type) {
-	case RSS_OSD_PIC:
-		return OSD_REG_PIC;
+    switch (type) {
+    case RSS_OSD_PIC:
+        return OSD_REG_PIC;
 
-	case RSS_OSD_COVER:
-		return OSD_REG_COVER;
+    case RSS_OSD_COVER:
+        return OSD_REG_COVER;
 
-	case RSS_OSD_PIC_RMEM:
+    case RSS_OSD_PIC_RMEM:
 #if defined(PLATFORM_T31) || defined(HAL_EXTENDED_OSD)
-		return OSD_REG_PIC_RMEM;
+        return OSD_REG_PIC_RMEM;
 #else
-		/* T20/T21/T30: PIC_RMEM not available, fall back to PIC */
-		HAL_LOG_WARN("OSD_REG_PIC_RMEM not available, using PIC");
-		return OSD_REG_PIC;
+        /* T20/T21/T30: PIC_RMEM not available, fall back to PIC */
+        HAL_LOG_WARN("OSD_REG_PIC_RMEM not available, using PIC");
+        return OSD_REG_PIC;
 #endif
 
-	default:
-		HAL_LOG_ERR("unknown OSD type: %d", type);
-		return OSD_REG_INV;
-	}
+    default:
+        HAL_LOG_ERR("unknown OSD type: %d", type);
+        return OSD_REG_INV;
+    }
 }
 
 /* ================================================================
@@ -51,11 +51,14 @@ static IMPOsdRgnType hal_translate_osd_type(rss_osd_type_t type)
 
 static IMPPixelFormat hal_osd_translate_pixfmt(rss_pixfmt_t fmt)
 {
-	switch (fmt) {
-	case RSS_PIXFMT_BGRA:  return PIX_FMT_BGRA;
-	case RSS_PIXFMT_ARGB:  return PIX_FMT_ARGB;
-	default:               return PIX_FMT_BGRA;
-	}
+    switch (fmt) {
+    case RSS_PIXFMT_BGRA:
+        return PIX_FMT_BGRA;
+    case RSS_PIXFMT_ARGB:
+        return PIX_FMT_ARGB;
+    default:
+        return PIX_FMT_BGRA;
+    }
 }
 
 /* ================================================================
@@ -67,31 +70,30 @@ static IMPPixelFormat hal_osd_translate_pixfmt(rss_pixfmt_t fmt)
  * extra fields are safely initialized.
  * ================================================================ */
 
-static void hal_build_rgn_attr(IMPOSDRgnAttr *attr,
-			       const rss_osd_region_t *region)
+static void hal_build_rgn_attr(IMPOSDRgnAttr *attr, const rss_osd_region_t *region)
 {
-	memset(attr, 0, sizeof(*attr));
+    memset(attr, 0, sizeof(*attr));
 
-	attr->type      = hal_translate_osd_type(region->type);
-	attr->rect.p0.x = region->x;
-	attr->rect.p0.y = region->y;
-	attr->rect.p1.x = region->x + region->width - 1;
-	attr->rect.p1.y = region->y + region->height - 1;
-	attr->fmt       = hal_osd_translate_pixfmt(region->bitmap_fmt);
+    attr->type = hal_translate_osd_type(region->type);
+    attr->rect.p0.x = region->x;
+    attr->rect.p0.y = region->y;
+    attr->rect.p1.x = region->x + region->width - 1;
+    attr->rect.p1.y = region->y + region->height - 1;
+    attr->fmt = hal_osd_translate_pixfmt(region->bitmap_fmt);
 
-	switch (region->type) {
-	case RSS_OSD_PIC:
-	case RSS_OSD_PIC_RMEM:
-		attr->data.picData.pData = (void *)region->bitmap_data;
-		break;
+    switch (region->type) {
+    case RSS_OSD_PIC:
+    case RSS_OSD_PIC_RMEM:
+        attr->data.picData.pData = (void *)region->bitmap_data;
+        break;
 
-	case RSS_OSD_COVER:
-		attr->data.coverData.color = region->cover_color;
-		break;
+    case RSS_OSD_COVER:
+        attr->data.coverData.color = region->cover_color;
+        break;
 
-	default:
-		break;
-	}
+    default:
+        break;
+    }
 }
 
 /* ================================================================
@@ -100,14 +102,14 @@ static void hal_build_rgn_attr(IMPOSDRgnAttr *attr,
 
 int hal_osd_set_pool_size(void *ctx, uint32_t bytes)
 {
-	(void)ctx;
-	int ret;
+    (void)ctx;
+    int ret;
 
-	ret = IMP_OSD_SetPoolSize((int)bytes);
-	if (ret != 0)
-		HAL_LOG_ERR("IMP_OSD_SetPoolSize(%u) failed: %d", bytes, ret);
+    ret = IMP_OSD_SetPoolSize((int)bytes);
+    if (ret != 0)
+        HAL_LOG_ERR("IMP_OSD_SetPoolSize(%u) failed: %d", bytes, ret);
 
-	return ret;
+    return ret;
 }
 
 /* ================================================================
@@ -116,14 +118,14 @@ int hal_osd_set_pool_size(void *ctx, uint32_t bytes)
 
 int hal_osd_create_group(void *ctx, int grp)
 {
-	(void)ctx;
-	int ret;
+    (void)ctx;
+    int ret;
 
-	ret = IMP_OSD_CreateGroup(grp);
-	if (ret != 0)
-		HAL_LOG_ERR("IMP_OSD_CreateGroup(%d) failed: %d", grp, ret);
+    ret = IMP_OSD_CreateGroup(grp);
+    if (ret != 0)
+        HAL_LOG_ERR("IMP_OSD_CreateGroup(%d) failed: %d", grp, ret);
 
-	return ret;
+    return ret;
 }
 
 /* ================================================================
@@ -132,14 +134,14 @@ int hal_osd_create_group(void *ctx, int grp)
 
 int hal_osd_destroy_group(void *ctx, int grp)
 {
-	(void)ctx;
-	int ret;
+    (void)ctx;
+    int ret;
 
-	ret = IMP_OSD_DestroyGroup(grp);
-	if (ret != 0)
-		HAL_LOG_ERR("IMP_OSD_DestroyGroup(%d) failed: %d", grp, ret);
+    ret = IMP_OSD_DestroyGroup(grp);
+    if (ret != 0)
+        HAL_LOG_ERR("IMP_OSD_DestroyGroup(%d) failed: %d", grp, ret);
 
-	return ret;
+    return ret;
 }
 
 /* ================================================================
@@ -149,35 +151,34 @@ int hal_osd_destroy_group(void *ctx, int grp)
  * SetRgnAttr to apply the full attributes.
  * ================================================================ */
 
-int hal_osd_create_region(void *ctx, int *handle,
-			  const rss_osd_region_t *attr)
+int hal_osd_create_region(void *ctx, int *handle, const rss_osd_region_t *attr)
 {
-	(void)ctx;
-	IMPOSDRgnAttr rgn_attr;
-	IMPRgnHandle h;
+    (void)ctx;
+    IMPOSDRgnAttr rgn_attr;
+    IMPRgnHandle h;
 
-	if (!handle || !attr)
-		return -EINVAL;
+    if (!handle || !attr)
+        return -EINVAL;
 
-	hal_build_rgn_attr(&rgn_attr, attr);
+    hal_build_rgn_attr(&rgn_attr, attr);
 
-	/* CreateRgn returns a handle >= 0 on success, INVHANDLE (-1) on fail */
-	h = IMP_OSD_CreateRgn(&rgn_attr);
-	if (h == INVHANDLE) {
-		HAL_LOG_ERR("IMP_OSD_CreateRgn failed");
-		return -EIO;
-	}
+    /* CreateRgn returns a handle >= 0 on success, INVHANDLE (-1) on fail */
+    h = IMP_OSD_CreateRgn(&rgn_attr);
+    if (h == INVHANDLE) {
+        HAL_LOG_ERR("IMP_OSD_CreateRgn failed");
+        return -EIO;
+    }
 
-	/* Apply attributes to the newly created region */
-	int ret = IMP_OSD_SetRgnAttr(h, &rgn_attr);
-	if (ret != 0) {
-		HAL_LOG_ERR("IMP_OSD_SetRgnAttr(%d) failed: %d", h, ret);
-		IMP_OSD_DestroyRgn(h);
-		return ret;
-	}
+    /* Apply attributes to the newly created region */
+    int ret = IMP_OSD_SetRgnAttr(h, &rgn_attr);
+    if (ret != 0) {
+        HAL_LOG_ERR("IMP_OSD_SetRgnAttr(%d) failed: %d", h, ret);
+        IMP_OSD_DestroyRgn(h);
+        return ret;
+    }
 
-	*handle = (int)h;
-	return 0;
+    *handle = (int)h;
+    return 0;
 }
 
 /* ================================================================
@@ -186,13 +187,13 @@ int hal_osd_create_region(void *ctx, int *handle,
 
 int hal_osd_destroy_region(void *ctx, int handle)
 {
-	(void)ctx;
+    (void)ctx;
 
-	/* IMP_OSD_DestroyRgn returns void on T31 but int on some SDKs.
-	 * We call it unconditionally and return success. */
-	IMP_OSD_DestroyRgn((IMPRgnHandle)handle);
+    /* IMP_OSD_DestroyRgn returns void on T31 but int on some SDKs.
+     * We call it unconditionally and return success. */
+    IMP_OSD_DestroyRgn((IMPRgnHandle)handle);
 
-	return 0;
+    return 0;
 }
 
 /* ================================================================
@@ -201,17 +202,16 @@ int hal_osd_destroy_region(void *ctx, int handle)
 
 int hal_osd_register_region(void *ctx, int handle, int grp)
 {
-	(void)ctx;
-	int ret;
+    (void)ctx;
+    int ret;
 
-	/* Register with NULL group attributes; caller sets them via
-	 * osd_show_region or osd_set_region_attr afterward */
-	ret = IMP_OSD_RegisterRgn((IMPRgnHandle)handle, grp, NULL);
-	if (ret != 0)
-		HAL_LOG_ERR("IMP_OSD_RegisterRgn(%d, %d) failed: %d",
-			    handle, grp, ret);
+    /* Register with NULL group attributes; caller sets them via
+     * osd_show_region or osd_set_region_attr afterward */
+    ret = IMP_OSD_RegisterRgn((IMPRgnHandle)handle, grp, NULL);
+    if (ret != 0)
+        HAL_LOG_ERR("IMP_OSD_RegisterRgn(%d, %d) failed: %d", handle, grp, ret);
 
-	return ret;
+    return ret;
 }
 
 /* ================================================================
@@ -220,15 +220,14 @@ int hal_osd_register_region(void *ctx, int handle, int grp)
 
 int hal_osd_unregister_region(void *ctx, int handle, int grp)
 {
-	(void)ctx;
-	int ret;
+    (void)ctx;
+    int ret;
 
-	ret = IMP_OSD_UnRegisterRgn((IMPRgnHandle)handle, grp);
-	if (ret != 0)
-		HAL_LOG_ERR("IMP_OSD_UnRegisterRgn(%d, %d) failed: %d",
-			    handle, grp, ret);
+    ret = IMP_OSD_UnRegisterRgn((IMPRgnHandle)handle, grp);
+    if (ret != 0)
+        HAL_LOG_ERR("IMP_OSD_UnRegisterRgn(%d, %d) failed: %d", handle, grp, ret);
 
-	return ret;
+    return ret;
 }
 
 /* ================================================================
@@ -238,23 +237,22 @@ int hal_osd_unregister_region(void *ctx, int handle, int grp)
  * region. Used for changing region type, position, size, or data.
  * ================================================================ */
 
-int hal_osd_set_region_attr(void *ctx, int handle,
-			    const rss_osd_region_t *attr)
+int hal_osd_set_region_attr(void *ctx, int handle, const rss_osd_region_t *attr)
 {
-	(void)ctx;
-	IMPOSDRgnAttr rgn_attr;
-	int ret;
+    (void)ctx;
+    IMPOSDRgnAttr rgn_attr;
+    int ret;
 
-	if (!attr)
-		return -EINVAL;
+    if (!attr)
+        return -EINVAL;
 
-	hal_build_rgn_attr(&rgn_attr, attr);
+    hal_build_rgn_attr(&rgn_attr, attr);
 
-	ret = IMP_OSD_SetRgnAttr((IMPRgnHandle)handle, &rgn_attr);
-	if (ret != 0)
-		HAL_LOG_ERR("IMP_OSD_SetRgnAttr(%d) failed: %d", handle, ret);
+    ret = IMP_OSD_SetRgnAttr((IMPRgnHandle)handle, &rgn_attr);
+    if (ret != 0)
+        HAL_LOG_ERR("IMP_OSD_SetRgnAttr(%d) failed: %d", handle, ret);
 
-	return ret;
+    return ret;
 }
 
 /* ================================================================
@@ -267,22 +265,21 @@ int hal_osd_set_region_attr(void *ctx, int handle,
 
 int hal_osd_update_region_data(void *ctx, int handle, const uint8_t *data)
 {
-	(void)ctx;
-	IMPOSDRgnAttrData attr_data;
-	int ret;
+    (void)ctx;
+    IMPOSDRgnAttrData attr_data;
+    int ret;
 
-	if (!data)
-		return -EINVAL;
+    if (!data)
+        return -EINVAL;
 
-	memset(&attr_data, 0, sizeof(attr_data));
-	attr_data.picData.pData = (void *)data;
+    memset(&attr_data, 0, sizeof(attr_data));
+    attr_data.picData.pData = (void *)data;
 
-	ret = IMP_OSD_UpdateRgnAttrData((IMPRgnHandle)handle, &attr_data);
-	if (ret != 0)
-		HAL_LOG_ERR("IMP_OSD_UpdateRgnAttrData(%d) failed: %d",
-			    handle, ret);
+    ret = IMP_OSD_UpdateRgnAttrData((IMPRgnHandle)handle, &attr_data);
+    if (ret != 0)
+        HAL_LOG_ERR("IMP_OSD_UpdateRgnAttrData(%d) failed: %d", handle, ret);
 
-	return ret;
+    return ret;
 }
 
 /* ================================================================
@@ -294,40 +291,39 @@ int hal_osd_update_region_data(void *ctx, int handle, const uint8_t *data)
 
 int hal_osd_show_region(void *ctx, int handle, int grp, int show)
 {
-	(void)ctx;
-	IMPOSDGrpRgnAttr gattr;
-	int ret;
+    (void)ctx;
+    IMPOSDGrpRgnAttr gattr;
+    int ret;
 
-	memset(&gattr, 0, sizeof(gattr));
+    memset(&gattr, 0, sizeof(gattr));
 
-	gattr.show     = show ? 1 : 0;
-	gattr.offPos.x = 0;
-	gattr.offPos.y = 0;
-	gattr.scalex   = 1.0f;
-	gattr.scaley   = 1.0f;
-	gattr.gAlphaEn = 1;
-	gattr.fgAlhpa  = 255;
-	gattr.bgAlhpa  = 0;
-	gattr.layer    = 0;
+    gattr.show = show ? 1 : 0;
+    gattr.offPos.x = 0;
+    gattr.offPos.y = 0;
+    gattr.scalex = 1.0f;
+    gattr.scaley = 1.0f;
+    gattr.gAlphaEn = 1;
+    gattr.fgAlhpa = 255;
+    gattr.bgAlhpa = 0;
+    gattr.layer = 0;
 
-	ret = IMP_OSD_SetGrpRgnAttr((IMPRgnHandle)handle, grp, &gattr);
-	if (ret != 0) {
-		HAL_LOG_ERR("IMP_OSD_SetGrpRgnAttr(%d, %d) failed: %d",
-			    handle, grp, ret);
-		return ret;
-	}
+    ret = IMP_OSD_SetGrpRgnAttr((IMPRgnHandle)handle, grp, &gattr);
+    if (ret != 0) {
+        HAL_LOG_ERR("IMP_OSD_SetGrpRgnAttr(%d, %d) failed: %d", handle, grp, ret);
+        return ret;
+    }
 
-	/* Start the OSD group when showing a region. IMP_OSD_Start is
-	 * idempotent -- calling it on an already-started group is safe. */
-	if (show) {
-		ret = IMP_OSD_Start(grp);
-		if (ret != 0) {
-			HAL_LOG_ERR("IMP_OSD_Start(%d) failed: %d", grp, ret);
-			return ret;
-		}
-	}
+    /* Start the OSD group when showing a region. IMP_OSD_Start is
+     * idempotent -- calling it on an already-started group is safe. */
+    if (show) {
+        ret = IMP_OSD_Start(grp);
+        if (ret != 0) {
+            HAL_LOG_ERR("IMP_OSD_Start(%d) failed: %d", grp, ret);
+            return ret;
+        }
+    }
 
-	return 0;
+    return 0;
 }
 
 /* ================================================================
@@ -338,77 +334,75 @@ int hal_osd_show_region(void *ctx, int handle, int grp, int show)
 
 static rss_osd_type_t hal_reverse_osd_type(IMPOsdRgnType type)
 {
-	if (type == OSD_REG_PIC)
-		return RSS_OSD_PIC;
-	if (type == OSD_REG_COVER)
-		return RSS_OSD_COVER;
+    if (type == OSD_REG_PIC)
+        return RSS_OSD_PIC;
+    if (type == OSD_REG_COVER)
+        return RSS_OSD_COVER;
 #if defined(PLATFORM_T31) || defined(HAL_EXTENDED_OSD)
-	if (type == OSD_REG_PIC_RMEM)
-		return RSS_OSD_PIC_RMEM;
+    if (type == OSD_REG_PIC_RMEM)
+        return RSS_OSD_PIC_RMEM;
 #endif
-	return RSS_OSD_PIC;
+    return RSS_OSD_PIC;
 }
 
 int hal_osd_get_region_attr(void *ctx, int handle, rss_osd_region_t *attr)
 {
-	(void)ctx;
-	IMPOSDRgnAttr rgn_attr;
-	int ret;
+    (void)ctx;
+    IMPOSDRgnAttr rgn_attr;
+    int ret;
 
-	if (!attr)
-		return -EINVAL;
+    if (!attr)
+        return -EINVAL;
 
-	ret = IMP_OSD_GetRgnAttr((IMPRgnHandle)handle, &rgn_attr);
-	if (ret != 0) {
-		HAL_LOG_ERR("IMP_OSD_GetRgnAttr(%d) failed: %d", handle, ret);
-		return ret;
-	}
+    ret = IMP_OSD_GetRgnAttr((IMPRgnHandle)handle, &rgn_attr);
+    if (ret != 0) {
+        HAL_LOG_ERR("IMP_OSD_GetRgnAttr(%d) failed: %d", handle, ret);
+        return ret;
+    }
 
-	memset(attr, 0, sizeof(*attr));
-	attr->type   = hal_reverse_osd_type(rgn_attr.type);
-	attr->x      = rgn_attr.rect.p0.x;
-	attr->y      = rgn_attr.rect.p0.y;
-	attr->width  = rgn_attr.rect.p1.x - rgn_attr.rect.p0.x + 1;
-	attr->height = rgn_attr.rect.p1.y - rgn_attr.rect.p0.y + 1;
+    memset(attr, 0, sizeof(*attr));
+    attr->type = hal_reverse_osd_type(rgn_attr.type);
+    attr->x = rgn_attr.rect.p0.x;
+    attr->y = rgn_attr.rect.p0.y;
+    attr->width = rgn_attr.rect.p1.x - rgn_attr.rect.p0.x + 1;
+    attr->height = rgn_attr.rect.p1.y - rgn_attr.rect.p0.y + 1;
 
-	if (attr->type == RSS_OSD_PIC || attr->type == RSS_OSD_PIC_RMEM) {
-		attr->bitmap_data = (const uint8_t *)rgn_attr.data.picData.pData;
-		attr->bitmap_fmt  = RSS_PIXFMT_BGRA;
-	} else if (attr->type == RSS_OSD_COVER) {
-		attr->cover_color = rgn_attr.data.coverData.color;
-	}
+    if (attr->type == RSS_OSD_PIC || attr->type == RSS_OSD_PIC_RMEM) {
+        attr->bitmap_data = (const uint8_t *)rgn_attr.data.picData.pData;
+        attr->bitmap_fmt = RSS_PIXFMT_BGRA;
+    } else if (attr->type == RSS_OSD_COVER) {
+        attr->cover_color = rgn_attr.data.coverData.color;
+    }
 
-	return 0;
+    return 0;
 }
 
 /* ================================================================
  * hal_osd_get_group_region_attr
  * ================================================================ */
 
-int hal_osd_get_group_region_attr(void *ctx, int handle, int grp,
-				  rss_osd_region_t *attr)
+int hal_osd_get_group_region_attr(void *ctx, int handle, int grp, rss_osd_region_t *attr)
 {
-	(void)ctx;
-	IMPOSDGrpRgnAttr gattr;
-	int ret;
+    (void)ctx;
+    IMPOSDGrpRgnAttr gattr;
+    int ret;
 
-	if (!attr)
-		return -EINVAL;
+    if (!attr)
+        return -EINVAL;
 
-	ret = IMP_OSD_GetGrpRgnAttr((IMPRgnHandle)handle, grp, &gattr);
-	if (ret != 0) {
-		HAL_LOG_ERR("IMP_OSD_GetGrpRgnAttr(%d, %d) failed: %d",
-			    handle, grp, ret);
-		return ret;
-	}
+    ret = IMP_OSD_GetGrpRgnAttr((IMPRgnHandle)handle, grp, &gattr);
+    if (ret != 0) {
+        HAL_LOG_ERR("IMP_OSD_GetGrpRgnAttr(%d, %d) failed: %d", handle, grp, ret);
+        return ret;
+    }
 
-	/* Fill alpha and layer info into the attr struct */
-	attr->global_alpha_en = (gattr.gAlphaEn != 0);
-	attr->fg_alpha        = gattr.fgAlhpa;
-	attr->bg_alpha        = gattr.bgAlhpa;
-	attr->layer           = gattr.layer;
+    /* Fill alpha and layer info into the attr struct */
+    attr->global_alpha_en = (gattr.gAlphaEn != 0);
+    attr->fg_alpha = gattr.fgAlhpa;
+    attr->bg_alpha = gattr.bgAlhpa;
+    attr->layer = gattr.layer;
 
-	return 0;
+    return 0;
 }
 
 /* ================================================================
@@ -417,7 +411,7 @@ int hal_osd_get_group_region_attr(void *ctx, int handle, int grp,
 
 int hal_osd_show(void *ctx, int handle, int grp, bool show)
 {
-	return hal_osd_show_region(ctx, handle, grp, show ? 1 : 0);
+    return hal_osd_show_region(ctx, handle, grp, show ? 1 : 0);
 }
 
 /* ================================================================
@@ -426,20 +420,20 @@ int hal_osd_show(void *ctx, int handle, int grp, bool show)
 
 int hal_osd_start(void *ctx, int grp)
 {
-	(void)ctx;
-	int ret = IMP_OSD_Start(grp);
-	if (ret != 0)
-		HAL_LOG_ERR("IMP_OSD_Start(%d) failed: %d", grp, ret);
-	return ret;
+    (void)ctx;
+    int ret = IMP_OSD_Start(grp);
+    if (ret != 0)
+        HAL_LOG_ERR("IMP_OSD_Start(%d) failed: %d", grp, ret);
+    return ret;
 }
 
 int hal_osd_stop(void *ctx, int grp)
 {
-	(void)ctx;
-	int ret = IMP_OSD_Stop(grp);
-	if (ret != 0)
-		HAL_LOG_ERR("IMP_OSD_Stop(%d) failed: %d", grp, ret);
-	return ret;
+    (void)ctx;
+    int ret = IMP_OSD_Stop(grp);
+    if (ret != 0)
+        HAL_LOG_ERR("IMP_OSD_Stop(%d) failed: %d", grp, ret);
+    return ret;
 }
 
 /* ================================================================
@@ -449,33 +443,29 @@ int hal_osd_stop(void *ctx, int grp)
  * have a timestamp variant, falls back to regular SetRgnAttr.
  * ================================================================ */
 
-int hal_osd_set_region_attr_with_timestamp(void *ctx, int handle,
-					   const rss_osd_region_t *attr,
-					   uint64_t timestamp)
+int hal_osd_set_region_attr_with_timestamp(void *ctx, int handle, const rss_osd_region_t *attr,
+                                           uint64_t timestamp)
 {
-	(void)ctx;
-	IMPOSDRgnAttr rgn_attr;
-	int ret;
+    (void)ctx;
+    IMPOSDRgnAttr rgn_attr;
+    int ret;
 
-	if (!attr)
-		return -EINVAL;
+    if (!attr)
+        return -EINVAL;
 
-	hal_build_rgn_attr(&rgn_attr, attr);
+    hal_build_rgn_attr(&rgn_attr, attr);
 
-	/*
-	 * IMP_OSD_SetRgnAttrWithTimestamp is present in libimp.so on
-	 * all SDK versions.  The timestamp parameter is a pointer to
-	 * an opaque structure containing the 64-bit timestamp.
-	 */
-	(void)timestamp;
-	ret = IMP_OSD_SetRgnAttrWithTimestamp((IMPRgnHandle)handle,
-					      &rgn_attr,
-					      (void *)&timestamp);
-	if (ret != 0)
-		HAL_LOG_ERR("IMP_OSD_SetRgnAttrWithTimestamp(%d) failed: %d",
-			    handle, ret);
+    /*
+     * IMP_OSD_SetRgnAttrWithTimestamp is present in libimp.so on
+     * all SDK versions.  The timestamp parameter is a pointer to
+     * an opaque structure containing the 64-bit timestamp.
+     */
+    (void)timestamp;
+    ret = IMP_OSD_SetRgnAttrWithTimestamp((IMPRgnHandle)handle, &rgn_attr, (void *)&timestamp);
+    if (ret != 0)
+        HAL_LOG_ERR("IMP_OSD_SetRgnAttrWithTimestamp(%d) failed: %d", handle, ret);
 
-	return ret;
+    return ret;
 }
 
 /* ================================================================
@@ -490,20 +480,19 @@ int hal_osd_set_region_attr_with_timestamp(void *ctx, int handle,
 
 int hal_osd_attach_to_group(void *ctx, int handle, int grp)
 {
-	(void)ctx;
-	int ret;
+    (void)ctx;
+    int ret;
 
-	/*
-	 * IMP_OSD_AttachToGroup may not be in all SDK header versions.
-	 * Fall back to RegisterRgn if AttachToGroup is not available.
-	 * Both achieve the same effect: bind a region handle to a group.
-	 */
-	ret = IMP_OSD_RegisterRgn((IMPRgnHandle)handle, grp, NULL);
-	if (ret != 0)
-		HAL_LOG_ERR("IMP_OSD_RegisterRgn(%d, %d) [attach] failed: %d",
-			    handle, grp, ret);
+    /*
+     * IMP_OSD_AttachToGroup may not be in all SDK header versions.
+     * Fall back to RegisterRgn if AttachToGroup is not available.
+     * Both achieve the same effect: bind a region handle to a group.
+     */
+    ret = IMP_OSD_RegisterRgn((IMPRgnHandle)handle, grp, NULL);
+    if (ret != 0)
+        HAL_LOG_ERR("IMP_OSD_RegisterRgn(%d, %d) [attach] failed: %d", handle, grp, ret);
 
-	return ret;
+    return ret;
 }
 
 /* ================================================================
@@ -513,107 +502,119 @@ int hal_osd_attach_to_group(void *ctx, int handle, int grp)
  * Provides OSD burned directly into ISP output, before encoding.
  * ================================================================ */
 
-#if defined(PLATFORM_T23) || defined(PLATFORM_T32) || \
-    defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(PLATFORM_T23) || defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
 #include <imp/isp_osd.h>
 #define HAL_HAS_ISP_OSD
 #endif
 
 int hal_isp_osd_init(void *ctx)
 {
-	(void)ctx;
+    (void)ctx;
 #ifdef HAL_HAS_ISP_OSD
-	return IMP_OSD_Init_ISP();
+    return IMP_OSD_Init_ISP();
 #else
-	return RSS_ERR_NOTSUP;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_osd_exit(void *ctx)
 {
-	(void)ctx;
+    (void)ctx;
 #ifdef HAL_HAS_ISP_OSD
-	IMP_OSD_Exit_ISP();
-	return RSS_OK;
+    IMP_OSD_Exit_ISP();
+    return RSS_OK;
 #else
-	return RSS_ERR_NOTSUP;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_osd_set_pool_size(void *ctx, int size)
 {
-	(void)ctx;
+    (void)ctx;
 #ifdef HAL_HAS_ISP_OSD
-	return IMP_OSD_SetPoolSize_ISP(size);
+    return IMP_OSD_SetPoolSize_ISP(size);
 #else
-	(void)size;
-	return RSS_ERR_NOTSUP;
+    (void)size;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_osd_create_region(void *ctx, int chn, void *attr)
 {
-	(void)ctx;
+    (void)ctx;
 #ifdef HAL_HAS_ISP_OSD
-	if (!attr) return RSS_ERR_INVAL;
-	return IMP_OSD_CreateRgn_ISP(chn, (IMPIspOsdAttrAsm *)attr);
+    if (!attr)
+        return RSS_ERR_INVAL;
+    return IMP_OSD_CreateRgn_ISP(chn, (IMPIspOsdAttrAsm *)attr);
 #else
-	(void)chn; (void)attr;
-	return RSS_ERR_NOTSUP;
+    (void)chn;
+    (void)attr;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_osd_destroy_region(void *ctx, int chn, int handle)
 {
-	(void)ctx;
+    (void)ctx;
 #ifdef HAL_HAS_ISP_OSD
-	return IMP_OSD_DestroyRgn_ISP(chn, handle);
+    return IMP_OSD_DestroyRgn_ISP(chn, handle);
 #else
-	(void)chn; (void)handle;
-	return RSS_ERR_NOTSUP;
+    (void)chn;
+    (void)handle;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_osd_set_region_attr(void *ctx, int chn, int handle, void *attr)
 {
-	(void)ctx;
+    (void)ctx;
 #ifdef HAL_HAS_ISP_OSD
-	if (!attr) return RSS_ERR_INVAL;
-	return IMP_OSD_SetRgnAttr_PicISP(chn, handle, (IMPIspOsdAttrAsm *)attr);
+    if (!attr)
+        return RSS_ERR_INVAL;
+    return IMP_OSD_SetRgnAttr_PicISP(chn, handle, (IMPIspOsdAttrAsm *)attr);
 #else
-	(void)chn; (void)handle; (void)attr;
-	return RSS_ERR_NOTSUP;
+    (void)chn;
+    (void)handle;
+    (void)attr;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_osd_get_region_attr(void *ctx, int chn, int handle, void *attr)
 {
-	(void)ctx;
+    (void)ctx;
 #ifdef HAL_HAS_ISP_OSD
-	if (!attr) return RSS_ERR_INVAL;
-	return IMP_OSD_GetRgnAttr_ISPPic(chn, handle, (IMPIspOsdAttrAsm *)attr);
+    if (!attr)
+        return RSS_ERR_INVAL;
+    return IMP_OSD_GetRgnAttr_ISPPic(chn, handle, (IMPIspOsdAttrAsm *)attr);
 #else
-	(void)chn; (void)handle; (void)attr;
-	return RSS_ERR_NOTSUP;
+    (void)chn;
+    (void)handle;
+    (void)attr;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_osd_show_region(void *ctx, int chn, int handle, int show)
 {
-	(void)ctx;
+    (void)ctx;
 #ifdef HAL_HAS_ISP_OSD
-	return IMP_OSD_ShowRgn_ISP(chn, handle, show);
+    return IMP_OSD_ShowRgn_ISP(chn, handle, show);
 #else
-	(void)chn; (void)handle; (void)show;
-	return RSS_ERR_NOTSUP;
+    (void)chn;
+    (void)handle;
+    (void)show;
+    return RSS_ERR_NOTSUP;
 #endif
 }
 
 int hal_isp_osd_update_region_data(void *ctx, int chn, int handle, void *data)
 {
-	(void)ctx;
-	/* UpdateRgnAttrData_ISP exists in .so but not in headers.
-	 * Use isp_osd_set_region_attr to update data instead. */
-	(void)chn; (void)handle; (void)data;
-	return RSS_ERR_NOTSUP;
+    (void)ctx;
+    /* UpdateRgnAttrData_ISP exists in .so but not in headers.
+     * Use isp_osd_set_region_attr to update data instead. */
+    (void)chn;
+    (void)handle;
+    (void)data;
+    return RSS_ERR_NOTSUP;
 }
