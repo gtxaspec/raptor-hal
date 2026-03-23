@@ -25,6 +25,28 @@
 
 #include "hal_internal.h"
 
+#ifdef __mips__
+#define _GNU_SOURCE
+#include <sys/cachectl.h>
+#endif
+
+/* Extern declarations for functions present in libimp.so
+ * but missing from SDK headers */
+extern void *IMP_Alloc(uint32_t size);
+extern void  IMP_Free(void *ptr);
+extern int   IMP_FlushCache(void *ptr, uint32_t size);
+extern void *IMP_Phys_to_Virt(uint32_t phys_addr);
+extern uint32_t IMP_Virt_to_Phys(void *virt_addr);
+
+#if defined(PLATFORM_T23) || defined(PLATFORM_T31) || \
+    defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+extern void *IMP_PoolAlloc(uint32_t pool_id, uint32_t size);
+extern void  IMP_PoolFree(void *ptr);
+extern int   IMP_PoolFlushCache(void *ptr, uint32_t size);
+extern void *IMP_PoolPhys_to_Virt(uint32_t phys_addr);
+extern uint32_t IMP_PoolVirt_to_Phys(void *virt_addr);
+#endif
+
 /* ================================================================
  * GENERAL ALLOCATION
  *

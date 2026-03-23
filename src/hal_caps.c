@@ -16,7 +16,7 @@
  * T20
  * ═══════════════════════════════════════════════════════════════════════ */
 #if defined(PLATFORM_T20)
-static const rss_hal_caps_t g_caps = {
+const rss_hal_caps_t g_hal_caps = {
     /* Encoder */
     .has_h265               = false,
     .has_rotation           = false,
@@ -76,7 +76,7 @@ static const rss_hal_caps_t g_caps = {
  * T21
  * ═══════════════════════════════════════════════════════════════════════ */
 #elif defined(PLATFORM_T21)
-static const rss_hal_caps_t g_caps = {
+const rss_hal_caps_t g_hal_caps = {
     /* Encoder */
     .has_h265               = false,   /* declared but marked "Unsupport" */
     .has_rotation           = false,
@@ -136,7 +136,7 @@ static const rss_hal_caps_t g_caps = {
  * T23
  * ═══════════════════════════════════════════════════════════════════════ */
 #elif defined(PLATFORM_T23)
-static const rss_hal_caps_t g_caps = {
+const rss_hal_caps_t g_hal_caps = {
     /* Encoder */
     .has_h265               = false,   /* declared but marked "Unsupport" */
     .has_rotation           = false,
@@ -196,7 +196,7 @@ static const rss_hal_caps_t g_caps = {
  * T30
  * ═══════════════════════════════════════════════════════════════════════ */
 #elif defined(PLATFORM_T30)
-static const rss_hal_caps_t g_caps = {
+const rss_hal_caps_t g_hal_caps = {
     /* Encoder */
     .has_h265               = true,
     .has_rotation           = false,
@@ -256,7 +256,7 @@ static const rss_hal_caps_t g_caps = {
  * T31
  * ═══════════════════════════════════════════════════════════════════════ */
 #elif defined(PLATFORM_T31)
-static const rss_hal_caps_t g_caps = {
+const rss_hal_caps_t g_hal_caps = {
     /* Encoder */
     .has_h265               = true,
     .has_rotation           = true,
@@ -316,7 +316,7 @@ static const rss_hal_caps_t g_caps = {
  * T32
  * ═══════════════════════════════════════════════════════════════════════ */
 #elif defined(PLATFORM_T32)
-static const rss_hal_caps_t g_caps = {
+const rss_hal_caps_t g_hal_caps = {
     /* Encoder */
     .has_h265               = true,
     .has_rotation           = false,
@@ -376,7 +376,7 @@ static const rss_hal_caps_t g_caps = {
  * T40
  * ═══════════════════════════════════════════════════════════════════════ */
 #elif defined(PLATFORM_T40)
-static const rss_hal_caps_t g_caps = {
+const rss_hal_caps_t g_hal_caps = {
     /* Encoder */
     .has_h265               = true,
     .has_rotation           = false,
@@ -436,7 +436,7 @@ static const rss_hal_caps_t g_caps = {
  * T41
  * ═══════════════════════════════════════════════════════════════════════ */
 #elif defined(PLATFORM_T41)
-static const rss_hal_caps_t g_caps = {
+const rss_hal_caps_t g_hal_caps = {
     /* Encoder */
     .has_h265               = true,
     .has_rotation           = false,
@@ -501,5 +501,5 @@ static const rss_hal_caps_t g_caps = {
  * ═══════════════════════════════════════════════════════════════════════ */
 
 const rss_hal_caps_t *hal_caps_get(void) {
-    return &g_caps;
+    return &g_hal_caps;
 }

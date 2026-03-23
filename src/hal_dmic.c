@@ -289,7 +289,12 @@ int hal_dmic_disable_aec_ref_frame(void *ctx, int dev, int chn,
                                    int ao_dev, int ao_chn)
 {
 	(void)ctx;
+#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
 	return IMP_DMIC_DisableAecRefFrame(dev, chn, ao_dev, ao_chn);
+#else
+	(void)dev; (void)chn; (void)ao_dev; (void)ao_chn;
+	return RSS_ERR_NOTSUP;
+#endif
 }
 
 int hal_dmic_get_pub_attr(void *ctx, int dev, void *attr)

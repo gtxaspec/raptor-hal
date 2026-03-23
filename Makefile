@@ -87,7 +87,10 @@ SRCS := src/hal_caps.c \
         src/hal_isp.c \
         src/hal_audio.c \
         src/hal_osd.c \
-        src/hal_gpio.c
+        src/hal_gpio.c \
+        src/hal_ivs.c \
+        src/hal_dmic.c \
+        src/hal_memory.c
 
 OBJS := $(SRCS:.c=.o)
 DEPS := $(SRCS:.c=.d)
