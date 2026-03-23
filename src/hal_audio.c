@@ -17,7 +17,9 @@
 #include "hal_internal.h"
 
 /* Audio device and channel constants */
-#define AI_DEV_ID   0
+/* T31-X: analog mic is device 1; T31-N: device 0
+ * TODO: make this configurable via rss_audio_config_t */
+#define AI_DEV_ID   1
 #define AI_CHN_ID   0
 #define AO_DEV_ID   0
 #define AO_CHN_ID   0
