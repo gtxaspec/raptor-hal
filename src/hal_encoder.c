@@ -405,6 +405,28 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
 	rc = hal_translate_rc_mode(cfg->rc_mode);
 	init_qp = (cfg->init_qp >= 0) ? cfg->init_qp : -1;
 
+	/* JPEG: SetDefaultParam must be called with specific parameters.
+	 * fps=24, gop=0, quality as the QP param, bitrate=0.
+	 * CreateGroup is skipped for JPEG — it registers into the video group.
+	 * SetbufshareChn must be called BEFORE CreateChn. */
+	if (cfg->codec == RSS_CODEC_JPEG || cfg->codec == RSS_CODEC_MJPEG) {
+		int quality = (cfg->init_qp >= 0) ? cfg->init_qp : 25;
+		ret = IMP_Encoder_SetDefaultParam(
+			&chnAttr, profile, IMP_ENC_RC_MODE_FIXQP,
+			cfg->width, cfg->height,
+			24, 1,      /* fps_num=24, fps_den=1 */
+			0,          /* gop_length=0 */
+			0,          /* uMaxSameSenceCnt=0 */
+			quality,    /* iInitialQP = JPEG quality */
+			0           /* uTargetBitRate=0 */
+		);
+		if (ret != 0) {
+			HAL_LOG_ERR("SetDefaultParam (JPEG) failed: %d", ret);
+			return ret;
+		}
+		return IMP_Encoder_CreateChn(chn, &chnAttr);
+	}
+
 	/*
 	 * SetDefaultParam signature:
 	 *   T31/T40/T41: (..., uMaxSameSenceCnt, iInitialQP, uTargetBitRate)
