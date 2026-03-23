@@ -495,8 +495,8 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
 			chnAttr.rcAttr.attrRcMode.attrCbr.iMinQP = (int16_t)cfg->min_qp;
 		if (cfg->max_qp >= 0)
 			chnAttr.rcAttr.attrRcMode.attrCbr.iMaxQP = (int16_t)cfg->max_qp;
-		if (cfg->max_bitrate > 0)
-			chnAttr.rcAttr.attrRcMode.attrCbr.uTargetBitRate = cfg->bitrate;
+		if (cfg->bitrate > 0)
+			chnAttr.rcAttr.attrRcMode.attrCbr.uTargetBitRate = cfg->bitrate / 1000;
 		break;
 
 	case IMP_ENC_RC_MODE_VBR:
@@ -504,9 +504,10 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
 			chnAttr.rcAttr.attrRcMode.attrVbr.iMinQP = (int16_t)cfg->min_qp;
 		if (cfg->max_qp >= 0)
 			chnAttr.rcAttr.attrRcMode.attrVbr.iMaxQP = (int16_t)cfg->max_qp;
-		chnAttr.rcAttr.attrRcMode.attrVbr.uTargetBitRate = cfg->bitrate;
+		if (cfg->bitrate > 0)
+			chnAttr.rcAttr.attrRcMode.attrVbr.uTargetBitRate = cfg->bitrate / 1000;
 		if (cfg->max_bitrate > 0)
-			chnAttr.rcAttr.attrRcMode.attrVbr.uMaxBitRate = cfg->max_bitrate;
+			chnAttr.rcAttr.attrRcMode.attrVbr.uMaxBitRate = cfg->max_bitrate / 1000;
 		break;
 
 	case IMP_ENC_RC_MODE_CAPPED_VBR:
@@ -514,9 +515,10 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
 			chnAttr.rcAttr.attrRcMode.attrCappedVbr.iMinQP = (int16_t)cfg->min_qp;
 		if (cfg->max_qp >= 0)
 			chnAttr.rcAttr.attrRcMode.attrCappedVbr.iMaxQP = (int16_t)cfg->max_qp;
-		chnAttr.rcAttr.attrRcMode.attrCappedVbr.uTargetBitRate = cfg->bitrate;
+		if (cfg->bitrate > 0)
+			chnAttr.rcAttr.attrRcMode.attrCappedVbr.uTargetBitRate = cfg->bitrate / 1000;
 		if (cfg->max_bitrate > 0)
-			chnAttr.rcAttr.attrRcMode.attrCappedVbr.uMaxBitRate = cfg->max_bitrate;
+			chnAttr.rcAttr.attrRcMode.attrCappedVbr.uMaxBitRate = cfg->max_bitrate / 1000;
 		break;
 
 	case IMP_ENC_RC_MODE_CAPPED_QUALITY:
@@ -524,9 +526,10 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
 			chnAttr.rcAttr.attrRcMode.attrCappedQuality.iMinQP = (int16_t)cfg->min_qp;
 		if (cfg->max_qp >= 0)
 			chnAttr.rcAttr.attrRcMode.attrCappedQuality.iMaxQP = (int16_t)cfg->max_qp;
-		chnAttr.rcAttr.attrRcMode.attrCappedQuality.uTargetBitRate = cfg->bitrate;
+		if (cfg->bitrate > 0)
+			chnAttr.rcAttr.attrRcMode.attrCappedQuality.uTargetBitRate = cfg->bitrate / 1000;
 		if (cfg->max_bitrate > 0)
-			chnAttr.rcAttr.attrRcMode.attrCappedQuality.uMaxBitRate = cfg->max_bitrate;
+			chnAttr.rcAttr.attrRcMode.attrCappedQuality.uMaxBitRate = cfg->max_bitrate / 1000;
 		break;
 
 	default:
