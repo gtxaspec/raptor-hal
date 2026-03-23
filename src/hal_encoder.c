@@ -79,7 +79,11 @@ static IMPEncoderRcMode hal_translate_rc_mode(rss_rc_mode_t mode)
 	case RSS_RC_FIXQP:          return IMP_ENC_RC_MODE_FIXQP;
 	case RSS_RC_CBR:            return IMP_ENC_RC_MODE_CBR;
 	case RSS_RC_VBR:            return IMP_ENC_RC_MODE_VBR;
+#if defined(PLATFORM_T32)
+	case RSS_RC_SMART:          return IMP_ENC_RC_MODE_SMART;
+#else
 	case RSS_RC_SMART:          return IMP_ENC_RC_MODE_CAPPED_VBR;
+#endif
 	case RSS_RC_CAPPED_VBR:     return IMP_ENC_RC_MODE_CAPPED_VBR;
 	case RSS_RC_CAPPED_QUALITY: return IMP_ENC_RC_MODE_CAPPED_QUALITY;
 	default:                    return IMP_ENC_RC_MODE_CBR;
@@ -455,6 +459,30 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
 			chnAttr.rcAttr.attrRcMode.attrH264Vbr.maxQp = (uint32_t)cfg->max_qp;
 		if (cfg->max_bitrate > 0)
 			chnAttr.rcAttr.attrRcMode.attrH264Vbr.maxBitRate = cfg->max_bitrate / 1000;
+		break;
+	case ENC_RC_MODE_SMART:
+		if (cfg->min_qp >= 0)
+			chnAttr.rcAttr.attrRcMode.attrH264Smart.minQp = (uint8_t)cfg->min_qp;
+		if (cfg->max_qp >= 0)
+			chnAttr.rcAttr.attrRcMode.attrH264Smart.maxQp = (uint8_t)cfg->max_qp;
+		if (cfg->max_bitrate > 0)
+			chnAttr.rcAttr.attrRcMode.attrH264Smart.maxBitRate = cfg->max_bitrate / 1000;
+		break;
+	case ENC_RC_MODE_CVBR:
+		if (cfg->min_qp >= 0)
+			chnAttr.rcAttr.attrRcMode.attrH264CVbr.minQp = (uint8_t)cfg->min_qp;
+		if (cfg->max_qp >= 0)
+			chnAttr.rcAttr.attrRcMode.attrH264CVbr.maxQp = (uint8_t)cfg->max_qp;
+		if (cfg->max_bitrate > 0)
+			chnAttr.rcAttr.attrRcMode.attrH264CVbr.maxBitRate = cfg->max_bitrate / 1000;
+		break;
+	case ENC_RC_MODE_AVBR:
+		if (cfg->min_qp >= 0)
+			chnAttr.rcAttr.attrRcMode.attrH264AVbr.minQp = (uint8_t)cfg->min_qp;
+		if (cfg->max_qp >= 0)
+			chnAttr.rcAttr.attrRcMode.attrH264AVbr.maxQp = (uint8_t)cfg->max_qp;
+		if (cfg->max_bitrate > 0)
+			chnAttr.rcAttr.attrRcMode.attrH264AVbr.maxBitRate = cfg->max_bitrate / 1000;
 		break;
 	default:
 		break;

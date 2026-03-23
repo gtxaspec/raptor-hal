@@ -359,15 +359,16 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
 	if (ret != 0)
 		return ret;
 
-	exposure->total_gain    = expr_info.AeIntegrationTime;
 	exposure->exposure_time = expr_info.AeIntegrationTime;
-	exposure->ae_luma       = expr_info.AeAGain;
-	/*
-	 * Note: field names vary between T32/T40/T41 headers.  The above
-	 * is a best-effort mapping.  Concrete field names must be verified
-	 * against each SoC's header at integration time.  The important
-	 * thing is that all three values come from one SDK call.
-	 */
+#if defined(PLATFORM_T40) || defined(PLATFORM_T41)
+	/* T40/T41 AEExprInfo has TotalGainDb (read-only dB total gain) */
+	exposure->total_gain    = expr_info.TotalGainDb;
+#else
+	/* T32 AEExprInfo lacks TotalGainDb; approximate from analog gain */
+	exposure->total_gain    = expr_info.AeAGain;
+#endif
+	/* AE luma is not available in AEExprInfo; leave as 0 */
+	exposure->ae_luma       = 0;
 	return RSS_OK;
 #else
 	/* Gen1/Gen2: two separate calls */

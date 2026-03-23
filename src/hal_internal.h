@@ -116,6 +116,7 @@ struct IMPISPEVAttr {};    /* not defined on T40/T41 */
   #define IMP_ENC_RC_MODE_FIXQP          ENC_RC_MODE_FIXQP
   #define IMP_ENC_RC_MODE_CBR            ENC_RC_MODE_CBR
   #define IMP_ENC_RC_MODE_VBR            ENC_RC_MODE_VBR
+  #define IMP_ENC_RC_MODE_SMART          ENC_RC_MODE_SMART
   #define IMP_ENC_RC_MODE_CAPPED_VBR     ENC_RC_MODE_CVBR
   #define IMP_ENC_RC_MODE_CAPPED_QUALITY ENC_RC_MODE_AVBR
   #define IMP_ENC_GOP_CTRL_MODE_DEFAULT  0

@@ -1016,8 +1016,8 @@ err_out:
  * hal_deinit -- full hardware teardown.
  *
  * Order:
- *   1. IMP_System_Exit()
- *   2. IMP_ISP_DisableTuning()
+ *   1. IMP_ISP_DisableTuning()
+ *   2. IMP_System_Exit()
  *   3. IMP_ISP_DisableSensor()
  *   4. IMP_ISP_DelSensor()
  *   5. IMP_ISP_Close()
@@ -1031,13 +1031,13 @@ static int hal_deinit(void *ctx)
     if (!c)
         return -EINVAL;
 
-    /* Step 1: system exit */
-    ret = IMP_System_Exit();
+    /* Step 1: disable tuning -- must happen before System_Exit */
+    ret = IMP_ISP_DisableTuning();
     if (ret < 0 && first_err == 0)
         first_err = ret;
 
-    /* Step 2: disable tuning -- same signature on all SoCs */
-    ret = IMP_ISP_DisableTuning();
+    /* Step 2: system exit */
+    ret = IMP_System_Exit();
     if (ret < 0 && first_err == 0)
         first_err = ret;
 
