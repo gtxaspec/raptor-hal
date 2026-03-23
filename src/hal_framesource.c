@@ -87,8 +87,14 @@ int hal_fs_create_channel(void *ctx, int chn, const rss_fs_config_t *cfg)
 	attr.mirr_enable = 0;
 #endif
 
-	/* ── Scaler defaults (disabled — ISP handles sensor→output scaling) ── */
-	attr.scaler.enable = 0;
+	/* ── Scaler (required when output differs from sensor resolution) ── */
+	if (cfg->scaler.enable) {
+		attr.scaler.enable    = 1;
+		attr.scaler.outwidth  = cfg->scaler.out_width;
+		attr.scaler.outheight = cfg->scaler.out_height;
+	} else {
+		attr.scaler.enable = 0;
+	}
 
 	/* ── Create and set channel ── */
 	ret = IMP_FrameSource_CreateChn(chn, &attr);

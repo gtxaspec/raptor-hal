@@ -191,6 +191,13 @@ typedef struct {
 		int     w, h;
 	} fcrop;
 
+	/* Scaler (for sub-streams at lower resolution than sensor) */
+	struct {
+		bool    enable;
+		int     out_width;
+		int     out_height;
+	} scaler;
+
 	int             nr_vbs;     /* video buffer blocks; 0 = SDK default */
 	int             chn_type;   /* 0 = physical, 1 = extension */
 } rss_fs_config_t;
