@@ -273,7 +273,9 @@ int hal_osd_update_region_data(void *ctx, int handle, const uint8_t *data)
     if (!data)
         return -EINVAL;
 
-    memset(&attr_data, 0, sizeof(attr_data));
+    /* Do NOT memset — vendor sample leaves struct uninitialized,
+     * only sets picData.pData. Zeroing other union members may
+     * confuse the SDK's internal state. */
     attr_data.picData.pData = (void *)data;
 
     ret = IMP_OSD_UpdateRgnAttrData((IMPRgnHandle)handle, &attr_data);
@@ -406,7 +408,8 @@ int hal_osd_get_group_region_attr(void *ctx, int handle, int grp, rss_osd_region
 
 int hal_osd_show(void *ctx, int handle, int grp, bool show)
 {
-    return hal_osd_show_region(ctx, handle, grp, show ? 1 : 0);
+    (void)ctx;
+    return IMP_OSD_ShowRgn((IMPRgnHandle)handle, grp, show ? 1 : 0);
 }
 
 /* ================================================================
