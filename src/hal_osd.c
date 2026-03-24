@@ -162,14 +162,15 @@ int hal_osd_create_region(void *ctx, int *handle, const rss_osd_region_t *attr)
 
     hal_build_rgn_attr(&rgn_attr, attr);
 
-    /* CreateRgn returns a handle >= 0 on success, INVHANDLE (-1) on fail */
-    h = IMP_OSD_CreateRgn(&rgn_attr);
+    /* SDK requires CreateRgn(NULL), then SetRgnAttr separately.
+     * Passing attributes to CreateRgn can cause crashes. */
+    h = IMP_OSD_CreateRgn(NULL);
     if (h == INVHANDLE) {
         HAL_LOG_ERR("IMP_OSD_CreateRgn failed");
         return -EIO;
     }
 
-    /* Apply attributes to the newly created region */
+    /* Apply attributes after creation */
     int ret = IMP_OSD_SetRgnAttr(h, &rgn_attr);
     if (ret != 0) {
         HAL_LOG_ERR("IMP_OSD_SetRgnAttr(%d) failed: %d", h, ret);
@@ -313,15 +314,9 @@ int hal_osd_show_region(void *ctx, int handle, int grp, int show)
         return ret;
     }
 
-    /* Start the OSD group when showing a region. IMP_OSD_Start is
-     * idempotent -- calling it on an already-started group is safe. */
-    if (show) {
-        ret = IMP_OSD_Start(grp);
-        if (ret != 0) {
-            HAL_LOG_ERR("IMP_OSD_Start(%d) failed: %d", grp, ret);
-            return ret;
-        }
-    }
+    /* IMP_OSD_Start is called separately by the pipeline init (after
+     * System_Bind per SDK spec). Do NOT call it here — starting OSD
+     * from show_region can crash the encoder if called at wrong time. */
 
     return 0;
 }
