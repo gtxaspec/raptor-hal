@@ -331,27 +331,22 @@ int hal_audio_read_frame(void *ctx, int dev, int chn, rss_audio_frame_t *frame, 
  * FRAME RELEASE
  *
  * Releases an audio frame previously obtained by read_frame.
- * The IMPAudioFrame is stored in frame->_priv.
- *
- * Note: The vtable signature in hal_common.c does not have a frame
- * parameter for release, but we need the frame to call ReleaseFrame.
- * The audio_release_frame implementation must handle this.
- *
- * The vtable shows:
- *   int (*audio_read_frame)(void *ctx, int dev, int chn,
- *                           rss_audio_frame_t *frame, bool block);
- *
- * There is no separate audio_release_frame in the vtable externs,
- * so frame release happens implicitly.  We release in read_frame
- * on next call or provide an explicit cleanup path via _priv.
- *
- * Actually, looking at hal_common.c, there is no audio_release_frame
- * extern.  The consumer calls read_frame, processes data, and on the
- * next read_frame call or deinit, we release.  For safety, we store
- * the frame state and release on next read or deinit.
- *
- * For now, the consumer must free frame->_priv after use:
+ * The IMPAudioFrame is stored in frame->_priv by read_frame.
  * ================================================================ */
+
+int hal_audio_release_frame(void *ctx, int dev, int chn, rss_audio_frame_t *frame)
+{
+    (void)ctx;
+
+    if (!frame || !frame->_priv)
+        return RSS_OK;
+
+    IMP_AI_ReleaseFrame(dev, chn, frame->_priv);
+    free(frame->_priv);
+    frame->_priv = NULL;
+
+    return RSS_OK;
+}
 
 /* ================================================================
  * ENCODER REGISTRATION

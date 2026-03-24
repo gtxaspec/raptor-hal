@@ -698,6 +698,7 @@ typedef struct rss_hal_ops {
     int (*audio_enable_agc)(void *ctx, const rss_agc_config_t *cfg);
     int (*audio_disable_agc)(void *ctx);
     int (*audio_read_frame)(void *ctx, int dev, int chn, rss_audio_frame_t *frame, bool block);
+    int (*audio_release_frame)(void *ctx, int dev, int chn, rss_audio_frame_t *frame);
     int (*audio_register_encoder)(void *ctx, const rss_audio_encoder_t *enc, int *handle);
     int (*audio_unregister_encoder)(void *ctx, int handle);
 
