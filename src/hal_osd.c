@@ -154,7 +154,6 @@ int hal_osd_destroy_group(void *ctx, int grp)
 int hal_osd_create_region(void *ctx, int *handle, const rss_osd_region_t *attr)
 {
     (void)ctx;
-    IMPOSDRgnAttr rgn_attr;
     IMPRgnHandle h;
 
     if (!handle || !attr)
