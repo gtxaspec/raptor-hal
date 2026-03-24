@@ -160,22 +160,15 @@ int hal_osd_create_region(void *ctx, int *handle, const rss_osd_region_t *attr)
     if (!handle || !attr)
         return -EINVAL;
 
-    hal_build_rgn_attr(&rgn_attr, attr);
+    (void)attr;
 
-    /* SDK requires CreateRgn(NULL), then SetRgnAttr separately.
-     * Passing attributes to CreateRgn can cause crashes. */
+    /* SDK requires CreateRgn(NULL). SetRgnAttr must be called AFTER
+     * RegisterRgn per vendor sample — caller must call osd_set_region_attr
+     * after osd_register_region. */
     h = IMP_OSD_CreateRgn(NULL);
     if (h == INVHANDLE) {
         HAL_LOG_ERR("IMP_OSD_CreateRgn failed");
         return -EIO;
-    }
-
-    /* Apply attributes after creation */
-    int ret = IMP_OSD_SetRgnAttr(h, &rgn_attr);
-    if (ret != 0) {
-        HAL_LOG_ERR("IMP_OSD_SetRgnAttr(%d) failed: %d", h, ret);
-        IMP_OSD_DestroyRgn(h);
-        return ret;
     }
 
     *handle = (int)h;
@@ -306,7 +299,7 @@ int hal_osd_show_region(void *ctx, int handle, int grp, int show)
     gattr.scalex = 1.0f;
     gattr.scaley = 1.0f;
     gattr.gAlphaEn = 1;
-    gattr.fgAlhpa = 255;
+    gattr.fgAlhpa = 0xff;
     gattr.bgAlhpa = 0;
     gattr.layer = 0;
 
