@@ -770,7 +770,7 @@ typedef struct rss_hal_ops {
     int (*osd_unregister_region)(void *ctx, int handle, int grp);
     int (*osd_set_region_attr)(void *ctx, int handle, const rss_osd_region_t *attr);
     int (*osd_update_region_data)(void *ctx, int handle, const uint8_t *data);
-    int (*osd_show_region)(void *ctx, int handle, int grp, int show);
+    int (*osd_show_region)(void *ctx, int handle, int grp, int show, int layer);
     int (*osd_get_region_attr)(void *ctx, int handle, rss_osd_region_t *attr);
     int (*osd_get_group_region_attr)(void *ctx, int handle, int grp, rss_osd_region_t *attr);
     int (*osd_show)(void *ctx, int handle, int grp, bool show);

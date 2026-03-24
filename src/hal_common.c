@@ -287,7 +287,7 @@ extern int hal_osd_register_region(void *ctx, int handle, int grp);
 extern int hal_osd_unregister_region(void *ctx, int handle, int grp);
 extern int hal_osd_set_region_attr(void *ctx, int handle, const rss_osd_region_t *attr);
 extern int hal_osd_update_region_data(void *ctx, int handle, const uint8_t *data);
-extern int hal_osd_show_region(void *ctx, int handle, int grp, int show);
+extern int hal_osd_show_region(void *ctx, int handle, int grp, int show, int layer);
 extern int hal_osd_get_region_attr(void *ctx, int handle, rss_osd_region_t *attr);
 extern int hal_osd_get_group_region_attr(void *ctx, int handle, int grp, rss_osd_region_t *attr);
 extern int hal_osd_show(void *ctx, int handle, int grp, bool show);

@@ -285,7 +285,7 @@ int hal_osd_update_region_data(void *ctx, int handle, const uint8_t *data)
  * start the OSD group on first show.
  * ================================================================ */
 
-int hal_osd_show_region(void *ctx, int handle, int grp, int show)
+int hal_osd_show_region(void *ctx, int handle, int grp, int show, int layer)
 {
     (void)ctx;
     IMPOSDGrpRgnAttr gattr;
@@ -301,7 +301,7 @@ int hal_osd_show_region(void *ctx, int handle, int grp, int show)
     gattr.gAlphaEn = 1;
     gattr.fgAlhpa = 0xff;
     gattr.bgAlhpa = 0;
-    gattr.layer = 0;
+    gattr.layer = layer;
 
     ret = IMP_OSD_SetGrpRgnAttr((IMPRgnHandle)handle, grp, &gattr);
     if (ret != 0) {
