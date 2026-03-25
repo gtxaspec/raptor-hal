@@ -875,6 +875,11 @@ const rss_hal_ops_t *rss_hal_get_ops(rss_hal_ctx_t *ctx);
 #define RSS_HAL_CALL(ops, fn, ctx, ...)                                                            \
     ((ops)->fn ? (ops)->fn((ctx), ##__VA_ARGS__) : RSS_ERR_NOTSUP)
 
+/* System info (called once at startup, no vtable needed) */
+int rss_hal_get_imp_version(char *buf, int size);
+int rss_hal_get_sysutils_version(char *buf, int size);
+const char *rss_hal_get_cpu_info(void);
+
 #ifdef __cplusplus
 }
 #endif

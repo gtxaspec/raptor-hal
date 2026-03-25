@@ -93,6 +93,7 @@ struct IMPISPEVAttr {
 #include <imp/imp_isp.h>
 #include <imp/imp_audio.h>
 #include <imp/imp_osd.h>
+#include <sysutils/su_base.h>
 
 /* ═══════════════════════════════════════════════════════════════════════
  * 4. Type Name Normalization

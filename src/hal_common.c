@@ -1200,3 +1200,34 @@ const rss_hal_ops_t *rss_hal_get_ops(rss_hal_ctx_t *ctx)
 
     return ctx->ops;
 }
+
+/* ── System info (no vtable, called directly) ── */
+
+int rss_hal_get_imp_version(char *buf, int size)
+{
+    IMPVersion ver;
+    memset(&ver, 0, sizeof(ver));
+    int ret = IMP_System_GetVersion(&ver);
+    if (ret != 0)
+        return ret;
+    strncpy(buf, ver.aVersion, size - 1);
+    buf[size - 1] = '\0';
+    return 0;
+}
+
+int rss_hal_get_sysutils_version(char *buf, int size)
+{
+    SUVersion ver;
+    memset(&ver, 0, sizeof(ver));
+    int ret = SU_Base_GetVersion(&ver);
+    if (ret != 0)
+        return ret;
+    strncpy(buf, ver.chr, size - 1);
+    buf[size - 1] = '\0';
+    return 0;
+}
+
+const char *rss_hal_get_cpu_info(void)
+{
+    return IMP_System_GetCPUInfo();
+}
