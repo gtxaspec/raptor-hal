@@ -155,6 +155,9 @@ typedef struct {
 
     /* Buffer size hint; 0 = SDK default */
     uint32_t buf_size;
+
+    /* IVDC (ISP-VPU Direct Connect) — T23+ only, main channel only */
+    bool ivdc;
 } rss_video_config_t;
 
 /* Raw frame info (returned by fs_get_frame / fs_snap_frame) */

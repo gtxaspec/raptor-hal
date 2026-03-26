@@ -406,6 +406,13 @@ static int hal_enc_create_channel_old(int chn, const rss_video_config_t *cfg)
         break;
     }
 
+#if defined(PLATFORM_T23)
+    /* IVDC (ISP-VPU Direct Connect) — reduces rmem usage */
+    chnAttr.bEnableIvdc = cfg->ivdc;
+    if (cfg->ivdc)
+        HAL_LOG_INFO("enc chn %d: IVDC enabled", chn);
+#endif
+
     return IMP_Encoder_CreateChn(chn, &chnAttr);
 }
 #endif /* HAL_OLD_SDK */
@@ -580,6 +587,13 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
 
     /* GOP length — don't override uGopCtrlMode, SetDefaultParam sets it correctly */
     chnAttr.gopAttr.uGopLength = (uint16_t)cfg->gop_length;
+#endif
+
+#if defined(PLATFORM_T32) || defined(PLATFORM_T41)
+    /* IVDC (ISP-VPU Direct Connect) — reduces rmem usage */
+    chnAttr.bEnableIvdc = cfg->ivdc;
+    if (cfg->ivdc)
+        HAL_LOG_INFO("enc chn %d: IVDC enabled", chn);
 #endif
 
     return IMP_Encoder_CreateChn(chn, &chnAttr);
