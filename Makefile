@@ -49,7 +49,7 @@ HEADER_VER  := $(HEADER_VER_$(PLATFORM))
 HEADER_LANG := $(HEADER_LANG_$(PLATFORM))
 
 # Paths
-INGENIC_HEADERS ?= ../ingenic-headers
+INGENIC_HEADERS ?= ingenic-headers
 INGENIC_LIB     ?= ../ingenic-lib
 SDK_INCLUDE     := $(INGENIC_HEADERS)/$(PLATFORM)/$(HEADER_VER)/$(HEADER_LANG)
 
