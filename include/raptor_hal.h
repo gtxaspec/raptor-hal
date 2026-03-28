@@ -171,6 +171,34 @@ typedef struct {
     uint32_t size;
 } rss_frame_info_t;
 
+/* IVS motion detection parameters (RSS wrappers — HAL translates to SDK types) */
+#define RSS_IVS_MAX_ROI 52
+
+typedef struct {
+    int p0_x, p0_y; /* top-left */
+    int p1_x, p1_y; /* bottom-right */
+} rss_rect_t;
+
+typedef struct {
+    int sense[RSS_IVS_MAX_ROI]; /* per-ROI sensitivity: 0-4 (normal), 0-8 (panoramic) */
+    int skip_frame_count;
+    int width;
+    int height;
+    rss_rect_t roi[RSS_IVS_MAX_ROI];
+    int roi_count;
+} rss_ivs_move_param_t;
+
+typedef struct {
+    int skip_frame_count;
+    int sense; /* global sensitivity: 0-3 */
+    int width;
+    int height;
+} rss_ivs_base_move_param_t;
+
+typedef struct {
+    int ret_roi[RSS_IVS_MAX_ROI]; /* 0 = no motion, 1 = motion detected */
+} rss_ivs_move_result_t;
+
 /* Framesource channel configuration */
 typedef struct {
     uint16_t width;
