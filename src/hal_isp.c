@@ -285,9 +285,9 @@ int hal_isp_set_wb(void *ctx, const rss_wb_config_t *wb_cfg)
     if (!wb_cfg)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(PLATFORM_T41)
     /*
-     * T40/T41: Use Awb_SetRgbCoefft for manual gain control.
+     * T41: Use Awb_SetRgbCoefft for manual gain control.
      */
     if (wb_cfg->mode == RSS_WB_AUTO)
         return RSS_OK;
@@ -297,9 +297,9 @@ int hal_isp_set_wb(void *ctx, const rss_wb_config_t *wb_cfg)
     coefft.rgb_coefft_wb_b = wb_cfg->b_gain;
     coefft.rgb_coefft_wb_g = wb_cfg->g_gain;
     return IMP_ISP_Tuning_Awb_SetRgbCoefft(IMPVI_MAIN, &coefft);
-#elif defined(PLATFORM_T32)
+#elif defined(PLATFORM_T32) || defined(PLATFORM_T40)
     /*
-     * T32: Awb_SetRgbCoefft is absent, use SetAwbAttr instead.
+     * T32/T40: Use SetAwbAttr (no Awb_SetRgbCoefft in libimp).
      */
     if (wb_cfg->mode == RSS_WB_AUTO)
         return RSS_OK;
@@ -1732,7 +1732,7 @@ int hal_isp_get_awb_rgb_coefft(void *ctx, uint16_t *rgain, uint16_t *ggain, uint
     if (!rgain || !ggain || !bgain)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(PLATFORM_T41)
     IMPISPCOEFFTWB coefft;
     memset(&coefft, 0, sizeof(coefft));
     int ret = IMP_ISP_Tuning_Awb_GetRgbCoefft(IMPVI_MAIN, &coefft);
@@ -1742,6 +1742,12 @@ int hal_isp_get_awb_rgb_coefft(void *ctx, uint16_t *rgain, uint16_t *ggain, uint
     *ggain = coefft.rgb_coefft_wb_g;
     *bgain = coefft.rgb_coefft_wb_b;
     return RSS_OK;
+#elif defined(PLATFORM_T40)
+    /* T40: GetAwbAttr available but no RgbCoefft getter — return unsupported */
+    (void)rgain;
+    (void)ggain;
+    (void)bgain;
+    return RSS_ERR_NOTSUP;
 #elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                   \
     defined(PLATFORM_T30) || defined(PLATFORM_T31)
     IMPISPCOEFFTWB coefft;
