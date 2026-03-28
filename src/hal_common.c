@@ -885,6 +885,7 @@ static void hal_fill_sensor_info(IMPSensorInfo *info, const rss_sensor_config_t 
     /* T32/T40/T41: extended sensor info fields */
     info->rst_gpio = cfg->rst_gpio;
     info->pwdn_gpio = cfg->pwdn_gpio;
+    info->power_gpio = cfg->power_gpio;
     info->sensor_id = cfg->sensor_id;
     info->video_interface = (IMPSensorVinType)cfg->vin_type;
     info->mclk = (IMPSensorMclk)cfg->mclk;
