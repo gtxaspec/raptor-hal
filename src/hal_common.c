@@ -29,6 +29,7 @@ extern int hal_enc_poll(void *ctx, int chn, uint32_t timeout_ms);
 extern int hal_enc_get_frame(void *ctx, int chn, rss_frame_t *frame);
 extern int hal_enc_release_frame(void *ctx, int chn, rss_frame_t *frame);
 extern int hal_enc_request_idr(void *ctx, int chn);
+extern int hal_enc_set_rc_mode(void *ctx, int chn, rss_rc_mode_t mode, uint32_t bitrate);
 extern int hal_enc_set_bitrate(void *ctx, int chn, uint32_t bitrate);
 extern int hal_enc_set_gop(void *ctx, int chn, uint32_t gop_length);
 extern int hal_enc_set_fps(void *ctx, int chn, uint32_t fps_num, uint32_t fps_den);
@@ -547,6 +548,7 @@ static const rss_hal_ops_t g_ops = {
     .enc_get_frame = hal_enc_get_frame,
     .enc_release_frame = hal_enc_release_frame,
     .enc_request_idr = hal_enc_request_idr,
+    .enc_set_rc_mode = hal_enc_set_rc_mode,
     .enc_set_bitrate = hal_enc_set_bitrate,
     .enc_set_gop = hal_enc_set_gop,
     .enc_set_fps = hal_enc_set_fps,

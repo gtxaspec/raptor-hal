@@ -332,10 +332,18 @@ typedef struct {
     uint32_t ae_luma;
 } rss_exposure_t;
 
-/* White balance mode */
+/* White balance mode (matches ISP_CORE_WB_MODE_* from libimp) */
 typedef enum {
     RSS_WB_AUTO = 0,
     RSS_WB_MANUAL = 1,
+    RSS_WB_DAYLIGHT = 2,
+    RSS_WB_CLOUDY = 3,
+    RSS_WB_INCANDESCENT = 4,
+    RSS_WB_FLOURESCENT = 5,
+    RSS_WB_TWILIGHT = 6,
+    RSS_WB_SHADE = 7,
+    RSS_WB_WARM_FLOURESCENT = 8,
+    RSS_WB_CUSTOM = 9,
 } rss_wb_mode_t;
 
 /* White balance configuration */
@@ -538,6 +546,7 @@ typedef struct rss_hal_ops {
     int (*enc_get_frame)(void *ctx, int chn, rss_frame_t *frame);
     int (*enc_release_frame)(void *ctx, int chn, rss_frame_t *frame);
     int (*enc_request_idr)(void *ctx, int chn);
+    int (*enc_set_rc_mode)(void *ctx, int chn, rss_rc_mode_t mode, uint32_t bitrate);
     int (*enc_set_bitrate)(void *ctx, int chn, uint32_t bitrate);
     int (*enc_set_gop)(void *ctx, int chn, uint32_t gop_length);
     int (*enc_set_fps)(void *ctx, int chn, uint32_t fps_num, uint32_t fps_den);

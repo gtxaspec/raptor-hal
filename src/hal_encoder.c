@@ -920,6 +920,106 @@ int hal_enc_request_idr(void *ctx, int chn)
  * ══════════════════════════════════════════════════════════════════════ */
 
 /*
+ * hal_enc_set_rc_mode -- switch rate control mode at runtime.
+ *
+ * All platforms: IMP_Encoder_SetChnAttrRcMode(chn, &rcMode)
+ * Takes effect at next IDR frame.
+ */
+int hal_enc_set_rc_mode(void *ctx, int chn, rss_rc_mode_t mode, uint32_t bitrate)
+{
+    (void)ctx;
+
+    IMPEncoderRcMode vendor_mode = hal_translate_rc_mode(mode);
+    uint32_t bitrate_kbps = bitrate / 1000;
+    if (bitrate_kbps == 0)
+        bitrate_kbps = 2000; /* fallback */
+
+    /* Read current RC attrs to preserve QP bounds, deltas, step sizes.
+     * Only change the mode and bitrate fields. */
+    IMPEncoderAttrRcMode rcAttr;
+    int ret = IMP_Encoder_GetChnAttrRcMode(chn, &rcAttr);
+    if (ret != 0) {
+        HAL_LOG_ERR("GetChnAttrRcMode(%d) failed: %d", chn, ret);
+        return ret;
+    }
+    rcAttr.rcMode = vendor_mode;
+
+#if defined(HAL_NEW_SDK) && !defined(PLATFORM_T32)
+    /* New SDK (T31/T40/T41): patch bitrate in the target mode struct */
+    switch (vendor_mode) {
+    case IMP_ENC_RC_MODE_FIXQP:
+        if (rcAttr.attrFixQp.iInitialQP < 1)
+            rcAttr.attrFixQp.iInitialQP = 35;
+        break;
+    case IMP_ENC_RC_MODE_CBR:
+        rcAttr.attrCbr.uTargetBitRate = bitrate_kbps;
+        if (rcAttr.attrCbr.iMaxQP == 0) rcAttr.attrCbr.iMaxQP = 45;
+        if (rcAttr.attrCbr.iMinQP == 0) rcAttr.attrCbr.iMinQP = 15;
+        break;
+    case IMP_ENC_RC_MODE_VBR:
+        rcAttr.attrVbr.uTargetBitRate = bitrate_kbps;
+        rcAttr.attrVbr.uMaxBitRate = bitrate_kbps * 4 / 3;
+        if (rcAttr.attrVbr.iMaxQP == 0) rcAttr.attrVbr.iMaxQP = 45;
+        if (rcAttr.attrVbr.iMinQP == 0) rcAttr.attrVbr.iMinQP = 15;
+        break;
+    case IMP_ENC_RC_MODE_CAPPED_VBR:
+        rcAttr.attrCappedVbr.uTargetBitRate = bitrate_kbps;
+        rcAttr.attrCappedVbr.uMaxBitRate = bitrate_kbps * 4 / 3;
+        if (rcAttr.attrCappedVbr.iMaxQP == 0) rcAttr.attrCappedVbr.iMaxQP = 45;
+        if (rcAttr.attrCappedVbr.iMinQP == 0) rcAttr.attrCappedVbr.iMinQP = 15;
+        break;
+    case IMP_ENC_RC_MODE_CAPPED_QUALITY:
+        rcAttr.attrCappedQuality.uTargetBitRate = bitrate_kbps;
+        rcAttr.attrCappedQuality.uMaxBitRate = bitrate_kbps * 4 / 3;
+        if (rcAttr.attrCappedQuality.iMaxQP == 0) rcAttr.attrCappedQuality.iMaxQP = 45;
+        if (rcAttr.attrCappedQuality.iMinQP == 0) rcAttr.attrCappedQuality.iMinQP = 15;
+        break;
+    default:
+        break;
+    }
+#else
+    /* Old SDK (T20-T23) and T32: patch bitrate in H264-prefixed structs */
+    switch (vendor_mode) {
+    case ENC_RC_MODE_FIXQP:
+        if (rcAttr.attrH264FixQp.qp == 0) rcAttr.attrH264FixQp.qp = 35;
+        break;
+    case ENC_RC_MODE_CBR:
+        rcAttr.attrH264Cbr.outBitRate = bitrate_kbps;
+        if (rcAttr.attrH264Cbr.maxQp == 0) rcAttr.attrH264Cbr.maxQp = 45;
+        if (rcAttr.attrH264Cbr.minQp == 0) rcAttr.attrH264Cbr.minQp = 15;
+        if (rcAttr.attrH264Cbr.frmQPStep == 0) rcAttr.attrH264Cbr.frmQPStep = 3;
+        if (rcAttr.attrH264Cbr.gopQPStep == 0) rcAttr.attrH264Cbr.gopQPStep = 15;
+        break;
+    case ENC_RC_MODE_VBR:
+        rcAttr.attrH264Vbr.maxBitRate = bitrate_kbps;
+        if (rcAttr.attrH264Vbr.maxQp == 0) rcAttr.attrH264Vbr.maxQp = 45;
+        if (rcAttr.attrH264Vbr.minQp == 0) rcAttr.attrH264Vbr.minQp = 15;
+        if (rcAttr.attrH264Vbr.frmQPStep == 0) rcAttr.attrH264Vbr.frmQPStep = 3;
+        if (rcAttr.attrH264Vbr.gopQPStep == 0) rcAttr.attrH264Vbr.gopQPStep = 15;
+        break;
+    case ENC_RC_MODE_SMART:
+        rcAttr.attrH264Smart.maxBitRate = bitrate_kbps;
+        if (rcAttr.attrH264Smart.maxQp == 0) rcAttr.attrH264Smart.maxQp = 45;
+        if (rcAttr.attrH264Smart.minQp == 0) rcAttr.attrH264Smart.minQp = 15;
+        if (rcAttr.attrH264Smart.frmQPStep == 0) rcAttr.attrH264Smart.frmQPStep = 3;
+        if (rcAttr.attrH264Smart.gopQPStep == 0) rcAttr.attrH264Smart.gopQPStep = 15;
+        break;
+    default:
+        break;
+    }
+#endif
+
+    ret = IMP_Encoder_SetChnAttrRcMode(chn, &rcAttr);
+    if (ret != 0) {
+        HAL_LOG_ERR("SetChnAttrRcMode(%d, mode=%d) failed: %d", chn, (int)vendor_mode, ret);
+        return ret;
+    }
+    IMP_Encoder_RequestIDR(chn);
+    HAL_LOG_INFO("encoder chn %d: rc_mode -> %d, bitrate %u kbps", chn, (int)mode, bitrate_kbps);
+    return 0;
+}
+
+/*
  * hal_enc_set_bitrate -- change bitrate dynamically.
  *
  * New SDK: IMP_Encoder_SetChnBitRate(chn, target, max)

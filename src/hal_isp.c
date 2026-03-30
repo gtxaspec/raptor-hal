@@ -288,31 +288,39 @@ int hal_isp_set_wb(void *ctx, const rss_wb_config_t *wb_cfg)
 #if defined(PLATFORM_T41)
     /*
      * T41: Use Awb_SetRgbCoefft for manual gain control.
+     * Scene modes set via SetAwbAttr, manual gains via RgbCoefft.
      */
-    if (wb_cfg->mode == RSS_WB_AUTO)
-        return RSS_OK;
-    IMPISPCOEFFTWB coefft;
-    memset(&coefft, 0, sizeof(coefft));
-    coefft.rgb_coefft_wb_r = wb_cfg->r_gain;
-    coefft.rgb_coefft_wb_b = wb_cfg->b_gain;
-    coefft.rgb_coefft_wb_g = wb_cfg->g_gain;
-    return IMP_ISP_Tuning_Awb_SetRgbCoefft(IMPVI_MAIN, &coefft);
+    if (wb_cfg->mode == RSS_WB_MANUAL) {
+        IMPISPCOEFFTWB coefft;
+        memset(&coefft, 0, sizeof(coefft));
+        coefft.rgb_coefft_wb_r = wb_cfg->r_gain;
+        coefft.rgb_coefft_wb_b = wb_cfg->b_gain;
+        coefft.rgb_coefft_wb_g = wb_cfg->g_gain;
+        return IMP_ISP_Tuning_Awb_SetRgbCoefft(IMPVI_MAIN, &coefft);
+    }
+    {
+        IMPISPWBAttr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.mode = (enum isp_core_wb_mode)wb_cfg->mode;
+        return IMP_ISP_Tuning_SetAwbAttr(IMPVI_MAIN, &attr);
+    }
 #elif defined(PLATFORM_T32) || defined(PLATFORM_T40)
     /*
-     * T32/T40: Use SetAwbAttr (no Awb_SetRgbCoefft in libimp).
+     * T32/T40: Use SetAwbAttr for all modes.
      */
-    if (wb_cfg->mode == RSS_WB_AUTO)
-        return RSS_OK;
     {
         IMPISPWBAttr awb_attr;
         memset(&awb_attr, 0, sizeof(awb_attr));
+        awb_attr.mode = (enum isp_core_wb_mode)wb_cfg->mode;
+        awb_attr.gain_val.rgain = wb_cfg->r_gain;
+        awb_attr.gain_val.bgain = wb_cfg->b_gain;
         return IMP_ISP_Tuning_SetAwbAttr(IMPVI_MAIN, &awb_attr);
     }
 #else
-    /* Gen1/Gen2: SetWB takes IMPISPWB* */
+    /* Gen1/Gen2: SetWB takes IMPISPWB* — mode values match ISP_CORE_WB_MODE_* */
     IMPISPWB wb;
     memset(&wb, 0, sizeof(wb));
-    wb.mode = (wb_cfg->mode == RSS_WB_AUTO) ? ISP_CORE_WB_MODE_AUTO : ISP_CORE_WB_MODE_MANUAL;
+    wb.mode = (enum isp_core_wb_mode)wb_cfg->mode;
     wb.rgain = wb_cfg->r_gain;
     wb.bgain = wb_cfg->b_gain;
     return IMP_ISP_Tuning_SetWB(&wb);
@@ -881,7 +889,7 @@ int hal_isp_get_wb(void *ctx, rss_wb_config_t *wb_cfg)
     int ret = IMP_ISP_Tuning_GetAwbAttr(IMPVI_MAIN, &attr);
     if (ret != 0)
         return ret;
-    wb_cfg->mode = (attr.mode == ISP_CORE_WB_MODE_AUTO) ? RSS_WB_AUTO : RSS_WB_MANUAL;
+    wb_cfg->mode = (rss_wb_mode_t)attr.mode;
     wb_cfg->r_gain = attr.gain_val.rgain;
     wb_cfg->b_gain = attr.gain_val.bgain;
     return RSS_OK;
@@ -891,7 +899,7 @@ int hal_isp_get_wb(void *ctx, rss_wb_config_t *wb_cfg)
     int ret = IMP_ISP_Tuning_GetWB(&wb);
     if (ret != 0)
         return ret;
-    wb_cfg->mode = (wb.mode == ISP_CORE_WB_MODE_AUTO) ? RSS_WB_AUTO : RSS_WB_MANUAL;
+    wb_cfg->mode = (rss_wb_mode_t)wb.mode;
     wb_cfg->r_gain = wb.rgain;
     wb_cfg->b_gain = wb.bgain;
     return RSS_OK;
