@@ -387,7 +387,7 @@ int hal_audio_register_encoder(void *ctx, const rss_audio_encoder_t *enc, int *h
     memset(&sdk_enc, 0, sizeof(sdk_enc));
     sdk_enc.type = PT_MAX;
     sdk_enc.maxFrmLen = enc->max_frame_len;
-    strncpy(sdk_enc.name, enc->name, sizeof(sdk_enc.name) - 1);
+    snprintf(sdk_enc.name, sizeof(sdk_enc.name), "%s", enc->name);
     sdk_enc.openEncoder = enc->open;
     sdk_enc.encoderFrm = hal_aenc_encode_shim;
     sdk_enc.closeEncoder = enc->close;

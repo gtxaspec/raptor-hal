@@ -1998,7 +1998,7 @@ int hal_isp_set_default_bin_path(void *ctx, const char *path)
     {
         IMPISPDefaultBinAttr attr;
         memset(&attr, 0, sizeof(attr));
-        strncpy(attr.bname, path, sizeof(attr.bname) - 1);
+        snprintf(attr.bname, sizeof(attr.bname), "%s", path);
         return IMP_ISP_SetDefaultBinPath(IMPVI_MAIN, &attr);
     }
 #elif defined(PLATFORM_T40) || defined(PLATFORM_T41)
@@ -2024,8 +2024,7 @@ int hal_isp_get_default_bin_path(void *ctx, char *path, int path_len)
         int ret = IMP_ISP_GetDefaultBinPath(IMPVI_MAIN, &attr);
         if (ret != 0)
             return ret;
-        strncpy(path, attr.bname, (size_t)path_len - 1);
-        path[path_len - 1] = '\0';
+        snprintf(path, (size_t)path_len, "%s", attr.bname);
         return RSS_OK;
     }
 #elif defined(PLATFORM_T40) || defined(PLATFORM_T41)

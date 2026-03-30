@@ -393,8 +393,7 @@ static int hal_sys_get_version(void *ctx, char *buf, int len)
     if (ret != 0)
         return ret;
 
-    strncpy(buf, version.aVersion, (size_t)(len - 1));
-    buf[len - 1] = '\0';
+    snprintf(buf, (size_t)len, "%s", version.aVersion);
     return 0;
 }
 
@@ -408,8 +407,7 @@ static int hal_sys_get_cpu_info(void *ctx, char *buf, int len)
     if (!info)
         return -EIO;
 
-    strncpy(buf, info, (size_t)(len - 1));
-    buf[len - 1] = '\0';
+    snprintf(buf, (size_t)len, "%s", info);
     return 0;
 }
 
@@ -877,9 +875,9 @@ static const rss_hal_ops_t g_ops = {
 static void hal_fill_sensor_info(IMPSensorInfo *info, const rss_sensor_config_t *cfg)
 {
     memset(info, 0, sizeof(*info));
-    strncpy(info->name, cfg->name, sizeof(info->name) - 1);
+    snprintf(info->name, sizeof(info->name), "%s", cfg->name);
     info->cbus_type = TX_SENSOR_CONTROL_INTERFACE_I2C;
-    strncpy(info->i2c.type, cfg->name, sizeof(info->i2c.type) - 1);
+    snprintf(info->i2c.type, sizeof(info->i2c.type), "%s", cfg->name);
     info->i2c.addr = cfg->i2c_addr;
     info->i2c.i2c_adapter_id = cfg->i2c_adapter;
 
@@ -1213,8 +1211,7 @@ int rss_hal_get_imp_version(char *buf, int size)
     int ret = IMP_System_GetVersion(&ver);
     if (ret != 0)
         return ret;
-    strncpy(buf, ver.aVersion, size - 1);
-    buf[size - 1] = '\0';
+    snprintf(buf, (size_t)size, "%s", ver.aVersion);
     return 0;
 }
 
@@ -1225,8 +1222,7 @@ int rss_hal_get_sysutils_version(char *buf, int size)
     int ret = SU_Base_GetVersion(&ver);
     if (ret != 0)
         return ret;
-    strncpy(buf, ver.chr, size - 1);
-    buf[size - 1] = '\0';
+    snprintf(buf, (size_t)size, "%s", ver.chr);
     return 0;
 }
 
