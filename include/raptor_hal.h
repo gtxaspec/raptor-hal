@@ -309,7 +309,7 @@ typedef enum {
 
 /* Sensor configuration */
 typedef struct {
-    char name[32];     /* sensor driver name */
+    char name[20];     /* sensor driver name (matches IMPI2CInfo.type) */
     uint16_t i2c_addr; /* 7-bit I2C address */
     int i2c_adapter;
     uint16_t sensor_id; /* 0 if unused */
