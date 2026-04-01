@@ -474,11 +474,13 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
                                       init_qp, cfg->bitrate / 1000 /* SDK expects kbps */
     );
 #else
-    ret = IMP_Encoder_SetDefaultParam(&chnAttr, profile, rc, cfg->width, cfg->height, cfg->fps_num,
-                                      cfg->fps_den, cfg->gop_length,
-                                      2,                           /* uMaxSameSenceCnt: default 2 */
-                                      init_qp, cfg->bitrate / 1000 /* SDK expects kbps */
-    );
+    {
+        int max_scene = (cfg->max_same_scene_cnt > 0) ? (int)cfg->max_same_scene_cnt : 2;
+        ret = IMP_Encoder_SetDefaultParam(&chnAttr, profile, rc, cfg->width, cfg->height,
+                                          cfg->fps_num, cfg->fps_den, cfg->gop_length, max_scene,
+                                          init_qp, cfg->bitrate / 1000 /* SDK expects kbps */
+        );
+    }
 #endif
     if (ret != 0) {
         HAL_LOG_ERR("SetDefaultParam failed: %d", ret);
@@ -585,8 +587,35 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
         break;
     }
 
-    /* GOP length — don't override uGopCtrlMode, SetDefaultParam sets it correctly */
+    /* GOP length and mode */
     chnAttr.gopAttr.uGopLength = (uint16_t)cfg->gop_length;
+    if (cfg->max_same_scene_cnt > 0)
+        chnAttr.gopAttr.uMaxSameSenceCnt = cfg->max_same_scene_cnt;
+    if (cfg->gop_mode == RSS_GOP_SMARTP)
+        chnAttr.gopAttr.uGopCtrlMode = IMP_ENC_GOP_CTRL_MODE_SMARTP;
+    else if (cfg->gop_mode == RSS_GOP_PYRAMIDAL)
+        chnAttr.gopAttr.uGopCtrlMode = IMP_ENC_GOP_CTRL_MODE_PYRAMIDAL;
+
+    /* RC options bitmask — apply to whichever RC mode struct is active */
+    if (cfg->rc_options != 0) {
+        IMPEncoderRcOptions opts = (IMPEncoderRcOptions)cfg->rc_options;
+        switch (rc) {
+        case IMP_ENC_RC_MODE_CBR:
+            chnAttr.rcAttr.attrRcMode.attrCbr.eRcOptions = opts;
+            break;
+        case IMP_ENC_RC_MODE_VBR:
+            chnAttr.rcAttr.attrRcMode.attrVbr.eRcOptions = opts;
+            break;
+        case IMP_ENC_RC_MODE_CAPPED_VBR:
+            chnAttr.rcAttr.attrRcMode.attrCappedVbr.eRcOptions = opts;
+            break;
+        case IMP_ENC_RC_MODE_CAPPED_QUALITY:
+            chnAttr.rcAttr.attrRcMode.attrCappedQuality.eRcOptions = opts;
+            break;
+        default:
+            break;
+        }
+    }
 #endif
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T41)
@@ -953,56 +982,108 @@ int hal_enc_set_rc_mode(void *ctx, int chn, rss_rc_mode_t mode, uint32_t bitrate
         break;
     case IMP_ENC_RC_MODE_CBR:
         rcAttr.attrCbr.uTargetBitRate = bitrate_kbps;
-        if (rcAttr.attrCbr.iMaxQP == 0) rcAttr.attrCbr.iMaxQP = 45;
-        if (rcAttr.attrCbr.iMinQP == 0) rcAttr.attrCbr.iMinQP = 15;
+        if (rcAttr.attrCbr.iMaxQP == 0)
+            rcAttr.attrCbr.iMaxQP = 45;
+        if (rcAttr.attrCbr.iMinQP == 0)
+            rcAttr.attrCbr.iMinQP = 15;
         break;
     case IMP_ENC_RC_MODE_VBR:
         rcAttr.attrVbr.uTargetBitRate = bitrate_kbps;
         rcAttr.attrVbr.uMaxBitRate = bitrate_kbps * 4 / 3;
-        if (rcAttr.attrVbr.iMaxQP == 0) rcAttr.attrVbr.iMaxQP = 45;
-        if (rcAttr.attrVbr.iMinQP == 0) rcAttr.attrVbr.iMinQP = 15;
+        if (rcAttr.attrVbr.iMaxQP == 0)
+            rcAttr.attrVbr.iMaxQP = 45;
+        if (rcAttr.attrVbr.iMinQP == 0)
+            rcAttr.attrVbr.iMinQP = 15;
         break;
     case IMP_ENC_RC_MODE_CAPPED_VBR:
         rcAttr.attrCappedVbr.uTargetBitRate = bitrate_kbps;
         rcAttr.attrCappedVbr.uMaxBitRate = bitrate_kbps * 4 / 3;
-        if (rcAttr.attrCappedVbr.iMaxQP == 0) rcAttr.attrCappedVbr.iMaxQP = 45;
-        if (rcAttr.attrCappedVbr.iMinQP == 0) rcAttr.attrCappedVbr.iMinQP = 15;
+        if (rcAttr.attrCappedVbr.iMaxQP == 0)
+            rcAttr.attrCappedVbr.iMaxQP = 45;
+        if (rcAttr.attrCappedVbr.iMinQP == 0)
+            rcAttr.attrCappedVbr.iMinQP = 15;
         break;
     case IMP_ENC_RC_MODE_CAPPED_QUALITY:
         rcAttr.attrCappedQuality.uTargetBitRate = bitrate_kbps;
         rcAttr.attrCappedQuality.uMaxBitRate = bitrate_kbps * 4 / 3;
-        if (rcAttr.attrCappedQuality.iMaxQP == 0) rcAttr.attrCappedQuality.iMaxQP = 45;
-        if (rcAttr.attrCappedQuality.iMinQP == 0) rcAttr.attrCappedQuality.iMinQP = 15;
+        if (rcAttr.attrCappedQuality.iMaxQP == 0)
+            rcAttr.attrCappedQuality.iMaxQP = 45;
+        if (rcAttr.attrCappedQuality.iMinQP == 0)
+            rcAttr.attrCappedQuality.iMinQP = 15;
+        break;
+    default:
+        break;
+    }
+#elif defined(PLATFORM_T32)
+    /* T32 hybrid: H264-prefixed structs but different member names */
+    switch (vendor_mode) {
+    case ENC_RC_MODE_FIXQP:
+        if (rcAttr.attrH264FixQp.IQp == 0)
+            rcAttr.attrH264FixQp.IQp = 35;
+        break;
+    case ENC_RC_MODE_CBR:
+        rcAttr.attrH264Cbr.outBitRate = bitrate_kbps;
+        if (rcAttr.attrH264Cbr.maxQp == 0)
+            rcAttr.attrH264Cbr.maxQp = 45;
+        if (rcAttr.attrH264Cbr.minQp == 0)
+            rcAttr.attrH264Cbr.minQp = 15;
+        break;
+    case ENC_RC_MODE_VBR:
+        rcAttr.attrH264Vbr.maxBitRate = bitrate_kbps;
+        if (rcAttr.attrH264Vbr.maxQp == 0)
+            rcAttr.attrH264Vbr.maxQp = 45;
+        if (rcAttr.attrH264Vbr.minQp == 0)
+            rcAttr.attrH264Vbr.minQp = 15;
+        break;
+    case ENC_RC_MODE_SMART:
+        rcAttr.attrH264Smart.maxBitRate = bitrate_kbps;
+        if (rcAttr.attrH264Smart.maxQp == 0)
+            rcAttr.attrH264Smart.maxQp = 45;
+        if (rcAttr.attrH264Smart.minQp == 0)
+            rcAttr.attrH264Smart.minQp = 15;
         break;
     default:
         break;
     }
 #else
-    /* Old SDK (T20-T23) and T32: patch bitrate in H264-prefixed structs */
+    /* Old SDK (T20/T21/T23/T30): H264-prefixed structs with QP step fields */
     switch (vendor_mode) {
     case ENC_RC_MODE_FIXQP:
-        if (rcAttr.attrH264FixQp.qp == 0) rcAttr.attrH264FixQp.qp = 35;
+        if (rcAttr.attrH264FixQp.qp == 0)
+            rcAttr.attrH264FixQp.qp = 35;
         break;
     case ENC_RC_MODE_CBR:
         rcAttr.attrH264Cbr.outBitRate = bitrate_kbps;
-        if (rcAttr.attrH264Cbr.maxQp == 0) rcAttr.attrH264Cbr.maxQp = 45;
-        if (rcAttr.attrH264Cbr.minQp == 0) rcAttr.attrH264Cbr.minQp = 15;
-        if (rcAttr.attrH264Cbr.frmQPStep == 0) rcAttr.attrH264Cbr.frmQPStep = 3;
-        if (rcAttr.attrH264Cbr.gopQPStep == 0) rcAttr.attrH264Cbr.gopQPStep = 15;
+        if (rcAttr.attrH264Cbr.maxQp == 0)
+            rcAttr.attrH264Cbr.maxQp = 45;
+        if (rcAttr.attrH264Cbr.minQp == 0)
+            rcAttr.attrH264Cbr.minQp = 15;
+        if (rcAttr.attrH264Cbr.frmQPStep == 0)
+            rcAttr.attrH264Cbr.frmQPStep = 3;
+        if (rcAttr.attrH264Cbr.gopQPStep == 0)
+            rcAttr.attrH264Cbr.gopQPStep = 15;
         break;
     case ENC_RC_MODE_VBR:
         rcAttr.attrH264Vbr.maxBitRate = bitrate_kbps;
-        if (rcAttr.attrH264Vbr.maxQp == 0) rcAttr.attrH264Vbr.maxQp = 45;
-        if (rcAttr.attrH264Vbr.minQp == 0) rcAttr.attrH264Vbr.minQp = 15;
-        if (rcAttr.attrH264Vbr.frmQPStep == 0) rcAttr.attrH264Vbr.frmQPStep = 3;
-        if (rcAttr.attrH264Vbr.gopQPStep == 0) rcAttr.attrH264Vbr.gopQPStep = 15;
+        if (rcAttr.attrH264Vbr.maxQp == 0)
+            rcAttr.attrH264Vbr.maxQp = 45;
+        if (rcAttr.attrH264Vbr.minQp == 0)
+            rcAttr.attrH264Vbr.minQp = 15;
+        if (rcAttr.attrH264Vbr.frmQPStep == 0)
+            rcAttr.attrH264Vbr.frmQPStep = 3;
+        if (rcAttr.attrH264Vbr.gopQPStep == 0)
+            rcAttr.attrH264Vbr.gopQPStep = 15;
         break;
     case ENC_RC_MODE_SMART:
         rcAttr.attrH264Smart.maxBitRate = bitrate_kbps;
-        if (rcAttr.attrH264Smart.maxQp == 0) rcAttr.attrH264Smart.maxQp = 45;
-        if (rcAttr.attrH264Smart.minQp == 0) rcAttr.attrH264Smart.minQp = 15;
-        if (rcAttr.attrH264Smart.frmQPStep == 0) rcAttr.attrH264Smart.frmQPStep = 3;
-        if (rcAttr.attrH264Smart.gopQPStep == 0) rcAttr.attrH264Smart.gopQPStep = 15;
+        if (rcAttr.attrH264Smart.maxQp == 0)
+            rcAttr.attrH264Smart.maxQp = 45;
+        if (rcAttr.attrH264Smart.minQp == 0)
+            rcAttr.attrH264Smart.minQp = 15;
+        if (rcAttr.attrH264Smart.frmQPStep == 0)
+            rcAttr.attrH264Smart.frmQPStep = 3;
+        if (rcAttr.attrH264Smart.gopQPStep == 0)
+            rcAttr.attrH264Smart.gopQPStep = 15;
         break;
     default:
         break;
@@ -1734,6 +1815,1209 @@ int hal_enc_get_pool(void *ctx, int chn)
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31) || defined(PLATFORM_T32) ||                     \
     defined(PLATFORM_T40) || defined(PLATFORM_T41)
     return IMP_Encoder_GetPool(chn);
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * 11. Phase 1 — Bandwidth Reduction Features
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/*
+ * hal_enc_set_gop_mode -- set GOP control mode at runtime.
+ *
+ * T31/T40/T41: read gopAttr, change uGopCtrlMode, write back.
+ * Others: not supported.
+ */
+int hal_enc_set_gop_mode(void *ctx, int chn, rss_gop_mode_t mode)
+{
+    (void)ctx;
+#if defined(PLATFORM_T31) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+    IMPEncoderGopAttr gopAttr;
+    int ret = IMP_Encoder_GetChnGopAttr(chn, &gopAttr);
+    if (ret != 0) {
+        HAL_LOG_ERR("GetChnGopAttr(%d) failed: %d", chn, ret);
+        return ret;
+    }
+
+    switch (mode) {
+    case RSS_GOP_SMARTP:
+        gopAttr.uGopCtrlMode = IMP_ENC_GOP_CTRL_MODE_SMARTP;
+        break;
+    case RSS_GOP_PYRAMIDAL:
+        gopAttr.uGopCtrlMode = IMP_ENC_GOP_CTRL_MODE_PYRAMIDAL;
+        break;
+    default:
+        gopAttr.uGopCtrlMode = IMP_ENC_GOP_CTRL_MODE_DEFAULT;
+        break;
+    }
+
+    ret = IMP_Encoder_SetChnGopAttr(chn, &gopAttr);
+    if (ret != 0)
+        HAL_LOG_ERR("SetChnGopAttr(%d) gop_mode failed: %d", chn, ret);
+    return ret;
+#else
+    (void)chn;
+    (void)mode;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_get_gop_mode -- get current GOP control mode.
+ */
+int hal_enc_get_gop_mode(void *ctx, int chn, rss_gop_mode_t *mode)
+{
+    (void)ctx;
+    if (!mode)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T31) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+    IMPEncoderGopAttr gopAttr;
+    int ret = IMP_Encoder_GetChnGopAttr(chn, &gopAttr);
+    if (ret != 0) {
+        HAL_LOG_ERR("GetChnGopAttr(%d) failed: %d", chn, ret);
+        return ret;
+    }
+
+    switch (gopAttr.uGopCtrlMode) {
+    case IMP_ENC_GOP_CTRL_MODE_SMARTP:
+        *mode = RSS_GOP_SMARTP;
+        break;
+    case IMP_ENC_GOP_CTRL_MODE_PYRAMIDAL:
+        *mode = RSS_GOP_PYRAMIDAL;
+        break;
+    default:
+        *mode = RSS_GOP_DEFAULT;
+        break;
+    }
+    return RSS_OK;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_set_rc_options -- set RC options bitmask at runtime.
+ *
+ * T31/T40/T41: read current RC mode attrs, patch eRcOptions, write back.
+ */
+int hal_enc_set_rc_options(void *ctx, int chn, uint32_t options)
+{
+    (void)ctx;
+#if defined(PLATFORM_T31) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+    IMPEncoderAttrRcMode rcAttr;
+    int ret = IMP_Encoder_GetChnAttrRcMode(chn, &rcAttr);
+    if (ret != 0) {
+        HAL_LOG_ERR("GetChnAttrRcMode(%d) failed: %d", chn, ret);
+        return ret;
+    }
+
+    IMPEncoderRcOptions opts = (IMPEncoderRcOptions)options;
+
+    switch (rcAttr.rcMode) {
+    case IMP_ENC_RC_MODE_CBR:
+        rcAttr.attrCbr.eRcOptions = opts;
+        break;
+    case IMP_ENC_RC_MODE_VBR:
+        rcAttr.attrVbr.eRcOptions = opts;
+        break;
+    case IMP_ENC_RC_MODE_CAPPED_VBR:
+        rcAttr.attrCappedVbr.eRcOptions = opts;
+        break;
+    case IMP_ENC_RC_MODE_CAPPED_QUALITY:
+        rcAttr.attrCappedQuality.eRcOptions = opts;
+        break;
+    default:
+        return RSS_ERR_NOTSUP;
+    }
+
+    ret = IMP_Encoder_SetChnAttrRcMode(chn, &rcAttr);
+    if (ret != 0)
+        HAL_LOG_ERR("SetChnAttrRcMode(%d) rc_options failed: %d", chn, ret);
+    return ret;
+#else
+    (void)chn;
+    (void)options;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_get_rc_options -- get current RC options bitmask.
+ */
+int hal_enc_get_rc_options(void *ctx, int chn, uint32_t *options)
+{
+    (void)ctx;
+    if (!options)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T31) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+    IMPEncoderAttrRcMode rcAttr;
+    int ret = IMP_Encoder_GetChnAttrRcMode(chn, &rcAttr);
+    if (ret != 0) {
+        HAL_LOG_ERR("GetChnAttrRcMode(%d) failed: %d", chn, ret);
+        return ret;
+    }
+
+    switch (rcAttr.rcMode) {
+    case IMP_ENC_RC_MODE_CBR:
+        *options = (uint32_t)rcAttr.attrCbr.eRcOptions;
+        break;
+    case IMP_ENC_RC_MODE_VBR:
+        *options = (uint32_t)rcAttr.attrVbr.eRcOptions;
+        break;
+    case IMP_ENC_RC_MODE_CAPPED_VBR:
+        *options = (uint32_t)rcAttr.attrCappedVbr.eRcOptions;
+        break;
+    case IMP_ENC_RC_MODE_CAPPED_QUALITY:
+        *options = (uint32_t)rcAttr.attrCappedQuality.eRcOptions;
+        break;
+    default:
+        *options = 0;
+        break;
+    }
+    return RSS_OK;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_set_max_same_scene_cnt -- set max same scene reference count.
+ *
+ * T31/T40/T41: modify gopAttr.uMaxSameSenceCnt via Get/SetChnGopAttr.
+ */
+int hal_enc_set_max_same_scene_cnt(void *ctx, int chn, uint32_t count)
+{
+    (void)ctx;
+#if defined(PLATFORM_T31) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+    IMPEncoderGopAttr gopAttr;
+    int ret = IMP_Encoder_GetChnGopAttr(chn, &gopAttr);
+    if (ret != 0) {
+        HAL_LOG_ERR("GetChnGopAttr(%d) failed: %d", chn, ret);
+        return ret;
+    }
+
+    gopAttr.uMaxSameSenceCnt = count;
+    ret = IMP_Encoder_SetChnGopAttr(chn, &gopAttr);
+    if (ret != 0)
+        HAL_LOG_ERR("SetChnGopAttr(%d) max_same_scene failed: %d", chn, ret);
+    return ret;
+#else
+    (void)chn;
+    (void)count;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_get_max_same_scene_cnt -- get max same scene reference count.
+ */
+int hal_enc_get_max_same_scene_cnt(void *ctx, int chn, uint32_t *count)
+{
+    (void)ctx;
+    if (!count)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T31) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+    IMPEncoderGopAttr gopAttr;
+    int ret = IMP_Encoder_GetChnGopAttr(chn, &gopAttr);
+    if (ret != 0) {
+        HAL_LOG_ERR("GetChnGopAttr(%d) failed: %d", chn, ret);
+        return ret;
+    }
+    *count = gopAttr.uMaxSameSenceCnt;
+    return RSS_OK;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_set_pskip -- configure P-skip for static scenes.
+ *
+ * T32 only: IMP_Encoder_SetPskipCfg.
+ */
+int hal_enc_set_pskip(void *ctx, int chn, const rss_pskip_cfg_t *cfg)
+{
+    (void)ctx;
+    if (!cfg)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T32)
+    IMPEncoderPskipCfg pskip;
+    memset(&pskip, 0, sizeof(pskip));
+    pskip.enable = cfg->enable;
+    pskip.pskipMaxFrames = cfg->max_frames;
+    pskip.pskipThr = cfg->threshold;
+    int ret = IMP_Encoder_SetPskipCfg(chn, &pskip);
+    if (ret != 0)
+        HAL_LOG_ERR("SetPskipCfg(%d) failed: %d", chn, ret);
+    return ret;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_get_pskip -- get P-skip configuration.
+ */
+int hal_enc_get_pskip(void *ctx, int chn, rss_pskip_cfg_t *cfg)
+{
+    (void)ctx;
+    if (!cfg)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T32)
+    IMPEncoderPskipCfg pskip;
+    int ret = IMP_Encoder_GetPskipCfg(chn, &pskip);
+    if (ret != 0) {
+        HAL_LOG_ERR("GetPskipCfg(%d) failed: %d", chn, ret);
+        return ret;
+    }
+    cfg->enable = pskip.enable;
+    cfg->max_frames = pskip.pskipMaxFrames;
+    cfg->threshold = pskip.pskipThr;
+    return RSS_OK;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_request_pskip -- request immediate P-skip.
+ */
+int hal_enc_request_pskip(void *ctx, int chn)
+{
+    (void)ctx;
+#if defined(PLATFORM_T32)
+    int ret = IMP_Encoder_RequestPskip(chn);
+    if (ret != 0)
+        HAL_LOG_ERR("RequestPskip(%d) failed: %d", chn, ret);
+    return ret;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_set_srd -- configure spatial redundancy detection (H265 only).
+ *
+ * T32 only: IMP_Encoder_SetSrdCfg.
+ */
+int hal_enc_set_srd(void *ctx, int chn, const rss_srd_cfg_t *cfg)
+{
+    (void)ctx;
+    if (!cfg)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T32)
+    IMPEncoderSrdCfg srd;
+    memset(&srd, 0, sizeof(srd));
+    srd.enable = cfg->enable;
+    srd.level = cfg->level;
+    int ret = IMP_Encoder_SetSrdCfg(chn, &srd);
+    if (ret != 0)
+        HAL_LOG_ERR("SetSrdCfg(%d) failed: %d", chn, ret);
+    return ret;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_get_srd -- get SRD configuration.
+ */
+int hal_enc_get_srd(void *ctx, int chn, rss_srd_cfg_t *cfg)
+{
+    (void)ctx;
+    if (!cfg)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T32)
+    IMPEncoderSrdCfg srd;
+    int ret = IMP_Encoder_GetSrdCfg(chn, &srd);
+    if (ret != 0) {
+        HAL_LOG_ERR("GetSrdCfg(%d) failed: %d", chn, ret);
+        return ret;
+    }
+    cfg->enable = srd.enable;
+    cfg->level = srd.level;
+    return RSS_OK;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_set_max_pic_size -- cap max I/P frame size.
+ *
+ * T32/T40/T41: IMP_Encoder_SetChnMaxPictureSize(chn, maxI_kbits, maxP_kbits).
+ */
+int hal_enc_set_max_pic_size(void *ctx, int chn, uint32_t max_i_kbits, uint32_t max_p_kbits)
+{
+    (void)ctx;
+#if defined(PLATFORM_T32) || defined(PLATFORM_T41)
+    int ret = IMP_Encoder_SetChnMaxPictureSize(chn, max_i_kbits, max_p_kbits);
+    if (ret != 0)
+        HAL_LOG_ERR("SetChnMaxPictureSize(%d, I=%u, P=%u) failed: %d", chn, max_i_kbits,
+                    max_p_kbits, ret);
+    return ret;
+#else
+    (void)chn;
+    (void)max_i_kbits;
+    (void)max_p_kbits;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_set_super_frame -- configure oversized frame handling.
+ *
+ * T21: IMPEncoderSuperFrmCfg (5 fields, no maxReEncodeTimes).
+ * T32: IMPEncoderSuperFrmCfg (6 fields, includes maxReEncodeTimes).
+ */
+int hal_enc_set_super_frame(void *ctx, int chn, const rss_super_frame_cfg_t *cfg)
+{
+    (void)ctx;
+    if (!cfg)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T21) || defined(PLATFORM_T32)
+    IMPEncoderSuperFrmCfg sfcfg;
+    memset(&sfcfg, 0, sizeof(sfcfg));
+    sfcfg.superFrmMode = (IMPEncoderSuperFrmMode)cfg->mode;
+    sfcfg.superIFrmBitsThr = cfg->i_bits_thr;
+    sfcfg.superPFrmBitsThr = cfg->p_bits_thr;
+    sfcfg.superBFrmBitsThr = 0;
+    sfcfg.rcPriority = (IMPEncoderRcPriority)cfg->priority;
+#if defined(PLATFORM_T32)
+    sfcfg.maxReEncodeTimes = cfg->max_reencode;
+#endif
+    int ret = IMP_Encoder_SetSuperFrameCfg(chn, &sfcfg);
+    if (ret != 0)
+        HAL_LOG_ERR("SetSuperFrameCfg(%d) failed: %d", chn, ret);
+    return ret;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_get_super_frame -- get super frame configuration.
+ */
+int hal_enc_get_super_frame(void *ctx, int chn, rss_super_frame_cfg_t *cfg)
+{
+    (void)ctx;
+    if (!cfg)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T21) || defined(PLATFORM_T32)
+    IMPEncoderSuperFrmCfg sfcfg;
+    int ret = IMP_Encoder_GetSuperFrameCfg(chn, &sfcfg);
+    if (ret != 0) {
+        HAL_LOG_ERR("GetSuperFrameCfg(%d) failed: %d", chn, ret);
+        return ret;
+    }
+    cfg->mode = (rss_super_frame_mode_t)sfcfg.superFrmMode;
+    cfg->i_bits_thr = sfcfg.superIFrmBitsThr;
+    cfg->p_bits_thr = sfcfg.superPFrmBitsThr;
+    cfg->priority = (rss_rc_priority_t)sfcfg.rcPriority;
+#if defined(PLATFORM_T32)
+    cfg->max_reencode = sfcfg.maxReEncodeTimes;
+#else
+    cfg->max_reencode = 0;
+#endif
+    return RSS_OK;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_set_color2grey -- enable/disable color-to-grey mode.
+ *
+ * T21 only: IMP_Encoder_SetChnColor2Grey.
+ */
+int hal_enc_set_color2grey(void *ctx, int chn, bool enable)
+{
+    (void)ctx;
+#if defined(PLATFORM_T21)
+    IMPEncoderColor2GreyCfg cfg;
+    cfg.enable = enable;
+    int ret = IMP_Encoder_SetChnColor2Grey(chn, &cfg);
+    if (ret != 0)
+        HAL_LOG_ERR("SetChnColor2Grey(%d, %d) failed: %d", chn, (int)enable, ret);
+    return ret;
+#else
+    (void)chn;
+    (void)enable;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_get_color2grey -- get color-to-grey state.
+ */
+int hal_enc_get_color2grey(void *ctx, int chn, bool *enable)
+{
+    (void)ctx;
+    if (!enable)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T21)
+    IMPEncoderColor2GreyCfg cfg;
+    int ret = IMP_Encoder_GetChnColor2Grey(chn, &cfg);
+    if (ret != 0) {
+        HAL_LOG_ERR("GetChnColor2Grey(%d) failed: %d", chn, ret);
+        return ret;
+    }
+    *enable = cfg.enable;
+    return RSS_OK;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * 12. Phase 2 — Quality Improvement Features
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/*
+ * hal_enc_set_roi -- set a single ROI region.
+ *
+ * T21: IMP_Encoder_SetChnROI(chn, &roiCfg) — single region.
+ * T32: IMP_Encoder_SetChnROI(chn, &roiAttr) — array of 16, so
+ *      we Get the full array, modify one entry, and Set it back.
+ */
+int hal_enc_set_roi(void *ctx, int chn, const rss_enc_roi_t *roi)
+{
+    (void)ctx;
+    if (!roi)
+        return RSS_ERR_INVAL;
+
+#if defined(PLATFORM_T21)
+    IMPEncoderROICfg roiCfg;
+    memset(&roiCfg, 0, sizeof(roiCfg));
+    roiCfg.u32Index = roi->index;
+    roiCfg.bEnable = roi->enable;
+    roiCfg.bRelatedQp = roi->relative_qp;
+    roiCfg.s32Qp = roi->qp;
+    roiCfg.rect.p0.x = roi->x;
+    roiCfg.rect.p0.y = roi->y;
+    roiCfg.rect.p1.x = roi->x + roi->w;
+    roiCfg.rect.p1.y = roi->y + roi->h;
+    int ret = IMP_Encoder_SetChnROI(chn, &roiCfg);
+    if (ret != 0)
+        HAL_LOG_ERR("SetChnROI(%d, idx=%u) failed: %d", chn, roi->index, ret);
+    return ret;
+
+#elif defined(PLATFORM_T32)
+    IMPEncoderROIAttr roiAttr;
+    int ret = IMP_Encoder_GetChnROI(chn, &roiAttr);
+    if (ret != 0) {
+        HAL_LOG_ERR("GetChnROI(%d) failed: %d", chn, ret);
+        return ret;
+    }
+    if (roi->index >= IMP_ENC_ROI_WIN_COUNT)
+        return RSS_ERR_INVAL;
+
+    IMPEncoderROICfg *r = &roiAttr.roi[roi->index];
+    r->u32Index = roi->index;
+    r->bEnable = roi->enable;
+    r->bRelatedQp = roi->relative_qp;
+    r->s32Qp = roi->qp;
+    r->rect.p0.x = roi->x;
+    r->rect.p0.y = roi->y;
+    r->rect.p1.x = roi->x + roi->w;
+    r->rect.p1.y = roi->y + roi->h;
+
+    ret = IMP_Encoder_SetChnROI(chn, &roiAttr);
+    if (ret != 0)
+        HAL_LOG_ERR("SetChnROI(%d, idx=%u) failed: %d", chn, roi->index, ret);
+    return ret;
+
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_get_roi -- get a single ROI region.
+ */
+int hal_enc_get_roi(void *ctx, int chn, uint32_t index, rss_enc_roi_t *roi)
+{
+    (void)ctx;
+    if (!roi)
+        return RSS_ERR_INVAL;
+
+#if defined(PLATFORM_T21)
+    IMPEncoderROICfg roiCfg;
+    memset(&roiCfg, 0, sizeof(roiCfg));
+    roiCfg.u32Index = index;
+    int ret = IMP_Encoder_GetChnROI(chn, &roiCfg);
+    if (ret != 0) {
+        HAL_LOG_ERR("GetChnROI(%d, idx=%u) failed: %d", chn, index, ret);
+        return ret;
+    }
+    roi->index = roiCfg.u32Index;
+    roi->enable = roiCfg.bEnable;
+    roi->relative_qp = roiCfg.bRelatedQp;
+    roi->qp = roiCfg.s32Qp;
+    roi->x = roiCfg.rect.p0.x;
+    roi->y = roiCfg.rect.p0.y;
+    roi->w = roiCfg.rect.p1.x - roiCfg.rect.p0.x;
+    roi->h = roiCfg.rect.p1.y - roiCfg.rect.p0.y;
+    return RSS_OK;
+
+#elif defined(PLATFORM_T32)
+    IMPEncoderROIAttr roiAttr;
+    int ret = IMP_Encoder_GetChnROI(chn, &roiAttr);
+    if (ret != 0) {
+        HAL_LOG_ERR("GetChnROI(%d) failed: %d", chn, ret);
+        return ret;
+    }
+    if (index >= IMP_ENC_ROI_WIN_COUNT)
+        return RSS_ERR_INVAL;
+
+    const IMPEncoderROICfg *r = &roiAttr.roi[index];
+    roi->index = r->u32Index;
+    roi->enable = r->bEnable;
+    roi->relative_qp = r->bRelatedQp;
+    roi->qp = r->s32Qp;
+    roi->x = r->rect.p0.x;
+    roi->y = r->rect.p0.y;
+    roi->w = r->rect.p1.x - r->rect.p0.x;
+    roi->h = r->rect.p1.y - r->rect.p0.y;
+    return RSS_OK;
+
+#else
+    (void)chn;
+    (void)index;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_set_map_roi -- set per-macroblock ROI quality map.
+ *
+ * T32 only: IMP_Encoder_SetChnMapRoi.
+ */
+int hal_enc_set_map_roi(void *ctx, int chn, const uint8_t *map, uint32_t map_size, int type)
+{
+    (void)ctx;
+    if (!map)
+        return RSS_ERR_INVAL;
+
+#if defined(PLATFORM_T32)
+    IMPEncoderMapRoiCfg mapCfg;
+    IMPEncoderMappingList list;
+
+    memset(&mapCfg, 0, sizeof(mapCfg));
+    memset(&list, 0, sizeof(list));
+
+    mapCfg.map = (uint8_t *)map;
+    mapCfg.mapSize = map_size;
+    mapCfg.type = (IMPEncoderMappingType)type;
+    list.mapdata = (uint8_t *)map;
+    list.length = map_size;
+
+    int ret = IMP_Encoder_SetChnMapRoi(chn, &mapCfg, &list);
+    if (ret != 0)
+        HAL_LOG_ERR("SetChnMapRoi(%d) failed: %d", chn, ret);
+    return ret;
+#else
+    (void)chn;
+    (void)map_size;
+    (void)type;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_set_qp_bounds_per_frame -- set separate I/P frame QP bounds.
+ *
+ * T32/T41: IMP_Encoder_SetChnQpBoundsPerFrame.
+ */
+int hal_enc_set_qp_bounds_per_frame(void *ctx, int chn, int min_i, int max_i, int min_p, int max_p)
+{
+    (void)ctx;
+#if defined(PLATFORM_T32) || defined(PLATFORM_T41)
+    int ret = IMP_Encoder_SetChnQpBoundsPerFrame(chn, min_i, max_i, min_p, max_p);
+    if (ret != 0)
+        HAL_LOG_ERR("SetChnQpBoundsPerFrame(%d) failed: %d", chn, ret);
+    return ret;
+#else
+    (void)chn;
+    (void)min_i;
+    (void)max_i;
+    (void)min_p;
+    (void)max_p;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_set_qpg_mode -- set macroblock-level QP control mode.
+ *
+ * T21: IMPEncoderQpgMode enum (QPG_CLOSE..QPG_SASM_TAB).
+ * T32: IMPEncoderQpgMode enum (MBQP_AUTO..MBQP_TEXT_ROWRC).
+ * Values are platform-specific; callers should use caps to determine availability.
+ */
+int hal_enc_set_qpg_mode(void *ctx, int chn, int mode)
+{
+    (void)ctx;
+#if defined(PLATFORM_T21) || defined(PLATFORM_T32)
+    IMPEncoderQpgMode qpg = (IMPEncoderQpgMode)mode;
+    int ret = IMP_Encoder_SetQpgMode(chn, &qpg);
+    if (ret != 0)
+        HAL_LOG_ERR("SetQpgMode(%d, %d) failed: %d", chn, mode, ret);
+    return ret;
+#else
+    (void)chn;
+    (void)mode;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_get_qpg_mode -- get current QP control mode.
+ */
+int hal_enc_get_qpg_mode(void *ctx, int chn, int *mode)
+{
+    (void)ctx;
+    if (!mode)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T21) || defined(PLATFORM_T32)
+    IMPEncoderQpgMode qpg;
+    int ret = IMP_Encoder_GetQpgMode(chn, &qpg);
+    if (ret != 0) {
+        HAL_LOG_ERR("GetQpgMode(%d) failed: %d", chn, ret);
+        return ret;
+    }
+    *mode = (int)qpg;
+    return RSS_OK;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_set_qpg_ai -- set AI-based quality map.
+ *
+ * T32 only: IMP_Encoder_SetChnQpgAI.
+ */
+int hal_enc_set_qpg_ai(void *ctx, int chn, const uint8_t *map, uint32_t w, uint32_t h, int mode,
+                       int mark_level)
+{
+    (void)ctx;
+    if (!map)
+        return RSS_ERR_INVAL;
+
+#if defined(PLATFORM_T32)
+    IMPEncoderQpgAICfg aiCfg;
+    memset(&aiCfg, 0, sizeof(aiCfg));
+    aiCfg.map = (uint8_t *)map;
+    aiCfg.width = w;
+    aiCfg.height = h;
+    aiCfg.foreBackMode = (uint8_t)mode;
+    aiCfg.markLvl = (uint8_t)mark_level;
+
+    int ret = IMP_Encoder_SetChnQpgAI(chn, &aiCfg);
+    if (ret != 0)
+        HAL_LOG_ERR("SetChnQpgAI(%d) failed: %d", chn, ret);
+    return ret;
+#else
+    (void)chn;
+    (void)w;
+    (void)h;
+    (void)mode;
+    (void)mark_level;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_set_mbrc -- enable/disable macroblock-level rate control.
+ *
+ * T21 only: IMP_Encoder_SetMbRC.
+ */
+int hal_enc_set_mbrc(void *ctx, int chn, bool enable)
+{
+    (void)ctx;
+#if defined(PLATFORM_T21)
+    int ret = IMP_Encoder_SetMbRC(chn, enable ? 1 : 0);
+    if (ret != 0)
+        HAL_LOG_ERR("SetMbRC(%d, %d) failed: %d", chn, (int)enable, ret);
+    return ret;
+#else
+    (void)chn;
+    (void)enable;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_get_mbrc -- get macroblock-level rate control state.
+ */
+int hal_enc_get_mbrc(void *ctx, int chn, bool *enable)
+{
+    (void)ctx;
+    if (!enable)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T21)
+    int val = 0;
+    int ret = IMP_Encoder_GetMbRC(chn, &val);
+    if (ret != 0) {
+        HAL_LOG_ERR("GetMbRC(%d) failed: %d", chn, ret);
+        return ret;
+    }
+    *enable = (val != 0);
+    return RSS_OK;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_set_denoise -- configure encoder-level denoising.
+ *
+ * T21 only: IMP_Encoder_SetChnDenoise.
+ */
+int hal_enc_set_denoise(void *ctx, int chn, const rss_enc_denoise_cfg_t *cfg)
+{
+    (void)ctx;
+    if (!cfg)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T21)
+    IMPEncoderAttrDenoise dn;
+    memset(&dn, 0, sizeof(dn));
+    dn.enable = cfg->enable;
+    dn.dnType = cfg->dn_type;
+    dn.dnIQp = cfg->dn_i_qp;
+    dn.dnPQp = cfg->dn_p_qp;
+    int ret = IMP_Encoder_SetChnDenoise(chn, &dn);
+    if (ret != 0)
+        HAL_LOG_ERR("SetChnDenoise(%d) failed: %d", chn, ret);
+    return ret;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_get_denoise -- get encoder denoise configuration.
+ */
+int hal_enc_get_denoise(void *ctx, int chn, rss_enc_denoise_cfg_t *cfg)
+{
+    (void)ctx;
+    if (!cfg)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T21)
+    IMPEncoderAttrDenoise dn;
+    int ret = IMP_Encoder_GetChnDenoise(chn, &dn);
+    if (ret != 0) {
+        HAL_LOG_ERR("GetChnDenoise(%d) failed: %d", chn, ret);
+        return ret;
+    }
+    cfg->enable = dn.enable;
+    cfg->dn_type = dn.dnType;
+    cfg->dn_i_qp = dn.dnIQp;
+    cfg->dn_p_qp = dn.dnPQp;
+    return RSS_OK;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/* ═════════════════���══════════════════════════��═════════════════════════
+ * 13. Phase 3 — Error Recovery Features
+ * ═════��═════════════════���══════════════════════════════════════════════ */
+
+int hal_enc_set_gdr(void *ctx, int chn, const rss_enc_gdr_cfg_t *cfg)
+{
+    (void)ctx;
+    if (!cfg)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T32)
+    IMPEncoderGDRCfg gdr;
+    memset(&gdr, 0, sizeof(gdr));
+    gdr.enable = cfg->enable;
+    gdr.gdrCycle = cfg->gdr_cycle;
+    gdr.gdrFrames = cfg->gdr_frames;
+    int ret = IMP_Encoder_SetGDRCfg(chn, &gdr);
+    if (ret != 0)
+        HAL_LOG_ERR("SetGDRCfg(%d) failed: %d", chn, ret);
+    return ret;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+int hal_enc_get_gdr(void *ctx, int chn, rss_enc_gdr_cfg_t *cfg)
+{
+    (void)ctx;
+    if (!cfg)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T32)
+    IMPEncoderGDRCfg gdr;
+    int ret = IMP_Encoder_GetGDRCfg(chn, &gdr);
+    if (ret != 0) {
+        HAL_LOG_ERR("GetGDRCfg(%d) failed: %d", chn, ret);
+        return ret;
+    }
+    cfg->enable = gdr.enable;
+    cfg->gdr_cycle = gdr.gdrCycle;
+    cfg->gdr_frames = gdr.gdrFrames;
+    return RSS_OK;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+int hal_enc_request_gdr(void *ctx, int chn, int gdr_frames)
+{
+    (void)ctx;
+#if defined(PLATFORM_T32)
+    int ret = IMP_Encoder_RequestGDR(chn, gdr_frames);
+    if (ret != 0)
+        HAL_LOG_ERR("RequestGDR(%d, %d) failed: %d", chn, gdr_frames, ret);
+    return ret;
+#else
+    (void)chn;
+    (void)gdr_frames;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+int hal_enc_insert_userdata(void *ctx, int chn, const void *data, uint32_t len)
+{
+    (void)ctx;
+    if (!data || len == 0)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T21) || defined(PLATFORM_T32)
+    int ret = IMP_Encoder_InsertUserData(chn, (void *)data, len);
+    if (ret != 0)
+        HAL_LOG_ERR("InsertUserData(%d, %u) failed: %d", chn, len, ret);
+    return ret;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/* ═══════════════════════════════���═════════════════════════════���════════
+ * 14. Phase 4 ��� Codec Compliance Features
+ * ═══════════════════��══════════════════════════════��═══════════════════ */
+
+int hal_enc_set_h264_vui(void *ctx, int chn, const void *vui)
+{
+    (void)ctx;
+    if (!vui)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T32)
+    int ret = IMP_Encoder_SetH264Vui(chn, (const IMPEncoderH264Vui *)vui);
+    if (ret != 0)
+        HAL_LOG_ERR("SetH264Vui(%d) failed: %d", chn, ret);
+    return ret;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+int hal_enc_get_h264_vui(void *ctx, int chn, void *vui)
+{
+    (void)ctx;
+    if (!vui)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T32)
+    int ret = IMP_Encoder_GetH264Vui(chn, (IMPEncoderH264Vui *)vui);
+    if (ret != 0)
+        HAL_LOG_ERR("GetH264Vui(%d) failed: %d", chn, ret);
+    return ret;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+int hal_enc_set_h265_vui(void *ctx, int chn, const void *vui)
+{
+    (void)ctx;
+    if (!vui)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T32)
+    int ret = IMP_Encoder_SetH265Vui(chn, (const IMPEncoderH265Vui *)vui);
+    if (ret != 0)
+        HAL_LOG_ERR("SetH265Vui(%d) failed: %d", chn, ret);
+    return ret;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+int hal_enc_get_h265_vui(void *ctx, int chn, void *vui)
+{
+    (void)ctx;
+    if (!vui)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T32)
+    int ret = IMP_Encoder_GetH265Vui(chn, (IMPEncoderH265Vui *)vui);
+    if (ret != 0)
+        HAL_LOG_ERR("GetH265Vui(%d) failed: %d", chn, ret);
+    return ret;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+int hal_enc_set_h264_trans(void *ctx, int chn, const rss_enc_h264_trans_t *cfg)
+{
+    (void)ctx;
+    if (!cfg)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T21) || defined(PLATFORM_T32)
+    IMPEncoderH264TransCfg trans;
+    trans.chroma_qp_index_offset = cfg->chroma_qp_index_offset;
+    int ret = IMP_Encoder_SetH264TransCfg(chn, &trans);
+    if (ret != 0)
+        HAL_LOG_ERR("SetH264TransCfg(%d) failed: %d", chn, ret);
+    return ret;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+int hal_enc_get_h264_trans(void *ctx, int chn, rss_enc_h264_trans_t *cfg)
+{
+    (void)ctx;
+    if (!cfg)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T21) || defined(PLATFORM_T32)
+    IMPEncoderH264TransCfg trans;
+    int ret = IMP_Encoder_GetH264TransCfg(chn, &trans);
+    if (ret != 0) {
+        HAL_LOG_ERR("GetH264TransCfg(%d) failed: %d", chn, ret);
+        return ret;
+    }
+    cfg->chroma_qp_index_offset = trans.chroma_qp_index_offset;
+    return RSS_OK;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+int hal_enc_set_h265_trans(void *ctx, int chn, const rss_enc_h265_trans_t *cfg)
+{
+    (void)ctx;
+    if (!cfg)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T21) || defined(PLATFORM_T32)
+    IMPEncoderH265TransCfg trans;
+    trans.chroma_cr_qp_offset = cfg->chroma_cr_qp_offset;
+    trans.chroma_cb_qp_offset = cfg->chroma_cb_qp_offset;
+    int ret = IMP_Encoder_SetH265TransCfg(chn, &trans);
+    if (ret != 0)
+        HAL_LOG_ERR("SetH265TransCfg(%d) failed: %d", chn, ret);
+    return ret;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+int hal_enc_get_h265_trans(void *ctx, int chn, rss_enc_h265_trans_t *cfg)
+{
+    (void)ctx;
+    if (!cfg)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T21) || defined(PLATFORM_T32)
+    IMPEncoderH265TransCfg trans;
+    int ret = IMP_Encoder_GetH265TransCfg(chn, &trans);
+    if (ret != 0) {
+        HAL_LOG_ERR("GetH265TransCfg(%d) failed: %d", chn, ret);
+        return ret;
+    }
+    cfg->chroma_cr_qp_offset = trans.chroma_cr_qp_offset;
+    cfg->chroma_cb_qp_offset = trans.chroma_cb_qp_offset;
+    return RSS_OK;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/* ═══════════════════════════════���══════════════════════════════��═══════
+ * 15. Phase 5 — Operational Features
+ * ═══��═══════════���═════════════════════════════════════��════════════════ */
+
+int hal_enc_set_crop(void *ctx, int chn, const rss_enc_crop_cfg_t *cfg)
+{
+    (void)ctx;
+    if (!cfg)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T32)
+    IMPEncoderCropCfg crop;
+    memset(&crop, 0, sizeof(crop));
+    crop.enable = cfg->enable;
+    crop.x = cfg->x;
+    crop.y = cfg->y;
+    crop.w = cfg->w;
+    crop.h = cfg->h;
+    int ret = IMP_Encoder_SetChnCrop(chn, &crop);
+    if (ret != 0)
+        HAL_LOG_ERR("SetChnCrop(%d) failed: %d", chn, ret);
+    return ret;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+int hal_enc_get_crop(void *ctx, int chn, rss_enc_crop_cfg_t *cfg)
+{
+    (void)ctx;
+    if (!cfg)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T32)
+    IMPEncoderCropCfg crop;
+    int ret = IMP_Encoder_GetChnCrop(chn, &crop);
+    if (ret != 0) {
+        HAL_LOG_ERR("GetChnCrop(%d) failed: %d", chn, ret);
+        return ret;
+    }
+    cfg->enable = crop.enable;
+    cfg->x = crop.x;
+    cfg->y = crop.y;
+    cfg->w = crop.w;
+    cfg->h = crop.h;
+    return RSS_OK;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+int hal_enc_get_eval_info(void *ctx, int chn, void *info)
+{
+    (void)ctx;
+    if (!info)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T31)
+    return IMP_Encoder_GetChnEvalInfo(chn, info);
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+int hal_enc_poll_module_stream(void *ctx, uint32_t *chn_bitmap, uint32_t timeout_ms)
+{
+    (void)ctx;
+    if (!chn_bitmap)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T21) || defined(PLATFORM_T31) || defined(PLATFORM_T41)
+    return IMP_Encoder_PollingModuleStream(chn_bitmap, timeout_ms);
+#else
+    (void)timeout_ms;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+int hal_enc_set_resize_mode(void *ctx, int chn, int enable)
+{
+    (void)ctx;
+#if defined(PLATFORM_T31) || defined(PLATFORM_T41)
+    return IMP_Encoder_SetChnResizeMode(chn, enable);
+#else
+    (void)chn;
+    (void)enable;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/* ═══════════════════════════════════════════════════════════��══════════
+ * 16. Phase 6 — JPEG Features
+ * ═════���═══════════���════════════════════════════════════════════════════ */
+
+int hal_enc_set_jpeg_ql(void *ctx, int chn, const rss_enc_jpeg_ql_t *ql)
+{
+    (void)ctx;
+    if (!ql)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T21) || defined(PLATFORM_T41)
+    IMPEncoderJpegeQl jql;
+    jql.user_ql_en = ql->user_table_en;
+    memcpy(jql.qmem_table, ql->qmem_table, sizeof(jql.qmem_table));
+    int ret = IMP_Encoder_SetJpegeQl(chn, &jql);
+    if (ret != 0)
+        HAL_LOG_ERR("SetJpegeQl(%d) failed: %d", chn, ret);
+    return ret;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+int hal_enc_get_jpeg_ql(void *ctx, int chn, rss_enc_jpeg_ql_t *ql)
+{
+    (void)ctx;
+    if (!ql)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T21) || defined(PLATFORM_T41)
+    IMPEncoderJpegeQl jql;
+    int ret = IMP_Encoder_GetJpegeQl(chn, &jql);
+    if (ret != 0) {
+        HAL_LOG_ERR("GetJpegeQl(%d) failed: %d", chn, ret);
+        return ret;
+    }
+    ql->user_table_en = jql.user_ql_en;
+    memcpy(ql->qmem_table, jql.qmem_table, sizeof(ql->qmem_table));
+    return RSS_OK;
+#else
+    (void)chn;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+int hal_enc_set_jpeg_qp(void *ctx, int chn, int qp)
+{
+    (void)ctx;
+#if defined(PLATFORM_T32)
+    int ret = IMP_Encoder_SetJpegQp(chn, qp);
+    if (ret != 0)
+        HAL_LOG_ERR("SetJpegQp(%d, %d) failed: %d", chn, qp, ret);
+    return ret;
+#else
+    (void)chn;
+    (void)qp;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+int hal_enc_get_jpeg_qp(void *ctx, int chn, int *qp)
+{
+    (void)ctx;
+    if (!qp)
+        return RSS_ERR_INVAL;
+#if defined(PLATFORM_T32)
+    return IMP_Encoder_GetJpegQp(chn, qp);
 #else
     (void)chn;
     return RSS_ERR_NOTSUP;

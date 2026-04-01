@@ -58,6 +58,35 @@ typedef enum {
     RSS_RC_CAPPED_QUALITY = 5, /* new SDK; mapped to VBR on old */
 } rss_rc_mode_t;
 
+/* GOP control mode (T31/T40/T41 only) */
+typedef enum {
+    RSS_GOP_DEFAULT = 0,
+    RSS_GOP_PYRAMIDAL = 1,
+    RSS_GOP_SMARTP = 2,
+} rss_gop_mode_t;
+
+/* RC options bitmask (T31/T40/T41 only; combine with |) */
+#define RSS_RC_OPT_NONE 0x00
+#define RSS_RC_OPT_SCN_CHG_RES 0x01
+#define RSS_RC_OPT_DELAYED 0x02
+#define RSS_RC_OPT_STATIC_SCENE 0x04
+#define RSS_RC_OPT_ENABLE_SKIP 0x08
+#define RSS_RC_OPT_SC_PREVENTION 0x10
+
+/* Super frame mode */
+typedef enum {
+    RSS_SUPERFRM_NONE = 0,
+    RSS_SUPERFRM_DISCARD = 1,
+    RSS_SUPERFRM_REENCODE = 2,
+} rss_super_frame_mode_t;
+
+/* RC priority for super frame handling */
+typedef enum {
+    RSS_RC_PRIO_RDO = 0,
+    RSS_RC_PRIO_BITRATE = 1,
+    RSS_RC_PRIO_FRAMEBITS = 2,
+} rss_rc_priority_t;
+
 /* Pixel format */
 typedef enum {
     RSS_PIXFMT_NV12 = 0,
@@ -152,6 +181,11 @@ typedef struct {
 
     /* GOP */
     uint32_t gop_length;
+    rss_gop_mode_t gop_mode;     /* T31/T40/T41; 0 = default */
+    uint32_t max_same_scene_cnt; /* T31/T40/T41; 0 = SDK default (2) */
+
+    /* RC options bitmask (T31/T40/T41; RSS_RC_OPT_*) */
+    uint32_t rc_options;
 
     /* Buffer size hint; 0 = SDK default */
     uint32_t buf_size;
@@ -159,6 +193,75 @@ typedef struct {
     /* IVDC (ISP-VPU Direct Connect) — T23+ only, main channel only */
     bool ivdc;
 } rss_video_config_t;
+
+/* Super frame configuration (T21/T32) */
+typedef struct {
+    rss_super_frame_mode_t mode;
+    uint32_t i_bits_thr; /* I frame size threshold (bits) */
+    uint32_t p_bits_thr; /* P frame size threshold (bits) */
+    rss_rc_priority_t priority;
+    uint8_t max_reencode; /* max re-encode attempts [1,3]; T32 only */
+} rss_super_frame_cfg_t;
+
+/* P-skip configuration (T32 only) */
+typedef struct {
+    bool enable;
+    int max_frames; /* max consecutive P frames in skip mode */
+    int threshold;  /* bitrate exceed factor * 100 */
+} rss_pskip_cfg_t;
+
+/* SRD configuration (T32 only, H265) */
+typedef struct {
+    bool enable;
+    uint8_t level; /* [0..3], higher = more aggressive static scene optimization */
+} rss_srd_cfg_t;
+
+/* ROI region configuration (T21: 8 regions, T32: 16 regions) */
+typedef struct {
+    uint32_t index; /* region index (0-7 on T21, 0-15 on T32) */
+    bool enable;
+    bool relative_qp; /* false=absolute QP, true=relative to frame QP */
+    int qp;           /* QP value (absolute) or delta (relative) */
+    int x, y, w, h;   /* region rectangle in pixels */
+} rss_enc_roi_t;
+
+/* Encoder denoise configuration (T21 only) */
+typedef struct {
+    bool enable;
+    int dn_type; /* 0=off, 1=I+P frame denoise, 2=I-only denoise */
+    int dn_i_qp; /* denoise I frame QP */
+    int dn_p_qp; /* denoise P frame QP */
+} rss_enc_denoise_cfg_t;
+
+/* GDR (Gradual Decoder Refresh) configuration (T32 only) */
+typedef struct {
+    bool enable;
+    int gdr_cycle;  /* interval between GDR P frames [3..65535] */
+    int gdr_frames; /* P frames split from I frame [2..10] */
+} rss_enc_gdr_cfg_t;
+
+/* H.264 transform configuration */
+typedef struct {
+    int chroma_qp_index_offset; /* [-12..12] */
+} rss_enc_h264_trans_t;
+
+/* H.265 transform configuration */
+typedef struct {
+    int chroma_cr_qp_offset; /* [-12..12] */
+    int chroma_cb_qp_offset; /* [-12..12] */
+} rss_enc_h265_trans_t;
+
+/* Encoder crop configuration (T32 only) */
+typedef struct {
+    bool enable;
+    uint32_t x, y, w, h;
+} rss_enc_crop_cfg_t;
+
+/* JPEG custom quantization table */
+typedef struct {
+    bool user_table_en;      /* false=SDK default, true=use custom table */
+    uint8_t qmem_table[128]; /* custom quantization table */
+} rss_enc_jpeg_ql_t;
 
 /* Raw frame info (returned by fs_get_frame / fs_snap_frame) */
 typedef struct {
@@ -432,6 +535,32 @@ typedef struct {
     bool has_set_bitrate;
     bool has_stream_buf_size;
     bool has_encoder_pool;
+    bool has_smartp_gop;
+    bool has_rc_options;
+    bool has_pskip;
+    bool has_srd;
+    bool has_max_pic_size;
+    bool has_super_frame;
+    bool has_color2grey;
+    bool has_roi;
+    bool has_map_roi;
+    bool has_qp_bounds_per_frame;
+    bool has_qpg_mode;
+    bool has_qpg_ai;
+    bool has_mbrc;
+    bool has_enc_denoise;
+    bool has_gdr;
+    bool has_sei_userdata;
+    bool has_h264_vui;
+    bool has_h265_vui;
+    bool has_h264_trans;
+    bool has_h265_trans;
+    bool has_enc_crop;
+    bool has_eval_info;
+    bool has_poll_module;
+    bool has_resize_mode;
+    bool has_jpeg_ql;
+    bool has_jpeg_qp;
 
     /* ISP capabilities */
     bool has_multi_sensor;
@@ -573,6 +702,68 @@ typedef struct rss_hal_ops {
     int (*enc_set_max_stream_cnt)(void *ctx, int chn, int cnt);
     int (*enc_set_pool)(void *ctx, int chn, int pool_id);
     int (*enc_get_pool)(void *ctx, int chn);
+
+    /* Encoder: Phase 1 — Bandwidth reduction */
+    int (*enc_set_gop_mode)(void *ctx, int chn, rss_gop_mode_t mode);
+    int (*enc_get_gop_mode)(void *ctx, int chn, rss_gop_mode_t *mode);
+    int (*enc_set_rc_options)(void *ctx, int chn, uint32_t options);
+    int (*enc_get_rc_options)(void *ctx, int chn, uint32_t *options);
+    int (*enc_set_max_same_scene_cnt)(void *ctx, int chn, uint32_t count);
+    int (*enc_get_max_same_scene_cnt)(void *ctx, int chn, uint32_t *count);
+    int (*enc_set_pskip)(void *ctx, int chn, const rss_pskip_cfg_t *cfg);
+    int (*enc_get_pskip)(void *ctx, int chn, rss_pskip_cfg_t *cfg);
+    int (*enc_request_pskip)(void *ctx, int chn);
+    int (*enc_set_srd)(void *ctx, int chn, const rss_srd_cfg_t *cfg);
+    int (*enc_get_srd)(void *ctx, int chn, rss_srd_cfg_t *cfg);
+    int (*enc_set_max_pic_size)(void *ctx, int chn, uint32_t max_i_kbits, uint32_t max_p_kbits);
+    int (*enc_set_super_frame)(void *ctx, int chn, const rss_super_frame_cfg_t *cfg);
+    int (*enc_get_super_frame)(void *ctx, int chn, rss_super_frame_cfg_t *cfg);
+    int (*enc_set_color2grey)(void *ctx, int chn, bool enable);
+    int (*enc_get_color2grey)(void *ctx, int chn, bool *enable);
+
+    /* Encoder: Phase 2 — Quality improvement */
+    int (*enc_set_roi)(void *ctx, int chn, const rss_enc_roi_t *roi);
+    int (*enc_get_roi)(void *ctx, int chn, uint32_t index, rss_enc_roi_t *roi);
+    int (*enc_set_map_roi)(void *ctx, int chn, const uint8_t *map, uint32_t map_size, int type);
+    int (*enc_set_qp_bounds_per_frame)(void *ctx, int chn, int min_i, int max_i, int min_p,
+                                       int max_p);
+    int (*enc_set_qpg_mode)(void *ctx, int chn, int mode);
+    int (*enc_get_qpg_mode)(void *ctx, int chn, int *mode);
+    int (*enc_set_qpg_ai)(void *ctx, int chn, const uint8_t *map, uint32_t w, uint32_t h, int mode,
+                          int mark_level);
+    int (*enc_set_mbrc)(void *ctx, int chn, bool enable);
+    int (*enc_get_mbrc)(void *ctx, int chn, bool *enable);
+    int (*enc_set_denoise)(void *ctx, int chn, const rss_enc_denoise_cfg_t *cfg);
+    int (*enc_get_denoise)(void *ctx, int chn, rss_enc_denoise_cfg_t *cfg);
+
+    /* Encoder: Phase 3 — Error recovery */
+    int (*enc_set_gdr)(void *ctx, int chn, const rss_enc_gdr_cfg_t *cfg);
+    int (*enc_get_gdr)(void *ctx, int chn, rss_enc_gdr_cfg_t *cfg);
+    int (*enc_request_gdr)(void *ctx, int chn, int gdr_frames);
+    int (*enc_insert_userdata)(void *ctx, int chn, const void *data, uint32_t len);
+
+    /* Encoder: Phase 4 — Codec compliance */
+    int (*enc_set_h264_vui)(void *ctx, int chn, const void *vui);
+    int (*enc_get_h264_vui)(void *ctx, int chn, void *vui);
+    int (*enc_set_h265_vui)(void *ctx, int chn, const void *vui);
+    int (*enc_get_h265_vui)(void *ctx, int chn, void *vui);
+    int (*enc_set_h264_trans)(void *ctx, int chn, const rss_enc_h264_trans_t *cfg);
+    int (*enc_get_h264_trans)(void *ctx, int chn, rss_enc_h264_trans_t *cfg);
+    int (*enc_set_h265_trans)(void *ctx, int chn, const rss_enc_h265_trans_t *cfg);
+    int (*enc_get_h265_trans)(void *ctx, int chn, rss_enc_h265_trans_t *cfg);
+
+    /* Encoder: Phase 5 — Operational */
+    int (*enc_set_crop)(void *ctx, int chn, const rss_enc_crop_cfg_t *cfg);
+    int (*enc_get_crop)(void *ctx, int chn, rss_enc_crop_cfg_t *cfg);
+    int (*enc_get_eval_info)(void *ctx, int chn, void *info);
+    int (*enc_poll_module_stream)(void *ctx, uint32_t *chn_bitmap, uint32_t timeout_ms);
+    int (*enc_set_resize_mode)(void *ctx, int chn, int enable);
+
+    /* Encoder: Phase 6 — JPEG */
+    int (*enc_set_jpeg_ql)(void *ctx, int chn, const rss_enc_jpeg_ql_t *ql);
+    int (*enc_get_jpeg_ql)(void *ctx, int chn, rss_enc_jpeg_ql_t *ql);
+    int (*enc_set_jpeg_qp)(void *ctx, int chn, int qp);
+    int (*enc_get_jpeg_qp)(void *ctx, int chn, int *qp);
 
     /* --- ISP tuning --- */
 

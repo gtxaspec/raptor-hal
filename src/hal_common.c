@@ -57,6 +57,60 @@ extern int hal_enc_set_max_stream_cnt(void *ctx, int chn, int cnt);
 extern int hal_enc_set_pool(void *ctx, int chn, int pool_id);
 extern int hal_enc_get_pool(void *ctx, int chn);
 
+/* Encoder: Phase 1 — Bandwidth reduction (hal_encoder.c) */
+extern int hal_enc_set_gop_mode(void *ctx, int chn, rss_gop_mode_t mode);
+extern int hal_enc_get_gop_mode(void *ctx, int chn, rss_gop_mode_t *mode);
+extern int hal_enc_set_rc_options(void *ctx, int chn, uint32_t options);
+extern int hal_enc_get_rc_options(void *ctx, int chn, uint32_t *options);
+extern int hal_enc_set_max_same_scene_cnt(void *ctx, int chn, uint32_t count);
+extern int hal_enc_get_max_same_scene_cnt(void *ctx, int chn, uint32_t *count);
+extern int hal_enc_set_pskip(void *ctx, int chn, const rss_pskip_cfg_t *cfg);
+extern int hal_enc_get_pskip(void *ctx, int chn, rss_pskip_cfg_t *cfg);
+extern int hal_enc_request_pskip(void *ctx, int chn);
+extern int hal_enc_set_srd(void *ctx, int chn, const rss_srd_cfg_t *cfg);
+extern int hal_enc_get_srd(void *ctx, int chn, rss_srd_cfg_t *cfg);
+extern int hal_enc_set_max_pic_size(void *ctx, int chn, uint32_t max_i_kbits, uint32_t max_p_kbits);
+extern int hal_enc_set_super_frame(void *ctx, int chn, const rss_super_frame_cfg_t *cfg);
+extern int hal_enc_get_super_frame(void *ctx, int chn, rss_super_frame_cfg_t *cfg);
+extern int hal_enc_set_color2grey(void *ctx, int chn, bool enable);
+extern int hal_enc_get_color2grey(void *ctx, int chn, bool *enable);
+
+/* Encoder: Phase 2 — Quality improvement (hal_encoder.c) */
+extern int hal_enc_set_roi(void *ctx, int chn, const rss_enc_roi_t *roi);
+extern int hal_enc_get_roi(void *ctx, int chn, uint32_t index, rss_enc_roi_t *roi);
+extern int hal_enc_set_map_roi(void *ctx, int chn, const uint8_t *map, uint32_t map_size, int type);
+extern int hal_enc_set_qp_bounds_per_frame(void *ctx, int chn, int min_i, int max_i, int min_p,
+                                           int max_p);
+extern int hal_enc_set_qpg_mode(void *ctx, int chn, int mode);
+extern int hal_enc_get_qpg_mode(void *ctx, int chn, int *mode);
+extern int hal_enc_set_qpg_ai(void *ctx, int chn, const uint8_t *map, uint32_t w, uint32_t h,
+                              int mode, int mark_level);
+extern int hal_enc_set_mbrc(void *ctx, int chn, bool enable);
+extern int hal_enc_get_mbrc(void *ctx, int chn, bool *enable);
+extern int hal_enc_set_denoise(void *ctx, int chn, const rss_enc_denoise_cfg_t *cfg);
+extern int hal_enc_get_denoise(void *ctx, int chn, rss_enc_denoise_cfg_t *cfg);
+extern int hal_enc_set_gdr(void *ctx, int chn, const rss_enc_gdr_cfg_t *cfg);
+extern int hal_enc_get_gdr(void *ctx, int chn, rss_enc_gdr_cfg_t *cfg);
+extern int hal_enc_request_gdr(void *ctx, int chn, int gdr_frames);
+extern int hal_enc_insert_userdata(void *ctx, int chn, const void *data, uint32_t len);
+extern int hal_enc_set_h264_vui(void *ctx, int chn, const void *vui);
+extern int hal_enc_get_h264_vui(void *ctx, int chn, void *vui);
+extern int hal_enc_set_h265_vui(void *ctx, int chn, const void *vui);
+extern int hal_enc_get_h265_vui(void *ctx, int chn, void *vui);
+extern int hal_enc_set_h264_trans(void *ctx, int chn, const rss_enc_h264_trans_t *cfg);
+extern int hal_enc_get_h264_trans(void *ctx, int chn, rss_enc_h264_trans_t *cfg);
+extern int hal_enc_set_h265_trans(void *ctx, int chn, const rss_enc_h265_trans_t *cfg);
+extern int hal_enc_get_h265_trans(void *ctx, int chn, rss_enc_h265_trans_t *cfg);
+extern int hal_enc_set_crop(void *ctx, int chn, const rss_enc_crop_cfg_t *cfg);
+extern int hal_enc_get_crop(void *ctx, int chn, rss_enc_crop_cfg_t *cfg);
+extern int hal_enc_get_eval_info(void *ctx, int chn, void *info);
+extern int hal_enc_poll_module_stream(void *ctx, uint32_t *chn_bitmap, uint32_t timeout_ms);
+extern int hal_enc_set_resize_mode(void *ctx, int chn, int enable);
+extern int hal_enc_set_jpeg_ql(void *ctx, int chn, const rss_enc_jpeg_ql_t *ql);
+extern int hal_enc_get_jpeg_ql(void *ctx, int chn, rss_enc_jpeg_ql_t *ql);
+extern int hal_enc_set_jpeg_qp(void *ctx, int chn, int qp);
+extern int hal_enc_get_jpeg_qp(void *ctx, int chn, int *qp);
+
 /* Framesource (hal_framesource.c) */
 extern int hal_fs_create_channel(void *ctx, int chn, const rss_fs_config_t *cfg);
 extern int hal_fs_destroy_channel(void *ctx, int chn);
@@ -573,6 +627,66 @@ static const rss_hal_ops_t g_ops = {
     .enc_set_max_stream_cnt = hal_enc_set_max_stream_cnt,
     .enc_set_pool = hal_enc_set_pool,
     .enc_get_pool = hal_enc_get_pool,
+
+    /* Encoder: Phase 1 — Bandwidth reduction */
+    .enc_set_gop_mode = hal_enc_set_gop_mode,
+    .enc_get_gop_mode = hal_enc_get_gop_mode,
+    .enc_set_rc_options = hal_enc_set_rc_options,
+    .enc_get_rc_options = hal_enc_get_rc_options,
+    .enc_set_max_same_scene_cnt = hal_enc_set_max_same_scene_cnt,
+    .enc_get_max_same_scene_cnt = hal_enc_get_max_same_scene_cnt,
+    .enc_set_pskip = hal_enc_set_pskip,
+    .enc_get_pskip = hal_enc_get_pskip,
+    .enc_request_pskip = hal_enc_request_pskip,
+    .enc_set_srd = hal_enc_set_srd,
+    .enc_get_srd = hal_enc_get_srd,
+    .enc_set_max_pic_size = hal_enc_set_max_pic_size,
+    .enc_set_super_frame = hal_enc_set_super_frame,
+    .enc_get_super_frame = hal_enc_get_super_frame,
+    .enc_set_color2grey = hal_enc_set_color2grey,
+    .enc_get_color2grey = hal_enc_get_color2grey,
+
+    /* Encoder: Phase 2 — Quality improvement */
+    .enc_set_roi = hal_enc_set_roi,
+    .enc_get_roi = hal_enc_get_roi,
+    .enc_set_map_roi = hal_enc_set_map_roi,
+    .enc_set_qp_bounds_per_frame = hal_enc_set_qp_bounds_per_frame,
+    .enc_set_qpg_mode = hal_enc_set_qpg_mode,
+    .enc_get_qpg_mode = hal_enc_get_qpg_mode,
+    .enc_set_qpg_ai = hal_enc_set_qpg_ai,
+    .enc_set_mbrc = hal_enc_set_mbrc,
+    .enc_get_mbrc = hal_enc_get_mbrc,
+    .enc_set_denoise = hal_enc_set_denoise,
+    .enc_get_denoise = hal_enc_get_denoise,
+
+    /* Encoder: Phase 3 — Error recovery */
+    .enc_set_gdr = hal_enc_set_gdr,
+    .enc_get_gdr = hal_enc_get_gdr,
+    .enc_request_gdr = hal_enc_request_gdr,
+    .enc_insert_userdata = hal_enc_insert_userdata,
+
+    /* Encoder: Phase 4 — Codec compliance */
+    .enc_set_h264_vui = hal_enc_set_h264_vui,
+    .enc_get_h264_vui = hal_enc_get_h264_vui,
+    .enc_set_h265_vui = hal_enc_set_h265_vui,
+    .enc_get_h265_vui = hal_enc_get_h265_vui,
+    .enc_set_h264_trans = hal_enc_set_h264_trans,
+    .enc_get_h264_trans = hal_enc_get_h264_trans,
+    .enc_set_h265_trans = hal_enc_set_h265_trans,
+    .enc_get_h265_trans = hal_enc_get_h265_trans,
+
+    /* Encoder: Phase 5 — Operational */
+    .enc_set_crop = hal_enc_set_crop,
+    .enc_get_crop = hal_enc_get_crop,
+    .enc_get_eval_info = hal_enc_get_eval_info,
+    .enc_poll_module_stream = hal_enc_poll_module_stream,
+    .enc_set_resize_mode = hal_enc_set_resize_mode,
+
+    /* Encoder: Phase 6 — JPEG */
+    .enc_set_jpeg_ql = hal_enc_set_jpeg_ql,
+    .enc_get_jpeg_ql = hal_enc_get_jpeg_ql,
+    .enc_set_jpeg_qp = hal_enc_set_jpeg_qp,
+    .enc_get_jpeg_qp = hal_enc_get_jpeg_qp,
 
     /* ISP tuning */
     .isp_set_brightness = hal_isp_set_brightness,

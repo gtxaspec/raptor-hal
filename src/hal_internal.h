@@ -159,6 +159,12 @@ int IMP_OSD_SetPoolSize(int size);
 int IMP_ISP_Tuning_GetAwbHist(IMPISPAWBHist *awb_hist);
 #endif
 
+/* T41: IMP_Encoder_SetChnAttrRcMode exists in libimp.so but is missing
+ * from the 1.2.5 header (only Get is declared). */
+#if defined(PLATFORM_T41)
+int IMP_Encoder_SetChnAttrRcMode(int encChn, const IMPEncoderAttrRcMode *pstRcModeCfg);
+#endif
+
 /* Note: IMP_Alloc/Free, IMP_Pool*, IMP_System_* and IMP_OSD_SetRgnAttrWithTimestamp
  * are already declared in the vendor SDK headers included above.
  * Do NOT redeclare them here — it causes conflicting type errors. */
