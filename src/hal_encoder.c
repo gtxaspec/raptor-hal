@@ -2927,12 +2927,21 @@ int hal_enc_get_eval_info(void *ctx, int chn, void *info)
 #endif
 }
 
+/* Weak declaration — T41 headers declare PollingModuleStream but
+ * some T41 libimp.so builds don't export it. Weak symbol avoids
+ * link failure; runtime check returns NOTSUP if absent. */
+#if defined(PLATFORM_T21) || defined(PLATFORM_T31) || defined(PLATFORM_T41)
+__attribute__((weak)) int IMP_Encoder_PollingModuleStream(uint32_t *, uint32_t);
+#endif
+
 int hal_enc_poll_module_stream(void *ctx, uint32_t *chn_bitmap, uint32_t timeout_ms)
 {
     (void)ctx;
     if (!chn_bitmap)
         return RSS_ERR_INVAL;
 #if defined(PLATFORM_T21) || defined(PLATFORM_T31) || defined(PLATFORM_T41)
+    if (!IMP_Encoder_PollingModuleStream)
+        return RSS_ERR_NOTSUP;
     return IMP_Encoder_PollingModuleStream(chn_bitmap, timeout_ms);
 #else
     (void)timeout_ms;
