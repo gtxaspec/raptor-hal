@@ -301,7 +301,7 @@ int hal_isp_set_wb(void *ctx, const rss_wb_config_t *wb_cfg)
     {
         IMPISPWBAttr attr;
         memset(&attr, 0, sizeof(attr));
-        attr.mode = (enum isp_core_wb_mode)wb_cfg->mode;
+        attr.mode = (IMPISPAWBMode)wb_cfg->mode;
         return IMP_ISP_Tuning_SetAwbAttr(IMPVI_MAIN, &attr);
     }
 #elif defined(PLATFORM_T32) || defined(PLATFORM_T40)
@@ -311,7 +311,7 @@ int hal_isp_set_wb(void *ctx, const rss_wb_config_t *wb_cfg)
     {
         IMPISPWBAttr awb_attr;
         memset(&awb_attr, 0, sizeof(awb_attr));
-        awb_attr.mode = (enum isp_core_wb_mode)wb_cfg->mode;
+        awb_attr.mode = (IMPISPAWBMode)wb_cfg->mode;
         awb_attr.gain_val.rgain = wb_cfg->r_gain;
         awb_attr.gain_val.bgain = wb_cfg->b_gain;
         return IMP_ISP_Tuning_SetAwbAttr(IMPVI_MAIN, &awb_attr);
