@@ -63,6 +63,11 @@
 #define HAL_MULTI_SENSOR
 #endif
 
+/* T23 SDK 1.3.0 MultiCamera API (IMP_ISP_MultiCamera_Tuning_*) */
+#if defined(PLATFORM_T23)
+#define HAL_T23_MULTICAM
+#endif
+
 /* ═══════════════════════════════════════════════════════════════════════
  * 2. Stub Types for Missing ISP Structs
  *
@@ -222,11 +227,18 @@ int IMP_Encoder_SetChnAttrRcMode(int encChn, const IMPEncoderAttrRcMode *pstRcMo
 struct rss_hal_ctx {
     const rss_hal_ops_t *ops;
     rss_hal_caps_t caps;
-    rss_sensor_config_t sensor;
 
-    /* Flip state (needed for SoCs with combined H/V flip) */
-    int hflip_state;
-    int vflip_state;
+    /* Multi-sensor state */
+    int sensor_count;
+    rss_sensor_config_t sensors[RSS_MAX_SENSORS];
+    IMPSensorInfo imp_sensors[RSS_MAX_SENSORS];
+
+    /* Flip state per sensor (needed for SoCs with combined H/V flip) */
+    int hflip_state[RSS_MAX_SENSORS];
+    int vflip_state[RSS_MAX_SENSORS];
+
+    /* Full multi-sensor config (stored for deinit ordering) */
+    rss_multi_sensor_config_t multi_cfg;
 
     /* Frame linearization scratch buffer (new SDK ring-buffer wrap) */
     uint8_t *scratch_buf;
@@ -238,9 +250,6 @@ struct rss_hal_ctx {
 
     /* Platform-specific opaque data */
     void *platform;
-
-    /* Cached IMPSensorInfo for deinit (DelSensor needs it) */
-    IMPSensorInfo imp_sensor;
 
     bool initialized;
 };

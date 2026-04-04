@@ -428,6 +428,28 @@ typedef struct {
     int power_gpio;
 } rss_sensor_config_t;
 
+/* Maximum number of sensors supported (IMPVI_MAIN, SEC, THR) */
+#define RSS_MAX_SENSORS 3
+
+/* Multi-sensor configuration (passed to hal_init) */
+typedef struct {
+    int sensor_count; /* 1, 2, or 3 */
+    rss_sensor_config_t sensors[RSS_MAX_SENSORS];
+
+    /* T23 MIPI switch GPIO config (ignored on T32/T40/T41) */
+    struct {
+        bool enable;
+        uint16_t switch_gpio;  /* GPIO controlling MIPI switch chip */
+        uint16_t main_gstate;  /* GPIO state to select main sensor */
+        uint16_t sec_gstate;   /* GPIO state to select secondary sensor */
+        uint16_t switch_gpio2; /* second GPIO (triple camera only) */
+        uint16_t thr_gstate[2];
+    } mipi_switch;
+
+    /* Image stitching mode (T23 only, 0 = disabled) */
+    int stitch_mode;
+} rss_multi_sensor_config_t;
+
 /* Exposure info (for IR-cut control) */
 typedef struct {
     uint32_t total_gain;
@@ -564,6 +586,8 @@ typedef struct {
 
     /* ISP capabilities */
     bool has_multi_sensor;
+    int max_sensors;              /* 1 for T20-T31, 3 for T23-1.3.0/T32/T40/T41 */
+    bool has_t23_multicam_api;    /* T23 1.3.0 IMP_ISP_MultiCamera_* functions */
     bool has_defog;
     bool has_dpc;
     bool has_drc;
@@ -618,7 +642,7 @@ typedef struct rss_hal_ops {
 
     /* --- System lifecycle --- */
 
-    int (*init)(void *ctx, const rss_sensor_config_t *sensor_cfg);
+    int (*init)(void *ctx, const rss_multi_sensor_config_t *multi_cfg);
     int (*deinit)(void *ctx);
     const rss_hal_caps_t *(*get_caps)(void *ctx);
     int (*bind)(void *ctx, const rss_cell_t *src, const rss_cell_t *dst);
@@ -916,6 +940,27 @@ typedef struct rss_hal_ops {
     /* ISP scaler level (T23+T31+T32+T41) */
     int (*isp_set_scaler_lv)(void *ctx, int chn, int level);
 
+    /* --- Multi-sensor ISP tuning (sensor_idx: 0=main, 1=sec, 2=thr) --- */
+
+    int (*isp_set_brightness_n)(void *ctx, int sensor_idx, uint8_t val);
+    int (*isp_set_contrast_n)(void *ctx, int sensor_idx, uint8_t val);
+    int (*isp_set_saturation_n)(void *ctx, int sensor_idx, uint8_t val);
+    int (*isp_set_sharpness_n)(void *ctx, int sensor_idx, uint8_t val);
+    int (*isp_set_hue_n)(void *ctx, int sensor_idx, uint8_t val);
+    int (*isp_set_hflip_n)(void *ctx, int sensor_idx, int enable);
+    int (*isp_set_vflip_n)(void *ctx, int sensor_idx, int enable);
+    int (*isp_set_running_mode_n)(void *ctx, int sensor_idx, rss_isp_mode_t mode);
+    int (*isp_set_sensor_fps_n)(void *ctx, int sensor_idx, uint32_t fps_num, uint32_t fps_den);
+    int (*isp_set_antiflicker_n)(void *ctx, int sensor_idx, rss_antiflicker_t mode);
+    int (*isp_set_sinter_strength_n)(void *ctx, int sensor_idx, uint8_t val);
+    int (*isp_set_temper_strength_n)(void *ctx, int sensor_idx, uint8_t val);
+    int (*isp_set_ae_comp_n)(void *ctx, int sensor_idx, int val);
+    int (*isp_set_max_again_n)(void *ctx, int sensor_idx, uint32_t gain);
+    int (*isp_set_max_dgain_n)(void *ctx, int sensor_idx, uint32_t gain);
+    int (*isp_get_exposure_n)(void *ctx, int sensor_idx, rss_exposure_t *exposure);
+    int (*isp_set_custom_mode_n)(void *ctx, int sensor_idx, int mode);
+    int (*isp_set_ae_freeze_n)(void *ctx, int sensor_idx, int enable);
+
     /* --- Audio --- */
 
     int (*audio_init)(void *ctx, const rss_audio_config_t *cfg);
@@ -1093,6 +1138,16 @@ typedef struct rss_hal_ops {
 rss_hal_ctx_t *rss_hal_create(void);
 void rss_hal_destroy(rss_hal_ctx_t *ctx);
 const rss_hal_ops_t *rss_hal_get_ops(rss_hal_ctx_t *ctx);
+
+/* Single-sensor init convenience wrapper (backward compat) */
+static inline int rss_hal_init_single(const rss_hal_ops_t *ops, void *ctx,
+                                      const rss_sensor_config_t *sensor)
+{
+    rss_multi_sensor_config_t m = {0};
+    m.sensor_count = 1;
+    m.sensors[0] = *sensor;
+    return ops->init ? ops->init(ctx, &m) : -1;
+}
 
 /* ================================================================
  * Convenience Macro

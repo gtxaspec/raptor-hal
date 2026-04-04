@@ -57,6 +57,8 @@ const rss_hal_caps_t g_hal_caps = {
     .has_jpeg_qp = false,
     /* ISP */
     .has_multi_sensor = false,
+    .max_sensors = 1,
+    .has_t23_multicam_api = false,
     .has_defog = false,
     .has_dpc = false,
     .has_drc = false, /* T20 has SetRawDRC, not SetDRC_Strength */
@@ -143,6 +145,8 @@ const rss_hal_caps_t g_hal_caps = {
     .has_jpeg_qp = false,
     /* ISP */
     .has_multi_sensor = false,
+    .max_sensors = 1,
+    .has_t23_multicam_api = false,
     .has_defog = false,
     .has_dpc = false,
     .has_drc = true,
@@ -228,7 +232,9 @@ const rss_hal_caps_t g_hal_caps = {
     .has_jpeg_ql = false,
     .has_jpeg_qp = false,
     /* ISP */
-    .has_multi_sensor = false, /* _Sec suffix, not IMPVI_NUM */
+    .has_multi_sensor = true, /* SDK 1.3.0 MultiCamera API */
+    .max_sensors = 3,
+    .has_t23_multicam_api = true,
     .has_defog = true,
     .has_dpc = true,
     .has_drc = true,
@@ -264,7 +270,7 @@ const rss_hal_caps_t g_hal_caps = {
     .uses_new_sdk = false,
     .uses_impvi = false,
     /* Limits */
-    .max_enc_channels = 3,
+    .max_enc_channels = 6, /* vendor dual-sensor sample uses 6 */
     .max_osd_regions = 16,
     .max_osd_groups = 2,
     .max_isp_osd_regions = 8,
@@ -315,6 +321,8 @@ const rss_hal_caps_t g_hal_caps = {
     .has_jpeg_qp = false,
     /* ISP */
     .has_multi_sensor = false,
+    .max_sensors = 1,
+    .has_t23_multicam_api = false,
     .has_defog = false,
     .has_dpc = false,
     .has_drc = false, /* T30 has SetRawDRC, not SetDRC_Strength */
@@ -401,6 +409,8 @@ const rss_hal_caps_t g_hal_caps = {
     .has_jpeg_qp = false,
     /* ISP */
     .has_multi_sensor = false,
+    .max_sensors = 1,
+    .has_t23_multicam_api = false,
     .has_defog = true,
     .has_dpc = true,
     .has_drc = true,
@@ -487,6 +497,8 @@ const rss_hal_caps_t g_hal_caps = {
     .has_jpeg_qp = true,
     /* ISP */
     .has_multi_sensor = true, /* IMPVI_NUM, up to 4 sensors */
+    .max_sensors = 3,
+    .has_t23_multicam_api = false,
     .has_defog = false,
     .has_dpc = false,
     .has_drc = false, /* via SetModuleControl only */
@@ -573,6 +585,8 @@ const rss_hal_caps_t g_hal_caps = {
     .has_jpeg_qp = false,
     /* ISP */
     .has_multi_sensor = true,
+    .max_sensors = 3,
+    .has_t23_multicam_api = false,
     .has_defog = false,
     .has_dpc = false,
     .has_drc = false, /* via SetModuleControl only */
@@ -659,6 +673,8 @@ const rss_hal_caps_t g_hal_caps = {
     .has_jpeg_qp = false,
     /* ISP */
     .has_multi_sensor = true, /* IMPVI_NUM defined but SEC/THR unsupported */
+    .max_sensors = 3, /* experimental — vendor docs say SEC/THR not yet functional */
+    .has_t23_multicam_api = false,
     .has_defog = false,
     .has_dpc = false,
     .has_drc = false, /* via SetModuleControl only */

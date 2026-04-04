@@ -265,6 +265,26 @@ extern int hal_isp_set_wdr_output_mode(void *ctx, int mode);
 extern int hal_isp_get_wdr_output_mode(void *ctx, int *mode);
 extern int hal_isp_set_scaler_lv(void *ctx, int chn, int level);
 
+/* Multi-sensor ISP tuning (hal_isp.c) */
+extern int hal_isp_set_brightness_n(void *ctx, int sensor_idx, uint8_t val);
+extern int hal_isp_set_contrast_n(void *ctx, int sensor_idx, uint8_t val);
+extern int hal_isp_set_saturation_n(void *ctx, int sensor_idx, uint8_t val);
+extern int hal_isp_set_sharpness_n(void *ctx, int sensor_idx, uint8_t val);
+extern int hal_isp_set_hue_n(void *ctx, int sensor_idx, uint8_t val);
+extern int hal_isp_set_hflip_n(void *ctx, int sensor_idx, int enable);
+extern int hal_isp_set_vflip_n(void *ctx, int sensor_idx, int enable);
+extern int hal_isp_set_running_mode_n(void *ctx, int sensor_idx, rss_isp_mode_t mode);
+extern int hal_isp_set_sensor_fps_n(void *ctx, int sensor_idx, uint32_t fps_num, uint32_t fps_den);
+extern int hal_isp_set_antiflicker_n(void *ctx, int sensor_idx, rss_antiflicker_t mode);
+extern int hal_isp_set_sinter_strength_n(void *ctx, int sensor_idx, uint8_t val);
+extern int hal_isp_set_temper_strength_n(void *ctx, int sensor_idx, uint8_t val);
+extern int hal_isp_set_ae_comp_n(void *ctx, int sensor_idx, int val);
+extern int hal_isp_set_max_again_n(void *ctx, int sensor_idx, uint32_t gain);
+extern int hal_isp_set_max_dgain_n(void *ctx, int sensor_idx, uint32_t gain);
+extern int hal_isp_get_exposure_n(void *ctx, int sensor_idx, rss_exposure_t *exposure);
+extern int hal_isp_set_custom_mode_n(void *ctx, int sensor_idx, int mode);
+extern int hal_isp_set_ae_freeze_n(void *ctx, int sensor_idx, int enable);
+
 /* Audio (hal_audio.c) */
 extern int hal_audio_init(void *ctx, const rss_audio_config_t *cfg);
 extern int hal_audio_deinit(void *ctx);
@@ -423,7 +443,7 @@ extern int hal_mem_pool_flush_cache(void *ctx, void *ptr, uint32_t size);
 
 /* ── Forward declarations for functions in this file ─────────────── */
 
-static int hal_init(void *ctx, const rss_sensor_config_t *sensor_cfg);
+static int hal_init(void *ctx, const rss_multi_sensor_config_t *multi_cfg);
 static int hal_deinit(void *ctx);
 static const rss_hal_caps_t *hal_get_caps(void *ctx);
 static int hal_bind(void *ctx, const rss_cell_t *src, const rss_cell_t *dst);
@@ -823,6 +843,26 @@ static const rss_hal_ops_t g_ops = {
     .isp_get_wdr_output_mode = hal_isp_get_wdr_output_mode,
     .isp_set_scaler_lv = hal_isp_set_scaler_lv,
 
+    /* Multi-sensor ISP tuning */
+    .isp_set_brightness_n = hal_isp_set_brightness_n,
+    .isp_set_contrast_n = hal_isp_set_contrast_n,
+    .isp_set_saturation_n = hal_isp_set_saturation_n,
+    .isp_set_sharpness_n = hal_isp_set_sharpness_n,
+    .isp_set_hue_n = hal_isp_set_hue_n,
+    .isp_set_hflip_n = hal_isp_set_hflip_n,
+    .isp_set_vflip_n = hal_isp_set_vflip_n,
+    .isp_set_running_mode_n = hal_isp_set_running_mode_n,
+    .isp_set_sensor_fps_n = hal_isp_set_sensor_fps_n,
+    .isp_set_antiflicker_n = hal_isp_set_antiflicker_n,
+    .isp_set_sinter_strength_n = hal_isp_set_sinter_strength_n,
+    .isp_set_temper_strength_n = hal_isp_set_temper_strength_n,
+    .isp_set_ae_comp_n = hal_isp_set_ae_comp_n,
+    .isp_set_max_again_n = hal_isp_set_max_again_n,
+    .isp_set_max_dgain_n = hal_isp_set_max_dgain_n,
+    .isp_get_exposure_n = hal_isp_get_exposure_n,
+    .isp_set_custom_mode_n = hal_isp_set_custom_mode_n,
+    .isp_set_ae_freeze_n = hal_isp_set_ae_freeze_n,
+
     /* Audio */
     .audio_init = hal_audio_init,
     .audio_deinit = hal_audio_deinit,
@@ -1054,35 +1094,69 @@ static IMPDeviceID hal_translate_dev_id(rss_dev_id_t dev)
  *   6. IMP_System_Init()
  *   7. IMP_ISP_EnableTuning()
  */
-static int hal_init(void *ctx, const rss_sensor_config_t *sensor_cfg)
+static int hal_init(void *ctx, const rss_multi_sensor_config_t *multi_cfg)
 {
     rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
     int ret = 0;
 
-    if (!c || !sensor_cfg)
+    if (!c || !multi_cfg || multi_cfg->sensor_count < 1 ||
+        multi_cfg->sensor_count > RSS_MAX_SENSORS)
         return -EINVAL;
 
-    /* Save config for later (deinit needs sensor info for DelSensor) */
-    memcpy(&c->sensor, sensor_cfg, sizeof(c->sensor));
+    /* Save full config for deinit */
+    memcpy(&c->multi_cfg, multi_cfg, sizeof(c->multi_cfg));
+    c->sensor_count = multi_cfg->sensor_count;
+    for (int i = 0; i < multi_cfg->sensor_count; i++)
+        memcpy(&c->sensors[i], &multi_cfg->sensors[i], sizeof(c->sensors[i]));
 
-    /* Step 1: construct IMPSensorInfo */
-    hal_fill_sensor_info(&c->imp_sensor, sensor_cfg);
+    /* Step 1: construct IMPSensorInfo for each sensor */
+    for (int i = 0; i < c->sensor_count; i++)
+        hal_fill_sensor_info(&c->imp_sensors[i], &c->sensors[i]);
 
     /* Step 2: open ISP -- same signature on all SoCs */
     HAL_CHECK(IMP_ISP_Open(), err_out);
 
-    /* Step 3: add sensor */
+    /* Step 3: add and enable sensors */
 #if defined(HAL_MULTI_SENSOR)
-    HAL_CHECK(IMP_ISP_AddSensor(IMPVI_MAIN, &c->imp_sensor), err_isp_close);
+    /* T32/T40/T41: IMPVI_NUM per sensor */
+    HAL_CHECK(IMP_ISP_AddSensor((IMPVI_NUM)0, &c->imp_sensors[0]), err_isp_close);
+    HAL_CHECK(IMP_ISP_EnableSensor((IMPVI_NUM)0, &c->imp_sensors[0]), err_del_sensors);
+    for (int i = 1; i < c->sensor_count; i++) {
+        HAL_CHECK(IMP_ISP_AddSensor((IMPVI_NUM)i, &c->imp_sensors[i]), err_del_sensors);
+        HAL_CHECK(IMP_ISP_EnableSensor((IMPVI_NUM)i, &c->imp_sensors[i]), err_del_sensors);
+    }
+#elif defined(HAL_T23_MULTICAM)
+    /* T23 1.3.0: MIPI switch GPIO config must precede AddSensor */
+    if (c->sensor_count > 1 && multi_cfg->mipi_switch.enable) {
+        IMPUserSwitchgpio sgpio;
+        memset(&sgpio, 0, sizeof(sgpio));
+        sgpio.enable = 1;
+        sgpio.sensornum = (uint16_t)c->sensor_count;
+        if (c->sensor_count == 2) {
+            sgpio.d.switch_gpio = multi_cfg->mipi_switch.switch_gpio;
+            sgpio.d.Msensor_gstate = multi_cfg->mipi_switch.main_gstate;
+            sgpio.d.Ssensor_gstate = multi_cfg->mipi_switch.sec_gstate;
+        } else if (c->sensor_count == 3) {
+            sgpio.t.switch_gpio[0] = multi_cfg->mipi_switch.switch_gpio;
+            sgpio.t.switch_gpio[1] = multi_cfg->mipi_switch.switch_gpio2;
+            sgpio.t.Msensor_gstate[0] = multi_cfg->mipi_switch.main_gstate;
+            sgpio.t.Msensor_gstate[1] = 0;
+            sgpio.t.Ssensor_gstate[0] = multi_cfg->mipi_switch.sec_gstate;
+            sgpio.t.Ssensor_gstate[1] = 0;
+            sgpio.t.Tsensor_gstate[0] = multi_cfg->mipi_switch.thr_gstate[0];
+            sgpio.t.Tsensor_gstate[1] = multi_cfg->mipi_switch.thr_gstate[1];
+        }
+        HAL_CHECK(IMP_ISP_MultiCamera_SetSwitchgpio(&sgpio), err_isp_close);
+    }
+    /* T23: old-style AddSensor (I2C bus 0 sensor should be added last per vendor) */
+    for (int i = 0; i < c->sensor_count; i++)
+        HAL_CHECK(IMP_ISP_AddSensor(&c->imp_sensors[i]), err_del_sensors);
+    /* T23: single EnableSensor enables all registered sensors */
+    HAL_CHECK(IMP_ISP_EnableSensor(), err_del_sensors);
 #else
-    HAL_CHECK(IMP_ISP_AddSensor(&c->imp_sensor), err_isp_close);
-#endif
-
-    /* Step 4: enable sensor */
-#if defined(HAL_MULTI_SENSOR)
-    HAL_CHECK(IMP_ISP_EnableSensor(IMPVI_MAIN, &c->imp_sensor), err_del_sensor);
-#else
-    HAL_CHECK(IMP_ISP_EnableSensor(), err_del_sensor);
+    /* T20/T21/T30/T31: single sensor only */
+    HAL_CHECK(IMP_ISP_AddSensor(&c->imp_sensors[0]), err_isp_close);
+    HAL_CHECK(IMP_ISP_EnableSensor(), err_del_sensors);
 #endif
 
     /* Step 5: set OSD pool size before System_Init (prudynt pattern) */
@@ -1103,15 +1177,20 @@ err_system_exit:
     IMP_System_Exit();
 err_disable_sensor:
 #if defined(HAL_MULTI_SENSOR)
-    IMP_ISP_DisableSensor(IMPVI_MAIN);
+    for (int i = c->sensor_count - 1; i >= 0; i--)
+        IMP_ISP_DisableSensor((IMPVI_NUM)i);
 #else
     IMP_ISP_DisableSensor();
 #endif
-err_del_sensor:
+err_del_sensors:
 #if defined(HAL_MULTI_SENSOR)
-    IMP_ISP_DelSensor(IMPVI_MAIN, &c->imp_sensor);
+    for (int i = c->sensor_count - 1; i >= 0; i--)
+        IMP_ISP_DelSensor((IMPVI_NUM)i, &c->imp_sensors[i]);
+#elif defined(HAL_T23_MULTICAM)
+    for (int i = c->sensor_count - 1; i >= 0; i--)
+        IMP_ISP_DelSensor(&c->imp_sensors[i]);
 #else
-    IMP_ISP_DelSensor(&c->imp_sensor);
+    IMP_ISP_DelSensor(&c->imp_sensors[0]);
 #endif
 err_isp_close:
     IMP_ISP_Close();
@@ -1148,23 +1227,37 @@ static int hal_deinit(void *ctx)
     if (ret < 0 && first_err == 0)
         first_err = ret;
 
-    /* Step 3: disable sensor */
+    /* Step 3: disable sensor(s) */
 #if defined(HAL_MULTI_SENSOR)
-    ret = IMP_ISP_DisableSensor(IMPVI_MAIN);
+    for (int i = c->sensor_count - 1; i >= 0; i--) {
+        ret = IMP_ISP_DisableSensor((IMPVI_NUM)i);
+        if (ret < 0 && first_err == 0)
+            first_err = ret;
+    }
 #else
     ret = IMP_ISP_DisableSensor();
-#endif
     if (ret < 0 && first_err == 0)
         first_err = ret;
+#endif
 
-    /* Step 4: delete sensor */
+    /* Step 4: delete sensor(s) */
 #if defined(HAL_MULTI_SENSOR)
-    ret = IMP_ISP_DelSensor(IMPVI_MAIN, &c->imp_sensor);
+    for (int i = c->sensor_count - 1; i >= 0; i--) {
+        ret = IMP_ISP_DelSensor((IMPVI_NUM)i, &c->imp_sensors[i]);
+        if (ret < 0 && first_err == 0)
+            first_err = ret;
+    }
+#elif defined(HAL_T23_MULTICAM)
+    for (int i = c->sensor_count - 1; i >= 0; i--) {
+        ret = IMP_ISP_DelSensor(&c->imp_sensors[i]);
+        if (ret < 0 && first_err == 0)
+            first_err = ret;
+    }
 #else
-    ret = IMP_ISP_DelSensor(&c->imp_sensor);
-#endif
+    ret = IMP_ISP_DelSensor(&c->imp_sensors[0]);
     if (ret < 0 && first_err == 0)
         first_err = ret;
+#endif
 
     /* Step 5: close ISP -- same signature on all SoCs */
     ret = IMP_ISP_Close();
