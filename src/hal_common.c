@@ -373,16 +373,13 @@ extern int hal_osd_set_region_attr_with_timestamp(void *ctx, int handle,
                                                   const rss_osd_region_t *attr, uint64_t timestamp);
 extern int hal_osd_attach_to_group(void *ctx, int handle, int grp);
 
-/* ISP OSD (hal_osd.c) */
-extern int hal_isp_osd_init(void *ctx);
-extern int hal_isp_osd_exit(void *ctx);
+/* ISP OSD (hal_osd.c) — IMP_ISP_Tuning_*OsdRgn* API */
 extern int hal_isp_osd_set_pool_size(void *ctx, int size);
-extern int hal_isp_osd_create_region(void *ctx, int chn, void *attr);
-extern int hal_isp_osd_destroy_region(void *ctx, int chn, int handle);
-extern int hal_isp_osd_set_region_attr(void *ctx, int chn, int handle, void *attr);
-extern int hal_isp_osd_get_region_attr(void *ctx, int chn, int handle, void *attr);
-extern int hal_isp_osd_show_region(void *ctx, int chn, int handle, int show);
-extern int hal_isp_osd_update_region_data(void *ctx, int chn, int handle, void *data);
+extern int hal_isp_osd_create_region(void *ctx, int sensornum, int *handle_out);
+extern int hal_isp_osd_destroy_region(void *ctx, int sensornum, int handle);
+extern int hal_isp_osd_set_region_attr(void *ctx, int sensornum, int handle,
+                                       int chx, const rss_osd_region_t *attr);
+extern int hal_isp_osd_show_region(void *ctx, int sensornum, int handle, int show);
 
 /* GPIO (hal_gpio.c) */
 extern int hal_gpio_set(void *ctx, int pin, int value);
@@ -947,15 +944,11 @@ static const rss_hal_ops_t g_ops = {
     .osd_set_region_attr_with_timestamp = hal_osd_set_region_attr_with_timestamp,
     .osd_attach_to_group = hal_osd_attach_to_group,
     /* ISP OSD */
-    .isp_osd_init = hal_isp_osd_init,
-    .isp_osd_exit = hal_isp_osd_exit,
     .isp_osd_set_pool_size = hal_isp_osd_set_pool_size,
     .isp_osd_create_region = hal_isp_osd_create_region,
     .isp_osd_destroy_region = hal_isp_osd_destroy_region,
     .isp_osd_set_region_attr = hal_isp_osd_set_region_attr,
-    .isp_osd_get_region_attr = hal_isp_osd_get_region_attr,
     .isp_osd_show_region = hal_isp_osd_show_region,
-    .isp_osd_update_region_data = hal_isp_osd_update_region_data,
 
     /* GPIO / IR-cut */
     .gpio_set = hal_gpio_set,
@@ -1161,6 +1154,9 @@ static int hal_init(void *ctx, const rss_multi_sensor_config_t *multi_cfg)
 
     /* Step 5: set OSD pool size before System_Init (prudynt pattern) */
     IMP_OSD_SetPoolSize(512 * 1024);
+#if defined(PLATFORM_T23) || defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+    IMP_ISP_Tuning_SetOsdPoolSize(512 * 1024);
+#endif
 
     /* Step 6: init system (must be before EnableTuning — prudynt order) */
     HAL_CHECK(IMP_System_Init(), err_disable_sensor);

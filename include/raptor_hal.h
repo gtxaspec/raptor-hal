@@ -1104,17 +1104,18 @@ typedef struct rss_hal_ops {
     int (*dmic_get_pub_attr)(void *ctx, int dev, void *attr);
     int (*dmic_get_frame_and_ref)(void *ctx, int dev, int chn, void *frame, void *ref, int block);
 
-    /* --- ISP OSD (T23/T32/T40/T41 — hardware overlay in ISP pipeline) --- */
+    /* --- ISP OSD (T23/T32/T40/T41 — hardware overlay in ISP pipeline) ---
+     *
+     * Uses IMP_ISP_Tuning_*OsdRgn* API. Not in the bind chain — overlay
+     * happens inside ISP hardware before framesource. Works with IVDC.
+     * sensornum = sensor index (0, 1, 2). */
 
-    int (*isp_osd_init)(void *ctx);
-    int (*isp_osd_exit)(void *ctx);
     int (*isp_osd_set_pool_size)(void *ctx, int size);
-    int (*isp_osd_create_region)(void *ctx, int chn, void *attr);
-    int (*isp_osd_destroy_region)(void *ctx, int chn, int handle);
-    int (*isp_osd_set_region_attr)(void *ctx, int chn, int handle, void *attr);
-    int (*isp_osd_get_region_attr)(void *ctx, int chn, int handle, void *attr);
-    int (*isp_osd_show_region)(void *ctx, int chn, int handle, int show);
-    int (*isp_osd_update_region_data)(void *ctx, int chn, int handle, void *data);
+    int (*isp_osd_create_region)(void *ctx, int sensornum, int *handle_out);
+    int (*isp_osd_destroy_region)(void *ctx, int sensornum, int handle);
+    int (*isp_osd_set_region_attr)(void *ctx, int sensornum, int handle,
+                                   int chx, const rss_osd_region_t *attr);
+    int (*isp_osd_show_region)(void *ctx, int sensornum, int handle, int show);
 
     /* --- Memory Management --- */
 

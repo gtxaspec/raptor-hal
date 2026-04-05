@@ -488,123 +488,105 @@ int hal_osd_attach_to_group(void *ctx, int handle, int grp)
 /* ================================================================
  * ISP OSD — hardware overlay in the ISP pipeline
  *
- * Only available on T23/T32/T40/T41 (SoCs with isp_osd.h).
- * Provides OSD burned directly into ISP output, before encoding.
+ * Only available on T23/T32/T40/T41 (SoCs with imp_isp.h OSD tuning).
+ * Uses IMP_ISP_Tuning_*OsdRgn* API — overlay happens inside the ISP
+ * before framesource output. Not in the bind chain. Works with IVDC.
+ *
+ * Translates rss_osd_region_t → IMPIspOsdAttrAsm internally so callers
+ * never need vendor types.
  * ================================================================ */
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-#include <imp/isp_osd.h>
 #define HAL_HAS_ISP_OSD
 #endif
-
-int hal_isp_osd_init(void *ctx)
-{
-    (void)ctx;
-#ifdef HAL_HAS_ISP_OSD
-    return IMP_OSD_Init_ISP();
-#else
-    return RSS_ERR_NOTSUP;
-#endif
-}
-
-int hal_isp_osd_exit(void *ctx)
-{
-    (void)ctx;
-#ifdef HAL_HAS_ISP_OSD
-    IMP_OSD_Exit_ISP();
-    return RSS_OK;
-#else
-    return RSS_ERR_NOTSUP;
-#endif
-}
 
 int hal_isp_osd_set_pool_size(void *ctx, int size)
 {
     (void)ctx;
 #ifdef HAL_HAS_ISP_OSD
-    return IMP_OSD_SetPoolSize_ISP(size);
+    return IMP_ISP_Tuning_SetOsdPoolSize(size);
 #else
     (void)size;
     return RSS_ERR_NOTSUP;
 #endif
 }
 
-int hal_isp_osd_create_region(void *ctx, int chn, void *attr)
+int hal_isp_osd_create_region(void *ctx, int sensornum, int *handle_out)
 {
     (void)ctx;
 #ifdef HAL_HAS_ISP_OSD
-    if (!attr)
+    if (!handle_out)
         return RSS_ERR_INVAL;
-    return IMP_OSD_CreateRgn_ISP(chn, (IMPIspOsdAttrAsm *)attr);
+    int h = IMP_ISP_Tuning_CreateOsdRgn(sensornum, NULL);
+    if (h < 0)
+        return RSS_ERR_IO;
+    *handle_out = h;
+    return RSS_OK;
 #else
-    (void)chn;
-    (void)attr;
+    (void)sensornum;
+    (void)handle_out;
     return RSS_ERR_NOTSUP;
 #endif
 }
 
-int hal_isp_osd_destroy_region(void *ctx, int chn, int handle)
+int hal_isp_osd_destroy_region(void *ctx, int sensornum, int handle)
 {
     (void)ctx;
 #ifdef HAL_HAS_ISP_OSD
-    return IMP_OSD_DestroyRgn_ISP(chn, handle);
+    return IMP_ISP_Tuning_DestroyOsdRgn(sensornum, handle);
 #else
-    (void)chn;
+    (void)sensornum;
     (void)handle;
     return RSS_ERR_NOTSUP;
 #endif
 }
 
-int hal_isp_osd_set_region_attr(void *ctx, int chn, int handle, void *attr)
+int hal_isp_osd_set_region_attr(void *ctx, int sensornum, int handle,
+                                int chx, const rss_osd_region_t *attr)
 {
     (void)ctx;
 #ifdef HAL_HAS_ISP_OSD
     if (!attr)
         return RSS_ERR_INVAL;
-    return IMP_OSD_SetRgnAttr_PicISP(chn, handle, (IMPIspOsdAttrAsm *)attr);
+
+    IMPIspOsdAttrAsm asm_attr;
+    memset(&asm_attr, 0, sizeof(asm_attr));
+
+    asm_attr.type = ISP_OSD_REG_PIC;
+    asm_attr.stsinglepicAttr.chx = chx;
+    asm_attr.stsinglepicAttr.sensornum = sensornum;
+    asm_attr.stsinglepicAttr.chnOSDAttr.osd_type = IMP_ISP_PIC_ARGB_8888;
+    asm_attr.stsinglepicAttr.chnOSDAttr.osd_argb_type = IMP_ISP_ARGB_TYPE_BGRA;
+    asm_attr.stsinglepicAttr.chnOSDAttr.osd_pixel_alpha_disable =
+        IMPISP_TUNING_OPS_MODE_DISABLE;
+    asm_attr.stsinglepicAttr.pic.pinum = handle;
+    asm_attr.stsinglepicAttr.pic.osd_enable = 1;
+    asm_attr.stsinglepicAttr.pic.osd_left = attr->x & ~1;
+    asm_attr.stsinglepicAttr.pic.osd_top = attr->y & ~1;
+    asm_attr.stsinglepicAttr.pic.osd_width = attr->width;
+    asm_attr.stsinglepicAttr.pic.osd_height = attr->height;
+    asm_attr.stsinglepicAttr.pic.osd_image = (char *)attr->bitmap_data;
+    asm_attr.stsinglepicAttr.pic.osd_stride = attr->width * 4;
+
+    return IMP_ISP_Tuning_SetOsdRgnAttr(sensornum, handle, &asm_attr);
 #else
-    (void)chn;
+    (void)sensornum;
     (void)handle;
+    (void)chx;
     (void)attr;
     return RSS_ERR_NOTSUP;
 #endif
 }
 
-int hal_isp_osd_get_region_attr(void *ctx, int chn, int handle, void *attr)
+int hal_isp_osd_show_region(void *ctx, int sensornum, int handle, int show)
 {
     (void)ctx;
 #ifdef HAL_HAS_ISP_OSD
-    if (!attr)
-        return RSS_ERR_INVAL;
-    return IMP_OSD_GetRgnAttr_ISPPic(chn, handle, (IMPIspOsdAttrAsm *)attr);
+    return IMP_ISP_Tuning_ShowOsdRgn(sensornum, handle, show);
 #else
-    (void)chn;
-    (void)handle;
-    (void)attr;
-    return RSS_ERR_NOTSUP;
-#endif
-}
-
-int hal_isp_osd_show_region(void *ctx, int chn, int handle, int show)
-{
-    (void)ctx;
-#ifdef HAL_HAS_ISP_OSD
-    return IMP_OSD_ShowRgn_ISP(chn, handle, show);
-#else
-    (void)chn;
+    (void)sensornum;
     (void)handle;
     (void)show;
     return RSS_ERR_NOTSUP;
 #endif
-}
-
-int hal_isp_osd_update_region_data(void *ctx, int chn, int handle, void *data)
-{
-    (void)ctx;
-    /* UpdateRgnAttrData_ISP exists in .so but not in headers.
-     * Use isp_osd_set_region_attr to update data instead. */
-    (void)chn;
-    (void)handle;
-    (void)data;
-    return RSS_ERR_NOTSUP;
 }
