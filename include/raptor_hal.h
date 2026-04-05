@@ -1116,6 +1116,9 @@ typedef struct rss_hal_ops {
     int (*isp_osd_set_region_attr)(void *ctx, int sensornum, int handle,
                                    int chx, const rss_osd_region_t *attr);
     int (*isp_osd_show_region)(void *ctx, int sensornum, int handle, int show);
+    int (*isp_osd_set_mask)(void *ctx, int sensornum, int chx, int pinum,
+                            int enable, int x, int y, int w, int h,
+                            uint32_t color);
 
     /* --- Memory Management --- */
 

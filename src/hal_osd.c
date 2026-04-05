@@ -590,3 +590,34 @@ int hal_isp_osd_show_region(void *ctx, int sensornum, int handle, int show)
     return RSS_ERR_NOTSUP;
 #endif
 }
+
+int hal_isp_osd_set_mask(void *ctx, int sensornum, int chx, int pinum,
+                         int enable, int x, int y, int w, int h,
+                         uint32_t color)
+{
+    (void)ctx;
+#ifdef HAL_HAS_ISP_OSD
+    IMPOSDRgnAttr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.type = OSD_REG_ISP_COVER;
+    attr.osdispdraw.stCoverAttr.chx = chx;
+    attr.osdispdraw.stCoverAttr.pinum = pinum;
+    attr.osdispdraw.stCoverAttr.mask_en = enable ? 1 : 0;
+    if (enable) {
+        attr.osdispdraw.stCoverAttr.mask_pos_left = x;
+        attr.osdispdraw.stCoverAttr.mask_pos_top = y;
+        attr.osdispdraw.stCoverAttr.mask_width = w;
+        attr.osdispdraw.stCoverAttr.mask_height = h;
+        attr.osdispdraw.stCoverAttr.mask_type = IMPISP_MASK_TYPE_RGB;
+        attr.osdispdraw.stCoverAttr.mask_value.argb.r_value = (color >> 16) & 0xFF;
+        attr.osdispdraw.stCoverAttr.mask_value.argb.g_value = (color >> 8) & 0xFF;
+        attr.osdispdraw.stCoverAttr.mask_value.argb.b_value = color & 0xFF;
+    }
+    extern int IMP_OSD_MultiCamera_SetRgnAttr_ISP(int, IMPOSDRgnAttr *, int);
+    return IMP_OSD_MultiCamera_SetRgnAttr_ISP(sensornum, &attr, 0);
+#else
+    (void)sensornum; (void)chx; (void)pinum; (void)enable;
+    (void)x; (void)y; (void)w; (void)h; (void)color;
+    return RSS_ERR_NOTSUP;
+#endif
+}

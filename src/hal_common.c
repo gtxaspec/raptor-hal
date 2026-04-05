@@ -380,6 +380,9 @@ extern int hal_isp_osd_destroy_region(void *ctx, int sensornum, int handle);
 extern int hal_isp_osd_set_region_attr(void *ctx, int sensornum, int handle,
                                        int chx, const rss_osd_region_t *attr);
 extern int hal_isp_osd_show_region(void *ctx, int sensornum, int handle, int show);
+extern int hal_isp_osd_set_mask(void *ctx, int sensornum, int chx, int pinum,
+                                int enable, int x, int y, int w, int h,
+                                uint32_t color);
 
 /* GPIO (hal_gpio.c) */
 extern int hal_gpio_set(void *ctx, int pin, int value);
@@ -949,6 +952,7 @@ static const rss_hal_ops_t g_ops = {
     .isp_osd_destroy_region = hal_isp_osd_destroy_region,
     .isp_osd_set_region_attr = hal_isp_osd_set_region_attr,
     .isp_osd_show_region = hal_isp_osd_show_region,
+    .isp_osd_set_mask = hal_isp_osd_set_mask,
 
     /* GPIO / IR-cut */
     .gpio_set = hal_gpio_set,
