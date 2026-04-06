@@ -618,8 +618,14 @@ int hal_isp_osd_set_mask(void *ctx, int sensornum, int chx, int pinum,
         attr.osdispdraw.stCoverAttr.mask_value.argb.g_value = (color >> 8) & 0xFF;
         attr.osdispdraw.stCoverAttr.mask_value.argb.b_value = color & 0xFF;
     }
+#if defined(PLATFORM_T23) || defined(PLATFORM_T32)
     extern int IMP_OSD_MultiCamera_SetRgnAttr_ISP(int, IMPOSDRgnAttr *, int);
     return IMP_OSD_MultiCamera_SetRgnAttr_ISP(sensornum, &attr, 0);
+#else
+    /* T40/T41: ISP OSD mask not yet implemented */
+    (void)sensornum;
+    return RSS_ERR_NOTSUP;
+#endif
 #else
     (void)sensornum; (void)chx; (void)pinum; (void)enable;
     (void)x; (void)y; (void)w; (void)h; (void)color;
