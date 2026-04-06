@@ -553,8 +553,13 @@ int hal_isp_osd_set_region_attr(void *ctx, int sensornum, int handle,
     memset(&asm_attr, 0, sizeof(asm_attr));
 
     asm_attr.type = ISP_OSD_REG_PIC;
+#if defined(PLATFORM_T23) || defined(PLATFORM_T32)
+    /* T23/T32 SDK has chx+sensornum in the struct */
     asm_attr.stsinglepicAttr.chx = chx;
     asm_attr.stsinglepicAttr.sensornum = sensornum;
+#else
+    (void)chx;
+#endif
     asm_attr.stsinglepicAttr.chnOSDAttr.osd_type = IMP_ISP_PIC_ARGB_8888;
     asm_attr.stsinglepicAttr.chnOSDAttr.osd_argb_type = IMP_ISP_ARGB_TYPE_BGRA;
     asm_attr.stsinglepicAttr.chnOSDAttr.osd_pixel_alpha_disable =
