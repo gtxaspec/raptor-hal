@@ -22,6 +22,9 @@
 #define RSS_MAX_ENC_CHANNELS 8
 #define RSS_MAX_NALS_PER_FRAME 16
 
+/* Forward declaration — defined in Phase 6 (JPEG Features) section */
+static int hal_jpeg_set_quality(int chn, int quality);
+
 /* Scratch buffer size for ring-buffer linearization (new SDK) */
 #define RSS_SCRATCH_DEFAULT_SIZE (512 * 1024)
 
@@ -413,7 +416,19 @@ static int hal_enc_create_channel_old(int chn, const rss_video_config_t *cfg)
         HAL_LOG_INFO("enc chn %d: IVDC enabled", chn);
 #endif
 
-    return IMP_Encoder_CreateChn(chn, &chnAttr);
+    {
+        int ret = IMP_Encoder_CreateChn(chn, &chnAttr);
+        if (ret != 0)
+            return ret;
+    }
+
+    /* Apply JPEG quantization tables after channel creation */
+    if (pt == PT_JPEG) {
+        int quality = (cfg->init_qp >= 0) ? cfg->init_qp : 25;
+        hal_jpeg_set_quality(chn, quality);
+    }
+
+    return RSS_OK;
 }
 #endif /* HAL_OLD_SDK */
 
@@ -459,7 +474,12 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
             HAL_LOG_ERR("SetDefaultParam (JPEG) failed: %d", ret);
             return ret;
         }
-        return IMP_Encoder_CreateChn(chn, &chnAttr);
+        ret = IMP_Encoder_CreateChn(chn, &chnAttr);
+        if (ret != 0)
+            return ret;
+        /* Apply JPEG quantization tables (SetJpegeQl where available) */
+        hal_jpeg_set_quality(chn, quality);
+        return RSS_OK;
     }
 
     /*
@@ -2961,16 +2981,79 @@ int hal_enc_set_resize_mode(void *ctx, int chn, int enable)
 #endif
 }
 
-/* ═══════════════════════════════════════════════════════════��══════════
- * 16. Phase 6 — JPEG Features
- * ═════���═══════════���════════════════════════════════════════════════════ */
+/* ======================================================================
+ * 16. Phase 6 -- JPEG Features
+ * ====================================================================== */
+
+/* Standard JPEG quantization tables (ITU-T T.81, Annex K) */
+static const uint8_t jpeg_luma_quantizer[64] = {
+    16, 11, 10, 16, 24, 40, 51, 61,
+    12, 12, 14, 19, 26, 58, 60, 55,
+    14, 13, 16, 24, 40, 57, 69, 56,
+    14, 17, 22, 29, 51, 87, 80, 62,
+    18, 22, 37, 56, 68,109,103, 77,
+    24, 35, 55, 64, 81,104,113, 92,
+    49, 64, 78, 87,103,121,120,101,
+    72, 92, 95, 98,112,100,103, 99
+};
+
+static const uint8_t jpeg_chroma_quantizer[64] = {
+    17, 18, 24, 47, 99, 99, 99, 99,
+    18, 21, 26, 66, 99, 99, 99, 99,
+    24, 26, 56, 99, 99, 99, 99, 99,
+    47, 66, 99, 99, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 99, 99
+};
+
+/*
+ * Generate JPEG quantization tables from quality factor (1-99).
+ * Same algorithm as libjpeg / Ingenic sample-Encoder-jpeg.c MakeTables().
+ * Higher quality = lower quantizer values = larger files.
+ */
+static void hal_jpeg_make_tables(int quality, uint8_t *lqt, uint8_t *cqt)
+{
+    int q = quality;
+    if (q < 1) q = 1;
+    if (q > 99) q = 99;
+    int scale = (q < 50) ? (5000 / q) : (200 - q * 2);
+    for (int i = 0; i < 64; i++) {
+        int lq = (jpeg_luma_quantizer[i] * scale + 50) / 100;
+        int cq = (jpeg_chroma_quantizer[i] * scale + 50) / 100;
+        lqt[i] = (uint8_t)(lq < 1 ? 1 : (lq > 255 ? 255 : lq));
+        cqt[i] = (uint8_t)(cq < 1 ? 1 : (cq > 255 ? 255 : cq));
+    }
+}
+
+/* Apply JPEG quality via QL table on platforms that support SetJpegeQl.
+ * quality: 1-99 (higher = better). No-op on T31 (no QL table API). */
+static int hal_jpeg_set_quality(int chn, int quality)
+{
+#if defined(HAL_OLD_SDK) || defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+    IMPEncoderJpegeQl jql;
+    memset(&jql, 0, sizeof(jql));
+    jql.user_ql_en = 1;
+    hal_jpeg_make_tables(quality, &jql.qmem_table[0], &jql.qmem_table[64]);
+    int ret = IMP_Encoder_SetJpegeQl(chn, &jql);
+    if (ret != 0)
+        HAL_LOG_ERR("SetJpegeQl(%d, q=%d) failed: %d", chn, quality, ret);
+    return ret;
+#else
+    /* T31: no QL table API, quality set only via SetDefaultParam at init */
+    (void)chn;
+    (void)quality;
+    return RSS_OK;
+#endif
+}
 
 int hal_enc_set_jpeg_ql(void *ctx, int chn, const rss_enc_jpeg_ql_t *ql)
 {
     (void)ctx;
     if (!ql)
         return RSS_ERR_INVAL;
-#if defined(PLATFORM_T21) || defined(PLATFORM_T41)
+#if defined(HAL_OLD_SDK) || defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPEncoderJpegeQl jql;
     jql.user_ql_en = ql->user_table_en;
     memcpy(jql.qmem_table, ql->qmem_table, sizeof(jql.qmem_table));
@@ -2984,12 +3067,13 @@ int hal_enc_set_jpeg_ql(void *ctx, int chn, const rss_enc_jpeg_ql_t *ql)
 #endif
 }
 
+
 int hal_enc_get_jpeg_ql(void *ctx, int chn, rss_enc_jpeg_ql_t *ql)
 {
     (void)ctx;
     if (!ql)
         return RSS_ERR_INVAL;
-#if defined(PLATFORM_T21) || defined(PLATFORM_T41)
+#if defined(HAL_OLD_SDK) || defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPEncoderJpegeQl jql;
     int ret = IMP_Encoder_GetJpegeQl(chn, &jql);
     if (ret != 0) {
