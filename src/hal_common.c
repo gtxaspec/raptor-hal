@@ -8,11 +8,36 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 #include <errno.h>
 
 #include "hal_internal.h"
+
+/* ── Default log function (stderr) ── */
+
+static const char *hal_level_str[] = {"FTL", "ERR", "WRN", "INF", "DBG"};
+
+static void hal_log_stderr(int level, const char *file, int line, const char *fmt, ...)
+{
+    if (level < 0) level = 0;
+    if (level > 4) level = 4;
+    fprintf(stderr, "[HAL %s] %s:%d: ", hal_level_str[level], file, line);
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+}
+
+rss_hal_log_func_t rss_hal_log_fn = hal_log_stderr;
+
+void rss_hal_set_log_func(rss_hal_log_func_t func)
+{
+    rss_hal_log_fn = func ? func : hal_log_stderr;
+}
 
 /* ── External function declarations (implemented in other files) ── */
 

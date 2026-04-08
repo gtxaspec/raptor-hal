@@ -1170,6 +1170,21 @@ int rss_hal_get_imp_version(char *buf, int size);
 int rss_hal_get_sysutils_version(char *buf, int size);
 const char *rss_hal_get_cpu_info(void);
 
+/* ================================================================
+ * HAL Logging Callback
+ *
+ * By default, HAL logs to stderr via fprintf. Daemons can redirect
+ * HAL log output to their own logger (e.g., syslog) by setting a
+ * callback at init time. The level values match RSS log levels:
+ *   0=fatal, 1=error, 2=warn, 3=info, 4=debug
+ * ================================================================ */
+
+typedef void (*rss_hal_log_func_t)(int level, const char *file, int line,
+                                   const char *fmt, ...)
+    __attribute__((format(printf, 4, 5)));
+
+void rss_hal_set_log_func(rss_hal_log_func_t func);
+
 #ifdef __cplusplus
 }
 #endif
