@@ -62,8 +62,8 @@ static void yolo_decode(float *p, std::vector<DetBox> &boxes, int input_w, int i
                     float aw = anchors[s * box_num * 2 + n * 2] / input_w;
                     float ah = anchors[s * box_num * 2 + n * 2 + 1] / input_h;
 
-                    float box_w = bw * 2.0f * bw * 2.0f * aw;
-                    float box_h = bh * 2.0f * bh * 2.0f * ah;
+                    float box_w = (bw * 2.0f) * (bw * 2.0f) * aw;
+                    float box_h = (bh * 2.0f) * (bh * 2.0f) * ah;
                     float cx = (bx * 2.0f - 0.5f + w) / gw;
                     float cy = (by * 2.0f - 0.5f + h) / gh;
 
@@ -187,6 +187,11 @@ extern "C" void *hal_jzdl_create(const rss_ivs_jzdl_param_t *param)
     }
 
     std::vector<uint32_t> shape = net->get_input_shape();
+    if (shape.size() < 3) {
+        HAL_LOG_ERR("JZDL: model input shape has %zu dims, expected 3", shape.size());
+        jzdl::net_destory(net);
+        return NULL;
+    }
     HAL_LOG_INFO("JZDL: model loaded: %s (%ux%ux%u)", param->model_path, shape[0], shape[1],
                  shape[2]);
 
@@ -205,7 +210,7 @@ extern "C" void *hal_jzdl_create(const rss_ivs_jzdl_param_t *param)
     ctx->conf_thresh = param->conf_threshold;
     ctx->nms_thresh = param->nms_threshold;
     ctx->num_classes = param->num_classes;
-    ctx->rgb_buf = new (std::nothrow) uint8_t[param->width * param->height * 3];
+    ctx->rgb_buf = new (std::nothrow) uint8_t[(size_t)param->width * param->height * 3];
     if (!ctx->rgb_buf) {
         jzdl::net_destory(net);
         delete ctx;
@@ -241,6 +246,11 @@ extern "C" int hal_jzdl_detect(void *handle, const uint8_t *nv12_data,
     jzdl::Mat<float> output;
     ctx->net->input(input);
     ctx->net->run(output);
+
+    if (!output.data) {
+        result->count = 0;
+        return RSS_OK;
+    }
 
     /* Post-process */
     std::vector<DetBox> candidates, detections;
