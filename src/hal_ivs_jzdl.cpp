@@ -1,10 +1,11 @@
 /*
- * hal_ivs_jzdl.cpp -- JZDL inference for standalone frame processing
+ * hal_ivs_jzdl.cpp -- Standalone JZDL inference API
  *
  * Provides C-callable functions to load a JZDL model, run inference
  * on NV12 frames, and return detection results. Used by RVD's JZDL
- * inference thread (bypasses IVS pipeline — reads frames directly
- * from FrameSource).
+ * inference thread — reads frames directly from FrameSource, not
+ * through the IVS pipeline (the IVS interface approach was abandoned
+ * as vendor IVS internals are incompatible with external models).
  *
  * Requires: libjzdl.m.so (standalone JZDL with BaseNet API)
  */
@@ -33,10 +34,11 @@ struct DetBox {
     int classid;
 };
 
-static void yolo_decode(float *p, std::vector<DetBox> &boxes,
-                        int input_w, int input_h, float conf_thresh, int num_classes)
+static void yolo_decode(float *p, std::vector<DetBox> &boxes, int input_w, int input_h,
+                        float conf_thresh, int num_classes)
 {
-    static const float anchors[] = {10,13, 16,30, 33,23, 30,61, 62,45, 59,119, 116,90, 156,198, 373,326};
+    static const float anchors[] = {10, 13, 16,  30,  33, 23,  30,  61,  62,
+                                    45, 59, 119, 116, 90, 156, 198, 373, 326};
     static const float strides[] = {8.0f, 16.0f, 32.0f};
     int box_num = 3;
     int onechannel = 5 + num_classes;
@@ -48,7 +50,8 @@ static void yolo_decode(float *p, std::vector<DetBox> &boxes,
         for (int h = 0; h < gh; h++) {
             for (int w = 0; w < gw; w++) {
                 for (int n = 0; n < box_num; n++) {
-                    int idx = h * (gw * box_num * onechannel) + w * (box_num * onechannel) + n * onechannel;
+                    int idx = h * (gw * box_num * onechannel) + w * (box_num * onechannel) +
+                              n * onechannel;
 
                     float bx = 1.0f / (1.0f + expf(-p[idx + 0]));
                     float by = 1.0f / (1.0f + expf(-p[idx + 1]));
@@ -125,7 +128,10 @@ static void yolo_nms(std::vector<DetBox> &input, std::vector<DetBox> &output, fl
  * NV12 → RGB conversion
  * ================================================================ */
 
-static inline uint8_t clamp_u8(int v) { return v < 0 ? 0 : (v > 255 ? 255 : (uint8_t)v); }
+static inline uint8_t clamp_u8(int v)
+{
+    return v < 0 ? 0 : (v > 255 ? 255 : (uint8_t)v);
+}
 
 static void nv12_to_rgb(const uint8_t *nv12, uint8_t *rgb, int w, int h)
 {
@@ -181,8 +187,8 @@ extern "C" void *hal_jzdl_create(const rss_ivs_jzdl_param_t *param)
     }
 
     std::vector<uint32_t> shape = net->get_input_shape();
-    HAL_LOG_INFO("JZDL: model loaded: %s (%ux%ux%u)", param->model_path,
-                 shape[0], shape[1], shape[2]);
+    HAL_LOG_INFO("JZDL: model loaded: %s (%ux%ux%u)", param->model_path, shape[0], shape[1],
+                 shape[2]);
 
     jzdl_ctx *ctx = new (std::nothrow) jzdl_ctx();
     if (!ctx) {
@@ -206,10 +212,9 @@ extern "C" void *hal_jzdl_create(const rss_ivs_jzdl_param_t *param)
         return NULL;
     }
 
-    HAL_LOG_INFO("JZDL: ready (%dx%d -> %dx%d, %d classes, conf=%.2f, nms=%.2f)",
-                 param->width, param->height, ctx->input_w, ctx->input_h,
-                 param->num_classes, (double)param->conf_threshold,
-                 (double)param->nms_threshold);
+    HAL_LOG_INFO("JZDL: ready (%dx%d -> %dx%d, %d classes, conf=%.2f, nms=%.2f)", param->width,
+                 param->height, ctx->input_w, ctx->input_h, param->num_classes,
+                 (double)param->conf_threshold, (double)param->nms_threshold);
 
     return ctx;
 }
@@ -237,15 +242,11 @@ extern "C" int hal_jzdl_detect(void *handle, const uint8_t *nv12_data,
     ctx->net->input(input);
     ctx->net->run(output);
 
-    HAL_LOG_DBG("JZDL: inference output %dx%dx%d", output.w, output.h, output.c);
-
     /* Post-process */
     std::vector<DetBox> candidates, detections;
-    yolo_decode(output.data, candidates, ctx->input_w, ctx->input_h,
-                ctx->conf_thresh, ctx->num_classes);
+    yolo_decode(output.data, candidates, ctx->input_w, ctx->input_h, ctx->conf_thresh,
+                ctx->num_classes);
     yolo_nms(candidates, detections, ctx->nms_thresh);
-
-    HAL_LOG_DBG("JZDL: %zu candidates, %zu after NMS", candidates.size(), detections.size());
 
     /* Scale to frame coordinates and fill result */
     float sx = (float)ctx->frame_w / ctx->input_w;
@@ -262,10 +263,14 @@ extern "C" int hal_jzdl_detect(void *handle, const uint8_t *nv12_data,
         int y0 = (int)(d.y1 * sy);
         int x1 = (int)(d.x2 * sx);
         int y1 = (int)(d.y2 * sy);
-        if (x0 < 0) x0 = 0;
-        if (y0 < 0) y0 = 0;
-        if (x1 >= ctx->frame_w) x1 = ctx->frame_w - 1;
-        if (y1 >= ctx->frame_h) y1 = ctx->frame_h - 1;
+        if (x0 < 0)
+            x0 = 0;
+        if (y0 < 0)
+            y0 = 0;
+        if (x1 >= ctx->frame_w)
+            x1 = ctx->frame_w - 1;
+        if (y1 >= ctx->frame_h)
+            y1 = ctx->frame_h - 1;
 
         result->detections[i].box = (rss_rect_t){x0, y0, x1, y1};
         result->detections[i].confidence = d.score;
