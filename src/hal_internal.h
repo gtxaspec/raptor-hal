@@ -233,6 +233,9 @@ struct rss_hal_ctx {
     const rss_hal_ops_t *ops;
     rss_hal_caps_t caps;
 
+    /* OSD pool size — set via osd_set_pool_size before init */
+    uint32_t osd_pool_size;
+
     /* Multi-sensor state */
     int sensor_count;
     rss_sensor_config_t sensors[RSS_MAX_SENSORS];

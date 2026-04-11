@@ -102,14 +102,13 @@ static void hal_build_rgn_attr(IMPOSDRgnAttr *attr, const rss_osd_region_t *regi
 
 int hal_osd_set_pool_size(void *ctx, uint32_t bytes)
 {
-    (void)ctx;
-    int ret;
-
-    ret = IMP_OSD_SetPoolSize((int)bytes);
-    if (ret != 0)
-        HAL_LOG_ERR("IMP_OSD_SetPoolSize(%u) failed: %d", bytes, ret);
-
-    return ret;
+    /* Store for use during init — IMP_OSD_SetPoolSize must be called
+     * before IMP_System_Init, so the actual SDK call happens in hal init. */
+    if (ctx) {
+        struct rss_hal_ctx *c = (struct rss_hal_ctx *)ctx;
+        c->osd_pool_size = bytes;
+    }
+    return 0;
 }
 
 /* ================================================================
