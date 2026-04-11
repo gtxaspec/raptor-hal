@@ -174,6 +174,9 @@ typedef struct {
     int16_t init_qp; /* -1 for SDK default */
     int16_t min_qp;  /* [0..51] */
     int16_t max_qp;  /* [0..51] */
+    int16_t ip_delta; /* QP delta I vs P frame; -1 = SDK default (T31+) */
+    int16_t pb_delta; /* QP delta P vs B frame; -1 = SDK default (T31+) */
+    uint16_t max_psnr; /* PSNR quality cap for capped_vbr/capped_quality; 0 = SDK default (T31+) */
 
     /* Frame rate */
     uint32_t fps_num;
@@ -748,6 +751,8 @@ typedef struct rss_hal_ops {
     int (*enc_set_qp)(void *ctx, int chn, int qp);
     int (*enc_set_qp_bounds)(void *ctx, int chn, int min_qp, int max_qp);
     int (*enc_set_qp_ip_delta)(void *ctx, int chn, int delta);
+    int (*enc_set_qp_pb_delta)(void *ctx, int chn, int delta);
+    int (*enc_set_max_psnr)(void *ctx, int chn, int psnr);
     int (*enc_set_stream_buf_size)(void *ctx, int chn, uint32_t size);
     int (*enc_get_stream_buf_size)(void *ctx, int chn, uint32_t *size);
     int (*enc_get_chn_gop_attr)(void *ctx, int chn, void *gop_attr);

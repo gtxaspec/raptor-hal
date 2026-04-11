@@ -72,6 +72,8 @@ extern int hal_enc_get_fd(void *ctx, int chn);
 extern int hal_enc_set_qp(void *ctx, int chn, int qp);
 extern int hal_enc_set_qp_bounds(void *ctx, int chn, int min_qp, int max_qp);
 extern int hal_enc_set_qp_ip_delta(void *ctx, int chn, int delta);
+extern int hal_enc_set_qp_pb_delta(void *ctx, int chn, int delta);
+extern int hal_enc_set_max_psnr(void *ctx, int chn, int psnr);
 extern int hal_enc_set_stream_buf_size(void *ctx, int chn, uint32_t size);
 extern int hal_enc_get_stream_buf_size(void *ctx, int chn, uint32_t *size);
 extern int hal_enc_get_chn_gop_attr(void *ctx, int chn, void *gop_attr);
@@ -667,6 +669,8 @@ static const rss_hal_ops_t g_ops = {
     .enc_set_qp = hal_enc_set_qp,
     .enc_set_qp_bounds = hal_enc_set_qp_bounds,
     .enc_set_qp_ip_delta = hal_enc_set_qp_ip_delta,
+    .enc_set_qp_pb_delta = hal_enc_set_qp_pb_delta,
+    .enc_set_max_psnr = hal_enc_set_max_psnr,
     .enc_set_stream_buf_size = hal_enc_set_stream_buf_size,
     .enc_get_stream_buf_size = hal_enc_get_stream_buf_size,
     .enc_get_chn_gop_attr = hal_enc_get_chn_gop_attr,

@@ -579,6 +579,10 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
             chnAttr.rcAttr.attrRcMode.attrVbr.uTargetBitRate = cfg->bitrate / 1000;
         if (cfg->max_bitrate > 0)
             chnAttr.rcAttr.attrRcMode.attrVbr.uMaxBitRate = cfg->max_bitrate / 1000;
+        if (cfg->ip_delta >= 0)
+            chnAttr.rcAttr.attrRcMode.attrVbr.iIPDelta = cfg->ip_delta;
+        if (cfg->pb_delta >= 0)
+            chnAttr.rcAttr.attrRcMode.attrVbr.iPBDelta = cfg->pb_delta;
         break;
 
     case IMP_ENC_RC_MODE_CAPPED_VBR:
@@ -590,6 +594,12 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
             chnAttr.rcAttr.attrRcMode.attrCappedVbr.uTargetBitRate = cfg->bitrate / 1000;
         if (cfg->max_bitrate > 0)
             chnAttr.rcAttr.attrRcMode.attrCappedVbr.uMaxBitRate = cfg->max_bitrate / 1000;
+        if (cfg->ip_delta >= 0)
+            chnAttr.rcAttr.attrRcMode.attrCappedVbr.iIPDelta = cfg->ip_delta;
+        if (cfg->pb_delta >= 0)
+            chnAttr.rcAttr.attrRcMode.attrCappedVbr.iPBDelta = cfg->pb_delta;
+        if (cfg->max_psnr > 0)
+            chnAttr.rcAttr.attrRcMode.attrCappedVbr.uMaxPSNR = cfg->max_psnr;
         break;
 
     case IMP_ENC_RC_MODE_CAPPED_QUALITY:
@@ -601,6 +611,12 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
             chnAttr.rcAttr.attrRcMode.attrCappedQuality.uTargetBitRate = cfg->bitrate / 1000;
         if (cfg->max_bitrate > 0)
             chnAttr.rcAttr.attrRcMode.attrCappedQuality.uMaxBitRate = cfg->max_bitrate / 1000;
+        if (cfg->ip_delta >= 0)
+            chnAttr.rcAttr.attrRcMode.attrCappedQuality.iIPDelta = cfg->ip_delta;
+        if (cfg->pb_delta >= 0)
+            chnAttr.rcAttr.attrRcMode.attrCappedQuality.iPBDelta = cfg->pb_delta;
+        if (cfg->max_psnr > 0)
+            chnAttr.rcAttr.attrRcMode.attrCappedQuality.uMaxPSNR = cfg->max_psnr;
         break;
 
     default:
@@ -1617,16 +1633,102 @@ int hal_enc_set_qp_bounds(void *ctx, int chn, int min_qp, int max_qp)
 /*
  * hal_enc_set_qp_ip_delta -- set QP delta between I and P frames.
  *
- * T31 only: uses IMP_Encoder_SetChnQpIPDelta() direct API.
+ * T31: direct API. Other new SDK: patch via Get/SetChnAttrRcMode.
  */
 int hal_enc_set_qp_ip_delta(void *ctx, int chn, int delta)
 {
     (void)ctx;
 #if defined(PLATFORM_T31)
     return IMP_Encoder_SetChnQpIPDelta(chn, delta);
+#elif defined(HAL_NEW_SDK) && !defined(PLATFORM_T32)
+    int ret;
+    IMPEncoderAttrRcMode rcAttr;
+    memset(&rcAttr, 0, sizeof(rcAttr));
+    ret = IMP_Encoder_GetChnAttrRcMode(chn, &rcAttr);
+    if (ret != 0)
+        return ret;
+    switch (rcAttr.rcMode) {
+    case IMP_ENC_RC_MODE_VBR:
+        rcAttr.attrVbr.iIPDelta = (int16_t)delta;
+        break;
+    case IMP_ENC_RC_MODE_CAPPED_VBR:
+        rcAttr.attrCappedVbr.iIPDelta = (int16_t)delta;
+        break;
+    case IMP_ENC_RC_MODE_CAPPED_QUALITY:
+        rcAttr.attrCappedQuality.iIPDelta = (int16_t)delta;
+        break;
+    default:
+        return RSS_ERR_NOTSUP;
+    }
+    return IMP_Encoder_SetChnAttrRcMode(chn, &rcAttr);
 #else
     (void)chn;
     (void)delta;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_set_qp_pb_delta -- set QP delta between P and B frames.
+ */
+int hal_enc_set_qp_pb_delta(void *ctx, int chn, int delta)
+{
+    (void)ctx;
+#if defined(HAL_NEW_SDK) && !defined(PLATFORM_T32)
+    int ret;
+    IMPEncoderAttrRcMode rcAttr;
+    memset(&rcAttr, 0, sizeof(rcAttr));
+    ret = IMP_Encoder_GetChnAttrRcMode(chn, &rcAttr);
+    if (ret != 0)
+        return ret;
+    switch (rcAttr.rcMode) {
+    case IMP_ENC_RC_MODE_VBR:
+        rcAttr.attrVbr.iPBDelta = (int16_t)delta;
+        break;
+    case IMP_ENC_RC_MODE_CAPPED_VBR:
+        rcAttr.attrCappedVbr.iPBDelta = (int16_t)delta;
+        break;
+    case IMP_ENC_RC_MODE_CAPPED_QUALITY:
+        rcAttr.attrCappedQuality.iPBDelta = (int16_t)delta;
+        break;
+    default:
+        return RSS_ERR_NOTSUP;
+    }
+    return IMP_Encoder_SetChnAttrRcMode(chn, &rcAttr);
+#else
+    (void)chn;
+    (void)delta;
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_enc_set_max_psnr -- set PSNR quality cap for capped_vbr/capped_quality.
+ */
+int hal_enc_set_max_psnr(void *ctx, int chn, int psnr)
+{
+    (void)ctx;
+#if defined(HAL_NEW_SDK) && !defined(PLATFORM_T32)
+    int ret;
+    IMPEncoderAttrRcMode rcAttr;
+    memset(&rcAttr, 0, sizeof(rcAttr));
+    ret = IMP_Encoder_GetChnAttrRcMode(chn, &rcAttr);
+    if (ret != 0)
+        return ret;
+    switch (rcAttr.rcMode) {
+    case IMP_ENC_RC_MODE_CAPPED_VBR:
+        rcAttr.attrCappedVbr.uMaxPSNR = (uint16_t)psnr;
+        break;
+    case IMP_ENC_RC_MODE_CAPPED_QUALITY:
+        rcAttr.attrCappedQuality.uMaxPSNR = (uint16_t)psnr;
+        break;
+    default:
+        return RSS_ERR_NOTSUP;
+    }
+    return IMP_Encoder_SetChnAttrRcMode(chn, &rcAttr);
+#else
+    (void)chn;
+    (void)psnr;
     return RSS_ERR_NOTSUP;
 #endif
 }
@@ -3031,7 +3133,7 @@ static void hal_jpeg_make_tables(int quality, uint8_t *lqt, uint8_t *cqt)
  * quality: 1-99 (higher = better). No-op on T31 (no QL table API). */
 static int hal_jpeg_set_quality(int chn, int quality)
 {
-#if defined(HAL_OLD_SDK) || defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_OLD_SDK) || defined(PLATFORM_T32) || defined(PLATFORM_T40)
     IMPEncoderJpegeQl jql;
     memset(&jql, 0, sizeof(jql));
     jql.user_ql_en = 1;
@@ -3041,7 +3143,7 @@ static int hal_jpeg_set_quality(int chn, int quality)
         HAL_LOG_ERR("SetJpegeQl(%d, q=%d) failed: %d", chn, quality, ret);
     return ret;
 #else
-    /* T31: no QL table API, quality set only via SetDefaultParam at init */
+    /* T31/T41: quality set via SetDefaultParam iInitialQP at init */
     (void)chn;
     (void)quality;
     return RSS_OK;
