@@ -22,8 +22,10 @@ static const char *hal_level_str[] = {"FTL", "ERR", "WRN", "INF", "DBG"};
 
 static void hal_log_stderr(int level, const char *file, int line, const char *fmt, ...)
 {
-    if (level < 0) level = 0;
-    if (level > 4) level = 4;
+    if (level < 0)
+        level = 0;
+    if (level > 4)
+        level = 4;
     fprintf(stderr, "[HAL %s] %s:%d: ", hal_level_str[level], file, line);
     va_list ap;
     va_start(ap, fmt);
@@ -402,12 +404,11 @@ extern int hal_osd_attach_to_group(void *ctx, int handle, int grp);
 extern int hal_isp_osd_set_pool_size(void *ctx, int size);
 extern int hal_isp_osd_create_region(void *ctx, int sensornum, int *handle_out);
 extern int hal_isp_osd_destroy_region(void *ctx, int sensornum, int handle);
-extern int hal_isp_osd_set_region_attr(void *ctx, int sensornum, int handle,
-                                       int chx, const rss_osd_region_t *attr);
+extern int hal_isp_osd_set_region_attr(void *ctx, int sensornum, int handle, int chx,
+                                       const rss_osd_region_t *attr);
 extern int hal_isp_osd_show_region(void *ctx, int sensornum, int handle, int show);
-extern int hal_isp_osd_set_mask(void *ctx, int sensornum, int chx, int pinum,
-                                int enable, int x, int y, int w, int h,
-                                uint32_t color);
+extern int hal_isp_osd_set_mask(void *ctx, int sensornum, int chx, int pinum, int enable, int x,
+                                int y, int w, int h, uint32_t color);
 
 /* GPIO (hal_gpio.c) */
 extern int hal_gpio_set(void *ctx, int pin, int value);
@@ -433,6 +434,8 @@ extern void *hal_ivs_create_move_interface(void *ctx, void *param);
 extern int hal_ivs_destroy_move_interface(void *ctx, void *handle);
 extern void *hal_ivs_create_base_move_interface(void *ctx, void *param);
 extern int hal_ivs_destroy_base_move_interface(void *ctx, void *handle);
+extern void *hal_ivs_create_persondet_interface(void *ctx, void *param);
+extern int hal_ivs_destroy_persondet_interface(void *ctx, void *handle);
 
 /* DMIC (hal_dmic.c) */
 extern int hal_dmic_init(void *ctx, const rss_audio_config_t *cfg);
@@ -1003,6 +1006,8 @@ static const rss_hal_ops_t g_ops = {
     .ivs_destroy_move_interface = hal_ivs_destroy_move_interface,
     .ivs_create_base_move_interface = hal_ivs_create_base_move_interface,
     .ivs_destroy_base_move_interface = hal_ivs_destroy_base_move_interface,
+    .ivs_create_persondet_interface = hal_ivs_create_persondet_interface,
+    .ivs_destroy_persondet_interface = hal_ivs_destroy_persondet_interface,
 
     /* DMIC */
     .dmic_init = hal_dmic_init,
@@ -1182,9 +1187,9 @@ static int hal_init(void *ctx, const rss_multi_sensor_config_t *multi_cfg)
 #endif
 
     /* Step 5: set OSD pool size before System_Init (prudynt pattern) */
-    IMP_OSD_SetPoolSize(512 * 1024);
+    IMP_OSD_SetPoolSize(1024 * 1024);
 #if defined(PLATFORM_T23) || defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-    IMP_ISP_Tuning_SetOsdPoolSize(512 * 1024);
+    IMP_ISP_Tuning_SetOsdPoolSize(1024 * 1024);
 #endif
 
     /* Step 6: init system (must be before EnableTuning — prudynt order) */

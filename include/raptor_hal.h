@@ -302,6 +302,30 @@ typedef struct {
     int ret_roi[RSS_IVS_MAX_ROI]; /* 0 = no motion, 1 = motion detected */
 } rss_ivs_move_result_t;
 
+/* IVS person/object detection parameters and results */
+#define RSS_IVS_MAX_DETECTIONS 20
+
+typedef struct {
+    int skip_frame_count;
+    int width;
+    int height;
+    int sensitivity;     /* 0-5 (default 4) */
+    int det_distance;    /* 0-4: 6m/8m/10m/11m/13m (default 2) */
+    bool motion_trigger; /* enable motion-triggered detection */
+} rss_ivs_persondet_param_t;
+
+typedef struct {
+    rss_rect_t box;   /* bounding box */
+    float confidence; /* 0.0 - 1.0 */
+    int class_id;     /* 0 = person, -1 = unclassified */
+} rss_ivs_detection_t;
+
+typedef struct {
+    int count;
+    rss_ivs_detection_t detections[RSS_IVS_MAX_DETECTIONS];
+    int64_t timestamp;
+} rss_ivs_detect_result_t;
+
 /* Framesource channel configuration */
 typedef struct {
     uint16_t width;
@@ -586,8 +610,8 @@ typedef struct {
 
     /* ISP capabilities */
     bool has_multi_sensor;
-    int max_sensors;              /* 1 for T20-T31, 3 for T23-1.3.0/T32/T40/T41 */
-    bool has_t23_multicam_api;    /* T23 1.3.0 IMP_ISP_MultiCamera_* functions */
+    int max_sensors;           /* 1 for T20-T31, 3 for T23-1.3.0/T32/T40/T41 */
+    bool has_t23_multicam_api; /* T23 1.3.0 IMP_ISP_MultiCamera_* functions */
     bool has_defog;
     bool has_dpc;
     bool has_drc;
@@ -1083,6 +1107,8 @@ typedef struct rss_hal_ops {
     int (*ivs_destroy_move_interface)(void *ctx, void *handle);
     void *(*ivs_create_base_move_interface)(void *ctx, void *param);
     int (*ivs_destroy_base_move_interface)(void *ctx, void *handle);
+    void *(*ivs_create_persondet_interface)(void *ctx, void *param);
+    int (*ivs_destroy_persondet_interface)(void *ctx, void *handle);
 
     /* --- DMIC (Digital Microphone — T30/T31/T32/T40/T41) --- */
 
@@ -1113,12 +1139,11 @@ typedef struct rss_hal_ops {
     int (*isp_osd_set_pool_size)(void *ctx, int size);
     int (*isp_osd_create_region)(void *ctx, int sensornum, int *handle_out);
     int (*isp_osd_destroy_region)(void *ctx, int sensornum, int handle);
-    int (*isp_osd_set_region_attr)(void *ctx, int sensornum, int handle,
-                                   int chx, const rss_osd_region_t *attr);
+    int (*isp_osd_set_region_attr)(void *ctx, int sensornum, int handle, int chx,
+                                   const rss_osd_region_t *attr);
     int (*isp_osd_show_region)(void *ctx, int sensornum, int handle, int show);
-    int (*isp_osd_set_mask)(void *ctx, int sensornum, int chx, int pinum,
-                            int enable, int x, int y, int w, int h,
-                            uint32_t color);
+    int (*isp_osd_set_mask)(void *ctx, int sensornum, int chx, int pinum, int enable, int x, int y,
+                            int w, int h, uint32_t color);
 
     /* --- Memory Management --- */
 
@@ -1179,8 +1204,7 @@ const char *rss_hal_get_cpu_info(void);
  *   0=fatal, 1=error, 2=warn, 3=info, 4=debug
  * ================================================================ */
 
-typedef void (*rss_hal_log_func_t)(int level, const char *file, int line,
-                                   const char *fmt, ...)
+typedef void (*rss_hal_log_func_t)(int level, const char *file, int line, const char *fmt, ...)
     __attribute__((format(printf, 4, 5)));
 
 void rss_hal_set_log_func(rss_hal_log_func_t func);

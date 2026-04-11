@@ -18,6 +18,68 @@
 #include <imp/imp_ivs.h>
 #include <imp/imp_ivs_move.h>
 
+/*
+ * PersonDet SDK types — from ivs_common.h / ivs_inf_personDet.h.
+ * Declared here rather than including vendor headers that may not
+ * be in the standard SDK include path on all build environments.
+ */
+
+typedef struct {
+    int x;
+    int y;
+} IVSPoint;
+
+typedef struct {
+    IVSPoint ul; /* upper-left */
+    IVSPoint br; /* bottom-right */
+} IVSRect;
+
+typedef struct {
+    unsigned char *data;
+    int width;
+    int height;
+    int pixfmt;
+    int64_t timeStamp;
+} IVSFrameInfo;
+
+#define NUM_OF_PERSONS 20
+#define IVS_PERSONDET_PERM_MAX_ROI 4
+
+typedef struct {
+    IVSRect box;      /* reserved */
+    IVSRect show_box; /* detection bounding box */
+    float confidence;
+} person_info;
+
+typedef struct {
+    IVSPoint *p;
+    int pcnt;
+    uint64_t alarm_last_time;
+} persondet_perm_t;
+
+typedef struct {
+    bool ptime;
+    int skip_num;
+    IVSFrameInfo frameInfo;
+    int sense;   /* 0-5 (default 4) */
+    int detdist; /* 0-4: 6m/8m/10m/11m/13m (default 2) */
+    bool enable_move;
+    bool enable_perm;
+    persondet_perm_t perms[IVS_PERSONDET_PERM_MAX_ROI];
+    int permcnt;
+} persondet_param_input_t;
+
+typedef struct {
+    int count;
+    int count_move;
+    person_info person[NUM_OF_PERSONS];
+    int64_t timeStamp;
+} persondet_param_output_t;
+
+/* PersonDet interface — provided by libpersonDet_inf.so (all SoCs) */
+extern IMPIVSInterface *PersonDetInterfaceInit(void *param);
+extern void PersonDetInterfaceExit(IMPIVSInterface *inf);
+
 /* ================================================================
  * GROUP LIFECYCLE
  * ================================================================ */
@@ -190,11 +252,9 @@ void *hal_ivs_create_move_interface(void *ctx, void *param)
         mp.roiRect[i].p1.y = rp->roi[i].p1_y;
     }
 
-    HAL_LOG_INFO("IVS move param: %dx%d, roi_count=%d, sense[0]=%d, skip=%d",
-                 mp.frameInfo.width, mp.frameInfo.height,
-                 mp.roiRectCnt, mp.sense[0], mp.skipFrameCnt);
-    HAL_LOG_INFO("IVS roi[0]: (%d,%d)-(%d,%d)",
-                 mp.roiRect[0].p0.x, mp.roiRect[0].p0.y,
+    HAL_LOG_INFO("IVS move param: %dx%d, roi_count=%d, sense[0]=%d, skip=%d", mp.frameInfo.width,
+                 mp.frameInfo.height, mp.roiRectCnt, mp.sense[0], mp.skipFrameCnt);
+    HAL_LOG_INFO("IVS roi[0]: (%d,%d)-(%d,%d)", mp.roiRect[0].p0.x, mp.roiRect[0].p0.y,
                  mp.roiRect[0].p1.x, mp.roiRect[0].p1.y);
     HAL_LOG_INFO("IVS sizeof(IMP_IVS_MoveParam)=%zu sizeof(IMPFrameInfo)=%zu",
                  sizeof(IMP_IVS_MoveParam), sizeof(IMPFrameInfo));
@@ -241,5 +301,50 @@ int hal_ivs_destroy_base_move_interface(void *ctx, void *handle)
     if (!handle)
         return RSS_ERR_INVAL;
     IMP_IVS_DestroyBaseMoveInterface((IMPIVSInterface *)handle);
+    return RSS_OK;
+}
+
+/* ================================================================
+ * PERSON DETECTION INTERFACE
+ *
+ * PersonDetInterfaceInit / PersonDetInterfaceExit are provided by
+ * libpersonDet_inf.so (T20-T32) or libpersonvehiclepetDet_inf.so
+ * (T40/T41/A1).  The HAL translates RSS param types to the SDK's
+ * persondet_param_input_t.
+ * ================================================================ */
+
+void *hal_ivs_create_persondet_interface(void *ctx, void *param)
+{
+    (void)ctx;
+    if (!param)
+        return NULL;
+
+    const rss_ivs_persondet_param_t *rp = (const rss_ivs_persondet_param_t *)param;
+    persondet_param_input_t pp;
+    memset(&pp, 0, sizeof(pp));
+
+    pp.frameInfo.width = rp->width;
+    pp.frameInfo.height = rp->height;
+    pp.skip_num = rp->skip_frame_count;
+    pp.sense = rp->sensitivity > 5 ? 5 : (rp->sensitivity < 0 ? 0 : rp->sensitivity);
+    pp.detdist = rp->det_distance > 4 ? 4 : (rp->det_distance < 0 ? 0 : rp->det_distance);
+    pp.enable_move = rp->motion_trigger;
+    pp.enable_perm = false;
+    pp.permcnt = 0;
+    pp.ptime = false;
+
+    HAL_LOG_INFO("IVS persondet param: %dx%d, sense=%d, detdist=%d, skip=%d, move_trig=%d",
+                 pp.frameInfo.width, pp.frameInfo.height, pp.sense, pp.detdist, pp.skip_num,
+                 pp.enable_move);
+
+    return (void *)PersonDetInterfaceInit(&pp);
+}
+
+int hal_ivs_destroy_persondet_interface(void *ctx, void *handle)
+{
+    (void)ctx;
+    if (!handle)
+        return RSS_ERR_INVAL;
+    PersonDetInterfaceExit((IMPIVSInterface *)handle);
     return RSS_OK;
 }
