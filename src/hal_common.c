@@ -1191,7 +1191,9 @@ static int hal_init(void *ctx, const rss_multi_sensor_config_t *multi_cfg)
     HAL_CHECK(IMP_ISP_EnableSensor(), err_del_sensors);
 #endif
 
-    /* Step 5: set OSD pool size before System_Init (prudynt pattern) */
+    /* Step 5: set OSD pool size before System_Init.
+     * 1MB covers standard text/logo regions + full sub-stream detection overlay
+     * (640x360 BGRA = 900KB). Must be set here — SDK ignores calls after init. */
     IMP_OSD_SetPoolSize(1024 * 1024);
 #if defined(PLATFORM_T23) || defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMP_ISP_Tuning_SetOsdPoolSize(1024 * 1024);
