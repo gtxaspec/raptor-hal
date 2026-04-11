@@ -76,9 +76,10 @@ typedef struct {
     int64_t timeStamp;
 } persondet_param_output_t;
 
-/* PersonDet interface — provided by libpersonDet_inf.so (all SoCs) */
-extern IMPIVSInterface *PersonDetInterfaceInit(void *param);
-extern void PersonDetInterfaceExit(IMPIVSInterface *inf);
+/* PersonDet interface — provided by libpersonDet_inf.so (optional).
+ * Weak symbols so the HAL links without the lib when persondet is disabled. */
+__attribute__((weak)) IMPIVSInterface *PersonDetInterfaceInit(void *param) { (void)param; return NULL; }
+__attribute__((weak)) void PersonDetInterfaceExit(IMPIVSInterface *inf) { (void)inf; }
 
 /* ================================================================
  * GROUP LIFECYCLE
