@@ -55,8 +55,12 @@ SDK_INCLUDE     := $(INGENIC_HEADERS)/$(PLATFORM)/$(HEADER_VER)/$(HEADER_LANG)
 
 # Toolchain
 CC      := $(CROSS_COMPILE)gcc
+CXX     := $(CROSS_COMPILE)g++
 AR      := $(CROSS_COMPILE)ar
 RANLIB  := $(CROSS_COMPILE)ranlib
+
+# JZDL inference (optional — set JZDL_INCLUDE to enable)
+JZDL_INCLUDE ?=
 
 # Flags
 CFLAGS  := -Wall -Wextra -Werror=implicit-function-declaration
@@ -93,8 +97,14 @@ SRCS := src/hal_caps.c \
         src/hal_dmic.c \
         src/hal_memory.c
 
-OBJS := $(SRCS:.c=.o)
-DEPS := $(SRCS:.c=.d)
+CXX_SRCS :=
+ifneq ($(JZDL_INCLUDE),)
+CXX_SRCS += src/hal_ivs_jzdl.cpp
+CXXFLAGS := $(CFLAGS) -std=c++11 -DJZ_MXU=0 -I$(JZDL_INCLUDE) -fno-exceptions -fno-rtti
+endif
+
+OBJS := $(SRCS:.c=.o) $(CXX_SRCS:.cpp=.o)
+DEPS := $(SRCS:.c=.d) $(CXX_SRCS:.cpp=.d)
 
 # Output
 LIB := libraptor_hal.a
@@ -111,6 +121,10 @@ $(LIB): $(OBJS)
 %.o: %.c
 	@echo "  CC      $<"
 	$(Q)$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
+
+%.o: %.cpp
+	@echo "  CXX     $<"
+	$(Q)$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
 
 clean:
 	@echo "  CLEAN"

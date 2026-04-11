@@ -436,6 +436,9 @@ extern void *hal_ivs_create_base_move_interface(void *ctx, void *param);
 extern int hal_ivs_destroy_base_move_interface(void *ctx, void *handle);
 extern void *hal_ivs_create_persondet_interface(void *ctx, void *param);
 extern int hal_ivs_destroy_persondet_interface(void *ctx, void *handle);
+/* JZDL uses standalone API (hal_jzdl_create/detect/destroy), not IVS interface */
+static void *hal_ivs_create_jzdl_stub(void *ctx, void *param) { (void)ctx; (void)param; return NULL; }
+static int hal_ivs_destroy_jzdl_stub(void *ctx, void *handle) { (void)ctx; (void)handle; return 0; }
 
 /* DMIC (hal_dmic.c) */
 extern int hal_dmic_init(void *ctx, const rss_audio_config_t *cfg);
@@ -1008,6 +1011,8 @@ static const rss_hal_ops_t g_ops = {
     .ivs_destroy_base_move_interface = hal_ivs_destroy_base_move_interface,
     .ivs_create_persondet_interface = hal_ivs_create_persondet_interface,
     .ivs_destroy_persondet_interface = hal_ivs_destroy_persondet_interface,
+    .ivs_create_jzdl_interface = hal_ivs_create_jzdl_stub,
+    .ivs_destroy_jzdl_interface = hal_ivs_destroy_jzdl_stub,
 
     /* DMIC */
     .dmic_init = hal_dmic_init,

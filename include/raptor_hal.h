@@ -315,6 +315,15 @@ typedef struct {
 } rss_ivs_persondet_param_t;
 
 typedef struct {
+    char model_path[256];
+    int width;
+    int height;
+    int num_classes;
+    float conf_threshold;
+    float nms_threshold;
+} rss_ivs_jzdl_param_t;
+
+typedef struct {
     rss_rect_t box;   /* bounding box */
     float confidence; /* 0.0 - 1.0 */
     int class_id;     /* 0 = person, -1 = unclassified */
@@ -1109,6 +1118,8 @@ typedef struct rss_hal_ops {
     int (*ivs_destroy_base_move_interface)(void *ctx, void *handle);
     void *(*ivs_create_persondet_interface)(void *ctx, void *param);
     int (*ivs_destroy_persondet_interface)(void *ctx, void *handle);
+    void *(*ivs_create_jzdl_interface)(void *ctx, void *param); /* unused — kept for ABI */
+    int (*ivs_destroy_jzdl_interface)(void *ctx, void *handle); /* unused — kept for ABI */
 
     /* --- DMIC (Digital Microphone — T30/T31/T32/T40/T41) --- */
 
@@ -1208,6 +1219,14 @@ typedef void (*rss_hal_log_func_t)(int level, const char *file, int line, const 
     __attribute__((format(printf, 4, 5)));
 
 void rss_hal_set_log_func(rss_hal_log_func_t func);
+
+/* ================================================================
+ * Standalone JZDL inference (bypasses IVS pipeline)
+ * ================================================================ */
+
+void *hal_jzdl_create(const rss_ivs_jzdl_param_t *param);
+int hal_jzdl_detect(void *handle, const uint8_t *nv12_data, rss_ivs_detect_result_t *result);
+void hal_jzdl_destroy(void *handle);
 
 #ifdef __cplusplus
 }
