@@ -560,67 +560,79 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
     }
     /* T32 does not have gopAttr; GOP is set via SetDefaultParam's uGopLength arg */
 #else
-    switch (rc) {
-    case IMP_ENC_RC_MODE_CBR:
-        if (cfg->min_qp >= 0)
-            chnAttr.rcAttr.attrRcMode.attrCbr.iMinQP = (int16_t)cfg->min_qp;
-        if (cfg->max_qp >= 0)
-            chnAttr.rcAttr.attrRcMode.attrCbr.iMaxQP = (int16_t)cfg->max_qp;
-        if (cfg->bitrate > 0)
-            chnAttr.rcAttr.attrRcMode.attrCbr.uTargetBitRate = cfg->bitrate / 1000;
-        break;
+    /* Override SDK defaults from SetDefaultParam.
+     * When cfg value is -1 (unset), apply proven defaults matching prudynt.
+     * SDK defaults (MinQP=15, MaxQP=48, MaxPictureSize=2*bitrate) produce
+     * worse quality than prudynt's values. */
+    {
+        int32_t br_kbps = cfg->bitrate / 1000;
+        int16_t cbr_min = (cfg->min_qp >= 0) ? (int16_t)cfg->min_qp : 34;
+        int16_t cbr_max = (cfg->max_qp >= 0) ? (int16_t)cfg->max_qp : 51;
+        int16_t vbr_min = (cfg->min_qp >= 0) ? (int16_t)cfg->min_qp : 20;
+        int16_t vbr_max = (cfg->max_qp >= 0) ? (int16_t)cfg->max_qp : 45;
 
-    case IMP_ENC_RC_MODE_VBR:
-        if (cfg->min_qp >= 0)
-            chnAttr.rcAttr.attrRcMode.attrVbr.iMinQP = (int16_t)cfg->min_qp;
-        if (cfg->max_qp >= 0)
-            chnAttr.rcAttr.attrRcMode.attrVbr.iMaxQP = (int16_t)cfg->max_qp;
-        if (cfg->bitrate > 0)
-            chnAttr.rcAttr.attrRcMode.attrVbr.uTargetBitRate = cfg->bitrate / 1000;
-        if (cfg->max_bitrate > 0)
-            chnAttr.rcAttr.attrRcMode.attrVbr.uMaxBitRate = cfg->max_bitrate / 1000;
-        if (cfg->ip_delta >= 0)
-            chnAttr.rcAttr.attrRcMode.attrVbr.iIPDelta = cfg->ip_delta;
-        if (cfg->pb_delta >= 0)
-            chnAttr.rcAttr.attrRcMode.attrVbr.iPBDelta = cfg->pb_delta;
-        break;
+        switch (rc) {
+        case IMP_ENC_RC_MODE_CBR:
+            chnAttr.rcAttr.attrRcMode.attrCbr.iMinQP = cbr_min;
+            chnAttr.rcAttr.attrRcMode.attrCbr.iMaxQP = cbr_max;
+            if (cfg->bitrate > 0) {
+                chnAttr.rcAttr.attrRcMode.attrCbr.uTargetBitRate = br_kbps;
+                chnAttr.rcAttr.attrRcMode.attrCbr.uMaxPictureSize = br_kbps;
+            }
+            break;
 
-    case IMP_ENC_RC_MODE_CAPPED_VBR:
-        if (cfg->min_qp >= 0)
-            chnAttr.rcAttr.attrRcMode.attrCappedVbr.iMinQP = (int16_t)cfg->min_qp;
-        if (cfg->max_qp >= 0)
-            chnAttr.rcAttr.attrRcMode.attrCappedVbr.iMaxQP = (int16_t)cfg->max_qp;
-        if (cfg->bitrate > 0)
-            chnAttr.rcAttr.attrRcMode.attrCappedVbr.uTargetBitRate = cfg->bitrate / 1000;
-        if (cfg->max_bitrate > 0)
-            chnAttr.rcAttr.attrRcMode.attrCappedVbr.uMaxBitRate = cfg->max_bitrate / 1000;
-        if (cfg->ip_delta >= 0)
-            chnAttr.rcAttr.attrRcMode.attrCappedVbr.iIPDelta = cfg->ip_delta;
-        if (cfg->pb_delta >= 0)
-            chnAttr.rcAttr.attrRcMode.attrCappedVbr.iPBDelta = cfg->pb_delta;
-        if (cfg->max_psnr > 0)
-            chnAttr.rcAttr.attrRcMode.attrCappedVbr.uMaxPSNR = cfg->max_psnr;
-        break;
+        case IMP_ENC_RC_MODE_VBR:
+            chnAttr.rcAttr.attrRcMode.attrVbr.iMinQP = vbr_min;
+            chnAttr.rcAttr.attrRcMode.attrVbr.iMaxQP = vbr_max;
+            if (cfg->bitrate > 0) {
+                chnAttr.rcAttr.attrRcMode.attrVbr.uTargetBitRate = br_kbps;
+                chnAttr.rcAttr.attrRcMode.attrVbr.uMaxPictureSize = br_kbps;
+            }
+            if (cfg->max_bitrate > 0)
+                chnAttr.rcAttr.attrRcMode.attrVbr.uMaxBitRate = cfg->max_bitrate / 1000;
+            if (cfg->ip_delta >= 0)
+                chnAttr.rcAttr.attrRcMode.attrVbr.iIPDelta = cfg->ip_delta;
+            if (cfg->pb_delta >= 0)
+                chnAttr.rcAttr.attrRcMode.attrVbr.iPBDelta = cfg->pb_delta;
+            break;
 
-    case IMP_ENC_RC_MODE_CAPPED_QUALITY:
-        if (cfg->min_qp >= 0)
-            chnAttr.rcAttr.attrRcMode.attrCappedQuality.iMinQP = (int16_t)cfg->min_qp;
-        if (cfg->max_qp >= 0)
-            chnAttr.rcAttr.attrRcMode.attrCappedQuality.iMaxQP = (int16_t)cfg->max_qp;
-        if (cfg->bitrate > 0)
-            chnAttr.rcAttr.attrRcMode.attrCappedQuality.uTargetBitRate = cfg->bitrate / 1000;
-        if (cfg->max_bitrate > 0)
-            chnAttr.rcAttr.attrRcMode.attrCappedQuality.uMaxBitRate = cfg->max_bitrate / 1000;
-        if (cfg->ip_delta >= 0)
-            chnAttr.rcAttr.attrRcMode.attrCappedQuality.iIPDelta = cfg->ip_delta;
-        if (cfg->pb_delta >= 0)
-            chnAttr.rcAttr.attrRcMode.attrCappedQuality.iPBDelta = cfg->pb_delta;
-        if (cfg->max_psnr > 0)
-            chnAttr.rcAttr.attrRcMode.attrCappedQuality.uMaxPSNR = cfg->max_psnr;
-        break;
+        case IMP_ENC_RC_MODE_CAPPED_VBR:
+            chnAttr.rcAttr.attrRcMode.attrCappedVbr.iMinQP = vbr_min;
+            chnAttr.rcAttr.attrRcMode.attrCappedVbr.iMaxQP = vbr_max;
+            if (cfg->bitrate > 0) {
+                chnAttr.rcAttr.attrRcMode.attrCappedVbr.uTargetBitRate = br_kbps;
+                chnAttr.rcAttr.attrRcMode.attrCappedVbr.uMaxPictureSize = br_kbps;
+            }
+            if (cfg->max_bitrate > 0)
+                chnAttr.rcAttr.attrRcMode.attrCappedVbr.uMaxBitRate = cfg->max_bitrate / 1000;
+            if (cfg->ip_delta >= 0)
+                chnAttr.rcAttr.attrRcMode.attrCappedVbr.iIPDelta = cfg->ip_delta;
+            if (cfg->pb_delta >= 0)
+                chnAttr.rcAttr.attrRcMode.attrCappedVbr.iPBDelta = cfg->pb_delta;
+            if (cfg->max_psnr > 0)
+                chnAttr.rcAttr.attrRcMode.attrCappedVbr.uMaxPSNR = cfg->max_psnr;
+            break;
 
-    default:
-        break;
+        case IMP_ENC_RC_MODE_CAPPED_QUALITY:
+            chnAttr.rcAttr.attrRcMode.attrCappedQuality.iMinQP = vbr_min;
+            chnAttr.rcAttr.attrRcMode.attrCappedQuality.iMaxQP = vbr_max;
+            if (cfg->bitrate > 0) {
+                chnAttr.rcAttr.attrRcMode.attrCappedQuality.uTargetBitRate = br_kbps;
+                chnAttr.rcAttr.attrRcMode.attrCappedQuality.uMaxPictureSize = br_kbps;
+            }
+            if (cfg->max_bitrate > 0)
+                chnAttr.rcAttr.attrRcMode.attrCappedQuality.uMaxBitRate = cfg->max_bitrate / 1000;
+            if (cfg->ip_delta >= 0)
+                chnAttr.rcAttr.attrRcMode.attrCappedQuality.iIPDelta = cfg->ip_delta;
+            if (cfg->pb_delta >= 0)
+                chnAttr.rcAttr.attrRcMode.attrCappedQuality.iPBDelta = cfg->pb_delta;
+            if (cfg->max_psnr > 0)
+                chnAttr.rcAttr.attrRcMode.attrCappedQuality.uMaxPSNR = cfg->max_psnr;
+            break;
+
+        default:
+            break;
+        }
     }
 
     /* GOP length and mode */
@@ -1018,34 +1030,38 @@ int hal_enc_set_rc_mode(void *ctx, int chn, rss_rc_mode_t mode, uint32_t bitrate
         break;
     case IMP_ENC_RC_MODE_CBR:
         rcAttr.attrCbr.uTargetBitRate = bitrate_kbps;
+        rcAttr.attrCbr.uMaxPictureSize = bitrate_kbps;
         if (rcAttr.attrCbr.iMaxQP == 0)
-            rcAttr.attrCbr.iMaxQP = 45;
+            rcAttr.attrCbr.iMaxQP = 51;
         if (rcAttr.attrCbr.iMinQP == 0)
-            rcAttr.attrCbr.iMinQP = 15;
+            rcAttr.attrCbr.iMinQP = 34;
         break;
     case IMP_ENC_RC_MODE_VBR:
         rcAttr.attrVbr.uTargetBitRate = bitrate_kbps;
         rcAttr.attrVbr.uMaxBitRate = bitrate_kbps * 4 / 3;
+        rcAttr.attrVbr.uMaxPictureSize = bitrate_kbps;
         if (rcAttr.attrVbr.iMaxQP == 0)
             rcAttr.attrVbr.iMaxQP = 45;
         if (rcAttr.attrVbr.iMinQP == 0)
-            rcAttr.attrVbr.iMinQP = 15;
+            rcAttr.attrVbr.iMinQP = 20;
         break;
     case IMP_ENC_RC_MODE_CAPPED_VBR:
         rcAttr.attrCappedVbr.uTargetBitRate = bitrate_kbps;
         rcAttr.attrCappedVbr.uMaxBitRate = bitrate_kbps * 4 / 3;
+        rcAttr.attrCappedVbr.uMaxPictureSize = bitrate_kbps;
         if (rcAttr.attrCappedVbr.iMaxQP == 0)
             rcAttr.attrCappedVbr.iMaxQP = 45;
         if (rcAttr.attrCappedVbr.iMinQP == 0)
-            rcAttr.attrCappedVbr.iMinQP = 15;
+            rcAttr.attrCappedVbr.iMinQP = 20;
         break;
     case IMP_ENC_RC_MODE_CAPPED_QUALITY:
         rcAttr.attrCappedQuality.uTargetBitRate = bitrate_kbps;
         rcAttr.attrCappedQuality.uMaxBitRate = bitrate_kbps * 4 / 3;
+        rcAttr.attrCappedQuality.uMaxPictureSize = bitrate_kbps;
         if (rcAttr.attrCappedQuality.iMaxQP == 0)
             rcAttr.attrCappedQuality.iMaxQP = 45;
         if (rcAttr.attrCappedQuality.iMinQP == 0)
-            rcAttr.attrCappedQuality.iMinQP = 15;
+            rcAttr.attrCappedQuality.iMinQP = 20;
         break;
     default:
         break;
