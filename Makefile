@@ -65,6 +65,8 @@ JZDL_INCLUDE ?=
 # Flags
 CFLAGS  := -Wall -Wextra -Werror=implicit-function-declaration
 CFLAGS  += -std=c11
+CFLAGS  += -ffunction-sections -fdata-sections
+CFLAGS  += -fno-asynchronous-unwind-tables -fmerge-all-constants -fno-ident
 CFLAGS  += -DPLATFORM_$(PLATFORM)
 CFLAGS  += -I$(SDK_INCLUDE)
 CFLAGS  += -I$(SDK_INCLUDE)/imp
