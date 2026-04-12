@@ -171,11 +171,11 @@ typedef struct {
     rss_rc_mode_t rc_mode;
     uint32_t bitrate; /* target bitrate in bps */
     uint32_t max_bitrate;
-    int16_t init_qp; /* -1 for SDK default */
-    int16_t min_qp;  /* [0..51] */
-    int16_t max_qp;  /* [0..51] */
-    int16_t ip_delta; /* QP delta I vs P frame; -1 = SDK default (T31+) */
-    int16_t pb_delta; /* QP delta P vs B frame; -1 = SDK default (T31+) */
+    int16_t init_qp;   /* -1 for SDK default */
+    int16_t min_qp;    /* [0..51] */
+    int16_t max_qp;    /* [0..51] */
+    int16_t ip_delta;  /* QP delta I vs P frame; -1 = SDK default (T31+) */
+    int16_t pb_delta;  /* QP delta P vs B frame; -1 = SDK default (T31+) */
     uint16_t max_psnr; /* PSNR quality cap for capped_vbr/capped_quality; 0 = SDK default (T31+) */
 
     /* Frame rate */
@@ -829,11 +829,11 @@ typedef struct rss_hal_ops {
 
     /* --- ISP tuning --- */
 
-    int (*isp_set_brightness)(void *ctx, uint8_t val);
-    int (*isp_set_contrast)(void *ctx, uint8_t val);
-    int (*isp_set_saturation)(void *ctx, uint8_t val);
-    int (*isp_set_sharpness)(void *ctx, uint8_t val);
-    int (*isp_set_hue)(void *ctx, uint8_t val);
+    int (*isp_set_brightness)(void *ctx, int val);
+    int (*isp_set_contrast)(void *ctx, int val);
+    int (*isp_set_saturation)(void *ctx, int val);
+    int (*isp_set_sharpness)(void *ctx, int val);
+    int (*isp_set_hue)(void *ctx, int val);
     int (*isp_set_hflip)(void *ctx, int enable);
     int (*isp_set_vflip)(void *ctx, int enable);
     int (*isp_set_running_mode)(void *ctx, rss_isp_mode_t mode);
@@ -843,15 +843,15 @@ typedef struct rss_hal_ops {
     int (*isp_get_exposure)(void *ctx, rss_exposure_t *exposure);
 
     /* Optional ISP tuning (return -ENOTSUP if unavailable) */
-    int (*isp_set_sinter_strength)(void *ctx, uint8_t val);
-    int (*isp_set_temper_strength)(void *ctx, uint8_t val);
+    int (*isp_set_sinter_strength)(void *ctx, int val);
+    int (*isp_set_temper_strength)(void *ctx, int val);
     int (*isp_set_defog)(void *ctx, int enable);
-    int (*isp_set_dpc_strength)(void *ctx, uint8_t val);
-    int (*isp_set_drc_strength)(void *ctx, uint8_t val);
+    int (*isp_set_dpc_strength)(void *ctx, int val);
+    int (*isp_set_drc_strength)(void *ctx, int val);
     int (*isp_set_ae_comp)(void *ctx, int val);
-    int (*isp_set_max_again)(void *ctx, uint32_t gain);
-    int (*isp_set_max_dgain)(void *ctx, uint32_t gain);
-    int (*isp_set_highlight_depress)(void *ctx, uint8_t val);
+    int (*isp_set_max_again)(void *ctx, int gain);
+    int (*isp_set_max_dgain)(void *ctx, int gain);
+    int (*isp_set_highlight_depress)(void *ctx, int val);
 
     /* ISP getters (mirrors of existing setters) */
     int (*isp_get_brightness)(void *ctx, uint8_t *val);
@@ -939,7 +939,7 @@ typedef struct rss_hal_ops {
     int (*isp_set_awb_ct_attr)(void *ctx, const void *ct_attr);
     int (*isp_get_awb_ct_trend)(void *ctx, void *trend);
     int (*isp_set_awb_ct_trend)(void *ctx, const void *trend);
-    int (*isp_set_backlight_comp)(void *ctx, uint32_t strength);
+    int (*isp_set_backlight_comp)(void *ctx, int strength);
     int (*isp_get_defog_strength_adv)(void *ctx, void *defog_attr);
     int (*isp_set_defog_strength_adv)(void *ctx, const void *defog_attr);
     int (*isp_get_front_crop)(void *ctx, void *crop_attr);
@@ -980,21 +980,21 @@ typedef struct rss_hal_ops {
 
     /* --- Multi-sensor ISP tuning (sensor_idx: 0=main, 1=sec, 2=thr) --- */
 
-    int (*isp_set_brightness_n)(void *ctx, int sensor_idx, uint8_t val);
-    int (*isp_set_contrast_n)(void *ctx, int sensor_idx, uint8_t val);
-    int (*isp_set_saturation_n)(void *ctx, int sensor_idx, uint8_t val);
-    int (*isp_set_sharpness_n)(void *ctx, int sensor_idx, uint8_t val);
-    int (*isp_set_hue_n)(void *ctx, int sensor_idx, uint8_t val);
+    int (*isp_set_brightness_n)(void *ctx, int sensor_idx, int val);
+    int (*isp_set_contrast_n)(void *ctx, int sensor_idx, int val);
+    int (*isp_set_saturation_n)(void *ctx, int sensor_idx, int val);
+    int (*isp_set_sharpness_n)(void *ctx, int sensor_idx, int val);
+    int (*isp_set_hue_n)(void *ctx, int sensor_idx, int val);
     int (*isp_set_hflip_n)(void *ctx, int sensor_idx, int enable);
     int (*isp_set_vflip_n)(void *ctx, int sensor_idx, int enable);
     int (*isp_set_running_mode_n)(void *ctx, int sensor_idx, rss_isp_mode_t mode);
     int (*isp_set_sensor_fps_n)(void *ctx, int sensor_idx, uint32_t fps_num, uint32_t fps_den);
     int (*isp_set_antiflicker_n)(void *ctx, int sensor_idx, rss_antiflicker_t mode);
-    int (*isp_set_sinter_strength_n)(void *ctx, int sensor_idx, uint8_t val);
-    int (*isp_set_temper_strength_n)(void *ctx, int sensor_idx, uint8_t val);
+    int (*isp_set_sinter_strength_n)(void *ctx, int sensor_idx, int val);
+    int (*isp_set_temper_strength_n)(void *ctx, int sensor_idx, int val);
     int (*isp_set_ae_comp_n)(void *ctx, int sensor_idx, int val);
-    int (*isp_set_max_again_n)(void *ctx, int sensor_idx, uint32_t gain);
-    int (*isp_set_max_dgain_n)(void *ctx, int sensor_idx, uint32_t gain);
+    int (*isp_set_max_again_n)(void *ctx, int sensor_idx, int gain);
+    int (*isp_set_max_dgain_n)(void *ctx, int sensor_idx, int gain);
     int (*isp_get_exposure_n)(void *ctx, int sensor_idx, rss_exposure_t *exposure);
     int (*isp_set_custom_mode_n)(void *ctx, int sensor_idx, int mode);
     int (*isp_set_ae_freeze_n)(void *ctx, int sensor_idx, int enable);

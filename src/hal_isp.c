@@ -27,43 +27,47 @@ extern const rss_hal_caps_t g_hal_caps;
  * Gen3:      IMP_ISP_Tuning_Set*(IMPVI_NUM, unsigned char *)
  * ================================================================ */
 
-int hal_isp_set_brightness(void *ctx, uint8_t val)
+int hal_isp_set_brightness(void *ctx, int val)
 {
     (void)ctx;
+    uint8_t v = hal_clamp_u8(val);
 #if defined(HAL_ISP_PTR_ARGS)
-    return IMP_ISP_Tuning_SetBrightness(IMPVI_MAIN, &val);
+    return IMP_ISP_Tuning_SetBrightness(IMPVI_MAIN, &v);
 #else
-    return IMP_ISP_Tuning_SetBrightness(val);
+    return IMP_ISP_Tuning_SetBrightness(v);
 #endif
 }
 
-int hal_isp_set_contrast(void *ctx, uint8_t val)
+int hal_isp_set_contrast(void *ctx, int val)
 {
     (void)ctx;
+    uint8_t v = hal_clamp_u8(val);
 #if defined(HAL_ISP_PTR_ARGS)
-    return IMP_ISP_Tuning_SetContrast(IMPVI_MAIN, &val);
+    return IMP_ISP_Tuning_SetContrast(IMPVI_MAIN, &v);
 #else
-    return IMP_ISP_Tuning_SetContrast(val);
+    return IMP_ISP_Tuning_SetContrast(v);
 #endif
 }
 
-int hal_isp_set_saturation(void *ctx, uint8_t val)
+int hal_isp_set_saturation(void *ctx, int val)
 {
     (void)ctx;
+    uint8_t v = hal_clamp_u8(val);
 #if defined(HAL_ISP_PTR_ARGS)
-    return IMP_ISP_Tuning_SetSaturation(IMPVI_MAIN, &val);
+    return IMP_ISP_Tuning_SetSaturation(IMPVI_MAIN, &v);
 #else
-    return IMP_ISP_Tuning_SetSaturation(val);
+    return IMP_ISP_Tuning_SetSaturation(v);
 #endif
 }
 
-int hal_isp_set_sharpness(void *ctx, uint8_t val)
+int hal_isp_set_sharpness(void *ctx, int val)
 {
     (void)ctx;
+    uint8_t v = hal_clamp_u8(val);
 #if defined(HAL_ISP_PTR_ARGS)
-    return IMP_ISP_Tuning_SetSharpness(IMPVI_MAIN, &val);
+    return IMP_ISP_Tuning_SetSharpness(IMPVI_MAIN, &v);
 #else
-    return IMP_ISP_Tuning_SetSharpness(val);
+    return IMP_ISP_Tuning_SetSharpness(v);
 #endif
 }
 
@@ -74,18 +78,19 @@ int hal_isp_set_sharpness(void *ctx, uint8_t val)
  * Not available on T20, T21, T30.
  * ================================================================ */
 
-int hal_isp_set_hue(void *ctx, uint8_t val)
+int hal_isp_set_hue(void *ctx, int val)
 {
     (void)ctx;
+    uint8_t v = hal_clamp_u8(val);
 #if defined(HAL_ISP_PTR_ARGS)
     /* Gen3: T32/T40/T41 */
-    return IMP_ISP_Tuning_SetBcshHue(IMPVI_MAIN, &val);
+    return IMP_ISP_Tuning_SetBcshHue(IMPVI_MAIN, &v);
 #elif defined(PLATFORM_T23) || defined(PLATFORM_T31)
     /* Gen2: scalar */
-    return IMP_ISP_Tuning_SetBcshHue(val);
+    return IMP_ISP_Tuning_SetBcshHue(v);
 #else
     /* T20/T21/T30: not supported */
-    (void)val;
+    (void)v;
     return RSS_ERR_NOTSUP;
 #endif
 }
@@ -421,18 +426,19 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
  * Signature: SetSinterStrength(uint32_t ratio)
  * ================================================================ */
 
-int hal_isp_set_sinter_strength(void *ctx, uint8_t val)
+int hal_isp_set_sinter_strength(void *ctx, int val)
 {
     (void)ctx;
+    uint8_t v = hal_clamp_u8(val);
 
     if (!g_hal_caps.has_sinter)
         return RSS_ERR_NOTSUP;
 
 #if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
     defined(PLATFORM_T30) || defined(PLATFORM_T31)
-    return IMP_ISP_Tuning_SetSinterStrength((uint32_t)val);
+    return IMP_ISP_Tuning_SetSinterStrength((uint32_t)v);
 #else
-    (void)val;
+    (void)v;
     return RSS_ERR_NOTSUP;
 #endif
 }
@@ -444,18 +450,19 @@ int hal_isp_set_sinter_strength(void *ctx, uint8_t val)
  * Signature: SetTemperStrength(uint32_t ratio)
  * ================================================================ */
 
-int hal_isp_set_temper_strength(void *ctx, uint8_t val)
+int hal_isp_set_temper_strength(void *ctx, int val)
 {
     (void)ctx;
+    uint8_t v = hal_clamp_u8(val);
 
     if (!g_hal_caps.has_temper)
         return RSS_ERR_NOTSUP;
 
 #if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
     defined(PLATFORM_T30) || defined(PLATFORM_T31)
-    return IMP_ISP_Tuning_SetTemperStrength((uint32_t)val);
+    return IMP_ISP_Tuning_SetTemperStrength((uint32_t)v);
 #else
-    (void)val;
+    (void)v;
     return RSS_ERR_NOTSUP;
 #endif
 }
@@ -492,17 +499,18 @@ int hal_isp_set_defog(void *ctx, int enable)
  * Signature: SetDPC_Strength(unsigned int ratio)
  * ================================================================ */
 
-int hal_isp_set_dpc_strength(void *ctx, uint8_t val)
+int hal_isp_set_dpc_strength(void *ctx, int val)
 {
     (void)ctx;
+    uint8_t v = hal_clamp_u8(val);
 
     if (!g_hal_caps.has_dpc)
         return RSS_ERR_NOTSUP;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-    return IMP_ISP_Tuning_SetDPC_Strength((unsigned int)val);
+    return IMP_ISP_Tuning_SetDPC_Strength((unsigned int)v);
 #else
-    (void)val;
+    (void)v;
     return RSS_ERR_NOTSUP;
 #endif
 }
@@ -514,17 +522,18 @@ int hal_isp_set_dpc_strength(void *ctx, uint8_t val)
  * Signature: SetDRC_Strength(unsigned int ratio)
  * ================================================================ */
 
-int hal_isp_set_drc_strength(void *ctx, uint8_t val)
+int hal_isp_set_drc_strength(void *ctx, int val)
 {
     (void)ctx;
+    uint8_t v = hal_clamp_u8(val);
 
     if (!g_hal_caps.has_drc)
         return RSS_ERR_NOTSUP;
 
 #if defined(PLATFORM_T21) || defined(PLATFORM_T23) || defined(PLATFORM_T31)
-    return IMP_ISP_Tuning_SetDRC_Strength((unsigned int)val);
+    return IMP_ISP_Tuning_SetDRC_Strength((unsigned int)v);
 #else
-    (void)val;
+    (void)v;
     return RSS_ERR_NOTSUP;
 #endif
 }
@@ -557,15 +566,16 @@ int hal_isp_set_ae_comp(void *ctx, int val)
  * T32/T40/T41 do not have this function.
  * ================================================================ */
 
-int hal_isp_set_max_again(void *ctx, uint32_t gain)
+int hal_isp_set_max_again(void *ctx, int gain)
 {
     (void)ctx;
+    uint32_t g = hal_clamp_u32(gain);
 
 #if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
     defined(PLATFORM_T30) || defined(PLATFORM_T31)
-    return IMP_ISP_Tuning_SetMaxAgain(gain);
+    return IMP_ISP_Tuning_SetMaxAgain(g);
 #else
-    (void)gain;
+    (void)g;
     return RSS_ERR_NOTSUP;
 #endif
 }
@@ -578,15 +588,16 @@ int hal_isp_set_max_again(void *ctx, uint32_t gain)
  * T32/T40/T41 do not have this function.
  * ================================================================ */
 
-int hal_isp_set_max_dgain(void *ctx, uint32_t gain)
+int hal_isp_set_max_dgain(void *ctx, int gain)
 {
     (void)ctx;
+    uint32_t g = hal_clamp_u32(gain);
 
 #if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
     defined(PLATFORM_T30) || defined(PLATFORM_T31)
-    return IMP_ISP_Tuning_SetMaxDgain(gain);
+    return IMP_ISP_Tuning_SetMaxDgain(g);
 #else
-    (void)gain;
+    (void)g;
     return RSS_ERR_NOTSUP;
 #endif
 }
@@ -599,15 +610,16 @@ int hal_isp_set_max_dgain(void *ctx, uint32_t gain)
  * T32/T40/T41 do not have this function.
  * ================================================================ */
 
-int hal_isp_set_highlight_depress(void *ctx, uint8_t val)
+int hal_isp_set_highlight_depress(void *ctx, int val)
 {
     (void)ctx;
+    uint8_t v = hal_clamp_u8(val);
 
 #if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
     defined(PLATFORM_T30) || defined(PLATFORM_T31)
-    return IMP_ISP_Tuning_SetHiLightDepress((uint32_t)val);
+    return IMP_ISP_Tuning_SetHiLightDepress((uint32_t)v);
 #else
-    (void)val;
+    (void)v;
     return RSS_ERR_NOTSUP;
 #endif
 }
@@ -2499,14 +2511,15 @@ int hal_isp_set_awb_ct_trend(void *ctx, const void *trend)
  * Signature: SetBacklightComp(uint32_t strength)
  * ================================================================ */
 
-int hal_isp_set_backlight_comp(void *ctx, uint32_t strength)
+int hal_isp_set_backlight_comp(void *ctx, int strength)
 {
     (void)ctx;
+    uint32_t s = hal_clamp_u32(strength);
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
-    return IMP_ISP_Tuning_SetBacklightComp(strength);
+    return IMP_ISP_Tuning_SetBacklightComp(s);
 #else
-    (void)strength;
+    (void)s;
     return RSS_ERR_NOTSUP;
 #endif
 }
@@ -3006,70 +3019,81 @@ int hal_isp_set_scaler_lv(void *ctx, int chn, int level)
  * sensor 0 for backward compatibility.
  * ================================================================ */
 
-int hal_isp_set_brightness_n(void *ctx, int sensor_idx, uint8_t val)
+int hal_isp_set_brightness_n(void *ctx, int sensor_idx, int val)
 {
     (void)ctx;
+    uint8_t v = hal_clamp_u8(val);
 #if defined(HAL_ISP_PTR_ARGS)
-    return IMP_ISP_Tuning_SetBrightness((IMPVI_NUM)sensor_idx, &val);
+    return IMP_ISP_Tuning_SetBrightness((IMPVI_NUM)sensor_idx, &v);
 #elif defined(HAL_T23_MULTICAM)
-    return IMP_ISP_MultiCamera_Tuning_SetBrightness((IMPVI_NUM)sensor_idx, val);
+    return IMP_ISP_MultiCamera_Tuning_SetBrightness((IMPVI_NUM)sensor_idx, v);
 #else
-    if (sensor_idx != 0) return RSS_ERR_NOTSUP;
-    return IMP_ISP_Tuning_SetBrightness(val);
+    if (sensor_idx != 0)
+        return RSS_ERR_NOTSUP;
+    return IMP_ISP_Tuning_SetBrightness(v);
 #endif
 }
 
-int hal_isp_set_contrast_n(void *ctx, int sensor_idx, uint8_t val)
+int hal_isp_set_contrast_n(void *ctx, int sensor_idx, int val)
 {
     (void)ctx;
+    uint8_t v = hal_clamp_u8(val);
 #if defined(HAL_ISP_PTR_ARGS)
-    return IMP_ISP_Tuning_SetContrast((IMPVI_NUM)sensor_idx, &val);
+    return IMP_ISP_Tuning_SetContrast((IMPVI_NUM)sensor_idx, &v);
 #elif defined(HAL_T23_MULTICAM)
-    return IMP_ISP_MultiCamera_Tuning_SetContrast((IMPVI_NUM)sensor_idx, val);
+    return IMP_ISP_MultiCamera_Tuning_SetContrast((IMPVI_NUM)sensor_idx, v);
 #else
-    if (sensor_idx != 0) return RSS_ERR_NOTSUP;
-    return IMP_ISP_Tuning_SetContrast(val);
+    if (sensor_idx != 0)
+        return RSS_ERR_NOTSUP;
+    return IMP_ISP_Tuning_SetContrast(v);
 #endif
 }
 
-int hal_isp_set_saturation_n(void *ctx, int sensor_idx, uint8_t val)
+int hal_isp_set_saturation_n(void *ctx, int sensor_idx, int val)
 {
     (void)ctx;
+    uint8_t v = hal_clamp_u8(val);
 #if defined(HAL_ISP_PTR_ARGS)
-    return IMP_ISP_Tuning_SetSaturation((IMPVI_NUM)sensor_idx, &val);
+    return IMP_ISP_Tuning_SetSaturation((IMPVI_NUM)sensor_idx, &v);
 #elif defined(HAL_T23_MULTICAM)
-    return IMP_ISP_MultiCamera_Tuning_SetSaturation((IMPVI_NUM)sensor_idx, val);
+    return IMP_ISP_MultiCamera_Tuning_SetSaturation((IMPVI_NUM)sensor_idx, v);
 #else
-    if (sensor_idx != 0) return RSS_ERR_NOTSUP;
-    return IMP_ISP_Tuning_SetSaturation(val);
+    if (sensor_idx != 0)
+        return RSS_ERR_NOTSUP;
+    return IMP_ISP_Tuning_SetSaturation(v);
 #endif
 }
 
-int hal_isp_set_sharpness_n(void *ctx, int sensor_idx, uint8_t val)
+int hal_isp_set_sharpness_n(void *ctx, int sensor_idx, int val)
 {
     (void)ctx;
+    uint8_t v = hal_clamp_u8(val);
 #if defined(HAL_ISP_PTR_ARGS)
-    return IMP_ISP_Tuning_SetSharpness((IMPVI_NUM)sensor_idx, &val);
+    return IMP_ISP_Tuning_SetSharpness((IMPVI_NUM)sensor_idx, &v);
 #elif defined(HAL_T23_MULTICAM)
-    return IMP_ISP_MultiCamera_Tuning_SetSharpness((IMPVI_NUM)sensor_idx, val);
+    return IMP_ISP_MultiCamera_Tuning_SetSharpness((IMPVI_NUM)sensor_idx, v);
 #else
-    if (sensor_idx != 0) return RSS_ERR_NOTSUP;
-    return IMP_ISP_Tuning_SetSharpness(val);
+    if (sensor_idx != 0)
+        return RSS_ERR_NOTSUP;
+    return IMP_ISP_Tuning_SetSharpness(v);
 #endif
 }
 
-int hal_isp_set_hue_n(void *ctx, int sensor_idx, uint8_t val)
+int hal_isp_set_hue_n(void *ctx, int sensor_idx, int val)
 {
     (void)ctx;
+    uint8_t v = hal_clamp_u8(val);
 #if defined(HAL_ISP_PTR_ARGS)
-    return IMP_ISP_Tuning_SetBcshHue((IMPVI_NUM)sensor_idx, &val);
+    return IMP_ISP_Tuning_SetBcshHue((IMPVI_NUM)sensor_idx, &v);
 #elif defined(HAL_T23_MULTICAM)
-    return IMP_ISP_MultiCamera_Tuning_SetBcshHue((IMPVI_NUM)sensor_idx, val);
+    return IMP_ISP_MultiCamera_Tuning_SetBcshHue((IMPVI_NUM)sensor_idx, v);
 #elif defined(PLATFORM_T23) || defined(PLATFORM_T31)
-    if (sensor_idx != 0) return RSS_ERR_NOTSUP;
-    return IMP_ISP_Tuning_SetBcshHue(val);
+    if (sensor_idx != 0)
+        return RSS_ERR_NOTSUP;
+    return IMP_ISP_Tuning_SetBcshHue(v);
 #else
-    (void)sensor_idx; (void)val;
+    (void)sensor_idx;
+    (void)v;
     return RSS_ERR_NOTSUP;
 #endif
 }
@@ -3077,11 +3101,13 @@ int hal_isp_set_hue_n(void *ctx, int sensor_idx, uint8_t val)
 int hal_isp_set_hflip_n(void *ctx, int sensor_idx, int enable)
 {
     rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
-    if (sensor_idx < 0 || sensor_idx >= RSS_MAX_SENSORS) return RSS_ERR_INVAL;
+    if (sensor_idx < 0 || sensor_idx >= RSS_MAX_SENSORS)
+        return RSS_ERR_INVAL;
     c->hflip_state[sensor_idx] = enable ? 1 : 0;
 
 #if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T30)
-    if (sensor_idx != 0) return RSS_ERR_NOTSUP;
+    if (sensor_idx != 0)
+        return RSS_ERR_NOTSUP;
     IMPISPTuningOpsMode h = enable ? IMPISP_TUNING_OPS_MODE_ENABLE : IMPISP_TUNING_OPS_MODE_DISABLE;
     return IMP_ISP_Tuning_SetISPHflip(h);
 #else
@@ -3100,7 +3126,8 @@ int hal_isp_set_hflip_n(void *ctx, int sensor_idx, int enable)
         return IMP_ISP_MultiCamera_Tuning_SetHVFLIP((IMPVI_NUM)sensor_idx, mode);
 #else
         /* T23/T31 without multicam */
-        if (sensor_idx != 0) return RSS_ERR_NOTSUP;
+        if (sensor_idx != 0)
+            return RSS_ERR_NOTSUP;
         IMPISPHVFLIP hvflip = (IMPISPHVFLIP)mode;
         return IMP_ISP_Tuning_SetHVFLIP(hvflip);
 #endif
@@ -3111,11 +3138,13 @@ int hal_isp_set_hflip_n(void *ctx, int sensor_idx, int enable)
 int hal_isp_set_vflip_n(void *ctx, int sensor_idx, int enable)
 {
     rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
-    if (sensor_idx < 0 || sensor_idx >= RSS_MAX_SENSORS) return RSS_ERR_INVAL;
+    if (sensor_idx < 0 || sensor_idx >= RSS_MAX_SENSORS)
+        return RSS_ERR_INVAL;
     c->vflip_state[sensor_idx] = enable ? 1 : 0;
 
 #if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T30)
-    if (sensor_idx != 0) return RSS_ERR_NOTSUP;
+    if (sensor_idx != 0)
+        return RSS_ERR_NOTSUP;
     IMPISPTuningOpsMode v = enable ? IMPISP_TUNING_OPS_MODE_ENABLE : IMPISP_TUNING_OPS_MODE_DISABLE;
     return IMP_ISP_Tuning_SetISPVflip(v);
 #else
@@ -3133,7 +3162,8 @@ int hal_isp_set_vflip_n(void *ctx, int sensor_idx, int enable)
 #elif defined(HAL_T23_MULTICAM)
         return IMP_ISP_MultiCamera_Tuning_SetHVFLIP((IMPVI_NUM)sensor_idx, mode);
 #else
-        if (sensor_idx != 0) return RSS_ERR_NOTSUP;
+        if (sensor_idx != 0)
+            return RSS_ERR_NOTSUP;
         IMPISPHVFLIP hvflip = (IMPISPHVFLIP)mode;
         return IMP_ISP_Tuning_SetHVFLIP(hvflip);
 #endif
@@ -3152,7 +3182,8 @@ int hal_isp_set_running_mode_n(void *ctx, int sensor_idx, rss_isp_mode_t mode)
 #elif defined(HAL_T23_MULTICAM)
     return IMP_ISP_MultiCamera_Tuning_SetISPRunningMode((IMPVI_NUM)sensor_idx, imp_mode);
 #else
-    if (sensor_idx != 0) return RSS_ERR_NOTSUP;
+    if (sensor_idx != 0)
+        return RSS_ERR_NOTSUP;
     return IMP_ISP_Tuning_SetISPRunningMode(imp_mode);
 #endif
 }
@@ -3168,7 +3199,8 @@ int hal_isp_set_sensor_fps_n(void *ctx, int sensor_idx, uint32_t fps_num, uint32
 #elif defined(HAL_T23_MULTICAM)
     return IMP_ISP_MultiCamera_Tuning_SetSensorFPS((IMPVI_NUM)sensor_idx, fps_num, fps_den);
 #else
-    if (sensor_idx != 0) return RSS_ERR_NOTSUP;
+    if (sensor_idx != 0)
+        return RSS_ERR_NOTSUP;
     return IMP_ISP_Tuning_SetSensorFPS(fps_num, fps_den);
 #endif
 }
@@ -3207,46 +3239,59 @@ int hal_isp_set_antiflicker_n(void *ctx, int sensor_idx, rss_antiflicker_t mode)
     {
         IMPISPAntiflickerAttr attr;
         switch (mode) {
-        case RSS_ANTIFLICKER_50HZ: attr = IMPISP_ANTIFLICKER_50HZ; break;
-        case RSS_ANTIFLICKER_60HZ: attr = IMPISP_ANTIFLICKER_60HZ; break;
-        default:                   attr = IMPISP_ANTIFLICKER_DISABLE; break;
+        case RSS_ANTIFLICKER_50HZ:
+            attr = IMPISP_ANTIFLICKER_50HZ;
+            break;
+        case RSS_ANTIFLICKER_60HZ:
+            attr = IMPISP_ANTIFLICKER_60HZ;
+            break;
+        default:
+            attr = IMPISP_ANTIFLICKER_DISABLE;
+            break;
         }
         return IMP_ISP_MultiCamera_Tuning_SetAntiFlickerAttr((IMPVI_NUM)sensor_idx, attr);
     }
 #else
-    if (sensor_idx != 0) return RSS_ERR_NOTSUP;
+    if (sensor_idx != 0)
+        return RSS_ERR_NOTSUP;
     return hal_isp_set_antiflicker(ctx, mode);
 #endif
 }
 
-int hal_isp_set_sinter_strength_n(void *ctx, int sensor_idx, uint8_t val)
+int hal_isp_set_sinter_strength_n(void *ctx, int sensor_idx, int val)
 {
     (void)ctx;
+    uint8_t v = hal_clamp_u8(val);
     /* Sinter only on T20-T31; T32/T40/T41 use SetModule_Ratio instead */
 #if defined(HAL_T23_MULTICAM)
-    return IMP_ISP_MultiCamera_Tuning_SetSinterStrength((IMPVI_NUM)sensor_idx, val);
-#elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) || \
-      defined(PLATFORM_T30) || defined(PLATFORM_T31)
-    if (sensor_idx != 0) return RSS_ERR_NOTSUP;
-    return IMP_ISP_Tuning_SetSinterStrength((uint32_t)val);
+    return IMP_ISP_MultiCamera_Tuning_SetSinterStrength((IMPVI_NUM)sensor_idx, v);
+#elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                   \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    if (sensor_idx != 0)
+        return RSS_ERR_NOTSUP;
+    return IMP_ISP_Tuning_SetSinterStrength((uint32_t)v);
 #else
-    (void)sensor_idx; (void)val;
+    (void)sensor_idx;
+    (void)v;
     return RSS_ERR_NOTSUP;
 #endif
 }
 
-int hal_isp_set_temper_strength_n(void *ctx, int sensor_idx, uint8_t val)
+int hal_isp_set_temper_strength_n(void *ctx, int sensor_idx, int val)
 {
     (void)ctx;
+    uint8_t v = hal_clamp_u8(val);
     /* Temper only on T20-T31; T32/T40/T41 use SetModule_Ratio instead */
 #if defined(HAL_T23_MULTICAM)
-    return IMP_ISP_MultiCamera_Tuning_SetTemperStrength((IMPVI_NUM)sensor_idx, val);
-#elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) || \
-      defined(PLATFORM_T30) || defined(PLATFORM_T31)
-    if (sensor_idx != 0) return RSS_ERR_NOTSUP;
-    return IMP_ISP_Tuning_SetTemperStrength((uint32_t)val);
+    return IMP_ISP_MultiCamera_Tuning_SetTemperStrength((IMPVI_NUM)sensor_idx, v);
+#elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                   \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    if (sensor_idx != 0)
+        return RSS_ERR_NOTSUP;
+    return IMP_ISP_Tuning_SetTemperStrength((uint32_t)v);
 #else
-    (void)sensor_idx; (void)val;
+    (void)sensor_idx;
+    (void)v;
     return RSS_ERR_NOTSUP;
 #endif
 }
@@ -3257,43 +3302,52 @@ int hal_isp_set_ae_comp_n(void *ctx, int sensor_idx, int val)
     /* AeComp only on T20/T23/T30/T31; not on T32/T40/T41 */
 #if defined(HAL_T23_MULTICAM)
     return IMP_ISP_MultiCamera_Tuning_SetAeComp((IMPVI_NUM)sensor_idx, val);
-#elif defined(PLATFORM_T20) || defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
-    if (sensor_idx != 0) return RSS_ERR_NOTSUP;
+#elif defined(PLATFORM_T20) || defined(PLATFORM_T23) || defined(PLATFORM_T30) ||                   \
+    defined(PLATFORM_T31)
+    if (sensor_idx != 0)
+        return RSS_ERR_NOTSUP;
     return IMP_ISP_Tuning_SetAeComp(val);
 #else
-    (void)sensor_idx; (void)val;
+    (void)sensor_idx;
+    (void)val;
     return RSS_ERR_NOTSUP;
 #endif
 }
 
-int hal_isp_set_max_again_n(void *ctx, int sensor_idx, uint32_t gain)
+int hal_isp_set_max_again_n(void *ctx, int sensor_idx, int gain)
 {
     (void)ctx;
+    uint32_t g = hal_clamp_u32(gain);
     /* MaxAgain only on T20-T31; not on T32/T40/T41 */
 #if defined(HAL_T23_MULTICAM)
-    return IMP_ISP_MultiCamera_Tuning_SetMaxAgain((IMPVI_NUM)sensor_idx, gain);
-#elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) || \
-      defined(PLATFORM_T30) || defined(PLATFORM_T31)
-    if (sensor_idx != 0) return RSS_ERR_NOTSUP;
-    return IMP_ISP_Tuning_SetMaxAgain(gain);
+    return IMP_ISP_MultiCamera_Tuning_SetMaxAgain((IMPVI_NUM)sensor_idx, g);
+#elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                   \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    if (sensor_idx != 0)
+        return RSS_ERR_NOTSUP;
+    return IMP_ISP_Tuning_SetMaxAgain(g);
 #else
-    (void)sensor_idx; (void)gain;
+    (void)sensor_idx;
+    (void)g;
     return RSS_ERR_NOTSUP;
 #endif
 }
 
-int hal_isp_set_max_dgain_n(void *ctx, int sensor_idx, uint32_t gain)
+int hal_isp_set_max_dgain_n(void *ctx, int sensor_idx, int gain)
 {
     (void)ctx;
+    uint32_t g = hal_clamp_u32(gain);
     /* MaxDgain only on T20-T31; not on T32/T40/T41 */
 #if defined(HAL_T23_MULTICAM)
-    return IMP_ISP_MultiCamera_Tuning_SetMaxDgain((IMPVI_NUM)sensor_idx, gain);
-#elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) || \
-      defined(PLATFORM_T30) || defined(PLATFORM_T31)
-    if (sensor_idx != 0) return RSS_ERR_NOTSUP;
-    return IMP_ISP_Tuning_SetMaxDgain(gain);
+    return IMP_ISP_MultiCamera_Tuning_SetMaxDgain((IMPVI_NUM)sensor_idx, g);
+#elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                   \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    if (sensor_idx != 0)
+        return RSS_ERR_NOTSUP;
+    return IMP_ISP_Tuning_SetMaxDgain(g);
 #else
-    (void)sensor_idx; (void)gain;
+    (void)sensor_idx;
+    (void)g;
     return RSS_ERR_NOTSUP;
 #endif
 }
@@ -3301,14 +3355,16 @@ int hal_isp_set_max_dgain_n(void *ctx, int sensor_idx, uint32_t gain)
 int hal_isp_get_exposure_n(void *ctx, int sensor_idx, rss_exposure_t *exposure)
 {
     (void)ctx;
-    if (!exposure) return RSS_ERR_INVAL;
+    if (!exposure)
+        return RSS_ERR_INVAL;
     memset(exposure, 0, sizeof(*exposure));
 
 #if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPISPAeExprInfo expr_info;
     memset(&expr_info, 0, sizeof(expr_info));
     int ret = IMP_ISP_Tuning_GetAeExprInfo((IMPVI_NUM)sensor_idx, &expr_info);
-    if (ret != 0) return ret;
+    if (ret != 0)
+        return ret;
     exposure->exposure_time = expr_info.AeIntegrationTime;
 #if defined(PLATFORM_T40) || defined(PLATFORM_T41)
     exposure->total_gain = expr_info.TotalGainDb;
@@ -3325,7 +3381,8 @@ int hal_isp_get_exposure_n(void *ctx, int sensor_idx, rss_exposure_t *exposure)
         return 0;
     }
 #else
-    if (sensor_idx != 0) return RSS_ERR_NOTSUP;
+    if (sensor_idx != 0)
+        return RSS_ERR_NOTSUP;
     return hal_isp_get_exposure(ctx, exposure);
 #endif
 }
@@ -3337,10 +3394,12 @@ int hal_isp_set_custom_mode_n(void *ctx, int sensor_idx, int mode)
 #if defined(HAL_T23_MULTICAM)
     return IMP_ISP_MultiCamera_Tuning_SetISPCustomMode((IMPVI_NUM)sensor_idx, mode);
 #elif defined(PLATFORM_T23) || defined(PLATFORM_T31)
-    if (sensor_idx != 0) return RSS_ERR_NOTSUP;
+    if (sensor_idx != 0)
+        return RSS_ERR_NOTSUP;
     return IMP_ISP_Tuning_SetISPCustomMode(mode);
 #else
-    (void)sensor_idx; (void)mode;
+    (void)sensor_idx;
+    (void)mode;
     return RSS_ERR_NOTSUP;
 #endif
 }
@@ -3352,10 +3411,12 @@ int hal_isp_set_ae_freeze_n(void *ctx, int sensor_idx, int enable)
 #if defined(HAL_T23_MULTICAM)
     return IMP_ISP_MultiCamera_Tuning_SetAeFreeze((IMPVI_NUM)sensor_idx, enable);
 #elif defined(PLATFORM_T23) || defined(PLATFORM_T31)
-    if (sensor_idx != 0) return RSS_ERR_NOTSUP;
+    if (sensor_idx != 0)
+        return RSS_ERR_NOTSUP;
     return IMP_ISP_Tuning_SetAeFreeze(enable);
 #else
-    (void)sensor_idx; (void)enable;
+    (void)sensor_idx;
+    (void)enable;
     return RSS_ERR_NOTSUP;
 #endif
 }

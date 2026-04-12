@@ -186,19 +186,23 @@ int IMP_Encoder_SetChnAttrRcMode(int encChn, const IMPEncoderAttrRcMode *pstRcMo
  * ═══════════════════════════════════════════════════════════════════════ */
 
 /* Log levels matching RSS: 0=fatal, 1=error, 2=warn, 3=info, 4=debug */
-#define HAL_LOG_LVL_ERR  1
+#define HAL_LOG_LVL_ERR 1
 #define HAL_LOG_LVL_WARN 2
 #define HAL_LOG_LVL_INFO 3
-#define HAL_LOG_LVL_DBG  4
+#define HAL_LOG_LVL_DBG 4
 
 extern rss_hal_log_func_t rss_hal_log_fn;
 
-#define HAL_LOG_ERR(fmt, ...)  rss_hal_log_fn(HAL_LOG_LVL_ERR, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
-#define HAL_LOG_WARN(fmt, ...) rss_hal_log_fn(HAL_LOG_LVL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
-#define HAL_LOG_INFO(fmt, ...) rss_hal_log_fn(HAL_LOG_LVL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
+#define HAL_LOG_ERR(fmt, ...)                                                                      \
+    rss_hal_log_fn(HAL_LOG_LVL_ERR, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
+#define HAL_LOG_WARN(fmt, ...)                                                                     \
+    rss_hal_log_fn(HAL_LOG_LVL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
+#define HAL_LOG_INFO(fmt, ...)                                                                     \
+    rss_hal_log_fn(HAL_LOG_LVL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
 
 #ifdef HAL_DEBUG
-#define HAL_LOG_DBG(fmt, ...) rss_hal_log_fn(HAL_LOG_LVL_DBG, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
+#define HAL_LOG_DBG(fmt, ...)                                                                      \
+    rss_hal_log_fn(HAL_LOG_LVL_DBG, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
 #else
 #define HAL_LOG_DBG(fmt, ...) ((void)0)
 #endif
@@ -268,5 +272,28 @@ struct rss_hal_ctx {
 
 /* hal_caps.c */
 const rss_hal_caps_t *hal_caps_get(void);
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * 10. Input Clamping
+ *
+ * HAL ISP setters accept int from callers (config values, JSON commands)
+ * and clamp to the SDK's expected range before forwarding.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+static inline uint8_t hal_clamp_u8(int val)
+{
+    if (val < 0)
+        return 0;
+    if (val > 255)
+        return 255;
+    return (uint8_t)val;
+}
+
+static inline uint32_t hal_clamp_u32(int val)
+{
+    if (val < 0)
+        return 0;
+    return (uint32_t)val;
+}
 
 #endif /* HAL_INTERNAL_H */
