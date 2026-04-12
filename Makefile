@@ -56,8 +56,8 @@ SDK_INCLUDE     := $(INGENIC_HEADERS)/$(PLATFORM)/$(HEADER_VER)/$(HEADER_LANG)
 # Toolchain
 CC      := $(CROSS_COMPILE)gcc
 CXX     := $(CROSS_COMPILE)g++
-AR      := $(CROSS_COMPILE)ar
-RANLIB  := $(CROSS_COMPILE)ranlib
+AR      := $(CROSS_COMPILE)gcc-ar
+RANLIB  := $(CROSS_COMPILE)gcc-ranlib
 
 # JZDL inference (optional — set JZDL_INCLUDE to enable)
 JZDL_INCLUDE ?=
@@ -65,7 +65,7 @@ JZDL_INCLUDE ?=
 # Flags
 CFLAGS  := -Wall -Wextra -Werror=implicit-function-declaration
 CFLAGS  += -std=c11
-CFLAGS  += -ffunction-sections -fdata-sections
+CFLAGS  += -ffunction-sections -fdata-sections -flto
 CFLAGS  += -fno-asynchronous-unwind-tables -fmerge-all-constants -fno-ident
 CFLAGS  += -DPLATFORM_$(PLATFORM)
 CFLAGS  += -I$(SDK_INCLUDE)
