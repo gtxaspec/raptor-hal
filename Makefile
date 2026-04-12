@@ -15,6 +15,7 @@
 #   DEBUG           - Set to 1 for debug build
 #   V               - Set to 1 for verbose output
 
+ifeq ($(filter clean,$(MAKECMDGOALS)),)
 ifndef PLATFORM
 $(error PLATFORM not set. Use: make PLATFORM=T31)
 endif
@@ -24,6 +25,7 @@ VALID_PLATFORMS := T20 T21 T23 T30 T31 T32 T40 T41
 ifeq ($(filter $(PLATFORM),$(VALID_PLATFORMS)),)
 $(error Invalid PLATFORM=$(PLATFORM). Valid: $(VALID_PLATFORMS))
 endif
+endif # clean guard
 
 # SDK version mapping
 HEADER_VER_T20 := 3.12.0
@@ -86,18 +88,19 @@ else
 Q := @
 endif
 
-# Sources
-SRCS := src/hal_caps.c \
-        src/hal_common.c \
-        src/hal_encoder.c \
-        src/hal_framesource.c \
-        src/hal_isp.c \
-        src/hal_audio.c \
-        src/hal_osd.c \
-        src/hal_gpio.c \
-        src/hal_ivs.c \
-        src/hal_dmic.c \
-        src/hal_memory.c
+# Sources — shared across both archives
+CORE_SRCS := src/hal_caps.c
+
+VIDEO_SRCS := src/hal_encoder.c \
+              src/hal_framesource.c \
+              src/hal_isp.c \
+              src/hal_osd.c \
+              src/hal_gpio.c \
+              src/hal_ivs.c \
+              src/hal_memory.c
+
+AUDIO_SRCS := src/hal_audio.c \
+              src/hal_dmic.c
 
 CXX_SRCS :=
 ifneq ($(JZDL_INCLUDE),)
@@ -105,17 +108,37 @@ CXX_SRCS += src/hal_ivs_jzdl.cpp
 CXXFLAGS := $(CFLAGS) -std=c++11 -DJZ_MXU=0 -I$(JZDL_INCLUDE) -fno-exceptions -fno-rtti
 endif
 
-OBJS := $(SRCS:.c=.o) $(CXX_SRCS:.cpp=.o)
-DEPS := $(SRCS:.c=.d) $(CXX_SRCS:.cpp=.d)
+CORE_OBJS  := $(CORE_SRCS:.c=.o)
+VIDEO_OBJS := $(VIDEO_SRCS:.c=.o) $(CXX_SRCS:.cpp=.o)
+AUDIO_OBJS := $(AUDIO_SRCS:.c=.o)
 
-# Output
-LIB := libraptor_hal.a
+ALL_OBJS := src/hal_common_video.o src/hal_common_audio.o \
+            $(CORE_OBJS) $(VIDEO_OBJS) $(AUDIO_OBJS)
+DEPS := $(ALL_OBJS:.o=.d)
+
+# Output — two archives, one per module set
+LIB_VIDEO := libraptor_hal_video.a
+LIB_AUDIO := libraptor_hal_audio.a
 
 .PHONY: all clean info
 
-all: $(LIB)
+all: $(LIB_VIDEO) $(LIB_AUDIO)
 
-$(LIB): $(OBJS)
+# Compile hal_common.c twice with different module defines
+src/hal_common_video.o: src/hal_common.c
+	@echo "  CC      $< (video)"
+	$(Q)$(CC) $(CFLAGS) -DHAL_MODULE_VIDEO -MMD -MP -c $< -o $@
+
+src/hal_common_audio.o: src/hal_common.c
+	@echo "  CC      $< (audio)"
+	$(Q)$(CC) $(CFLAGS) -DHAL_MODULE_AUDIO -MMD -MP -c $< -o $@
+
+$(LIB_VIDEO): src/hal_common_video.o $(CORE_OBJS) $(VIDEO_OBJS)
+	@echo "  AR      $@"
+	$(Q)$(AR) rcs $@ $^
+	$(Q)$(RANLIB) $@
+
+$(LIB_AUDIO): src/hal_common_audio.o $(CORE_OBJS) $(AUDIO_OBJS)
 	@echo "  AR      $@"
 	$(Q)$(AR) rcs $@ $^
 	$(Q)$(RANLIB) $@
@@ -130,7 +153,7 @@ $(LIB): $(OBJS)
 
 clean:
 	@echo "  CLEAN"
-	$(Q)rm -f $(OBJS) $(DEPS) $(LIB)
+	$(Q)rm -f $(ALL_OBJS) $(DEPS) $(LIB_VIDEO) $(LIB_AUDIO)
 
 info:
 	@echo "Platform:        $(PLATFORM)"

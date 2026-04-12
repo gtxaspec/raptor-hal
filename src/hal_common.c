@@ -43,6 +43,8 @@ void rss_hal_set_log_func(rss_hal_log_func_t func)
 
 /* ── External function declarations (implemented in other files) ── */
 
+#ifdef HAL_MODULE_VIDEO
+
 /* Encoder (hal_encoder_old.c / hal_encoder_new.c) */
 extern int hal_enc_create_group(void *ctx, int grp);
 extern int hal_enc_destroy_group(void *ctx, int grp);
@@ -314,6 +316,10 @@ extern int hal_isp_get_exposure_n(void *ctx, int sensor_idx, rss_exposure_t *exp
 extern int hal_isp_set_custom_mode_n(void *ctx, int sensor_idx, int mode);
 extern int hal_isp_set_ae_freeze_n(void *ctx, int sensor_idx, int enable);
 
+#endif /* HAL_MODULE_VIDEO */
+
+#ifdef HAL_MODULE_AUDIO
+
 /* Audio (hal_audio.c) */
 extern int hal_audio_init(void *ctx, const rss_audio_config_t *cfg);
 extern int hal_audio_deinit(void *ctx);
@@ -382,6 +388,10 @@ extern int hal_ao_soft_mute(void *ctx, int dev, int chn);
 extern int hal_ao_soft_unmute(void *ctx, int dev, int chn);
 extern int hal_ao_cache_switch(void *ctx, int dev, int chn, int enable);
 
+#endif /* HAL_MODULE_AUDIO */
+
+#ifdef HAL_MODULE_VIDEO
+
 /* OSD (hal_osd.c) */
 extern int hal_osd_set_pool_size(void *ctx, uint32_t bytes);
 extern int hal_osd_create_group(void *ctx, int grp);
@@ -442,6 +452,10 @@ extern int hal_ivs_destroy_persondet_interface(void *ctx, void *handle);
 static void *hal_ivs_create_jzdl_stub(void *ctx, void *param) { (void)ctx; (void)param; return NULL; }
 static int hal_ivs_destroy_jzdl_stub(void *ctx, void *handle) { (void)ctx; (void)handle; return 0; }
 
+#endif /* HAL_MODULE_VIDEO */
+
+#ifdef HAL_MODULE_AUDIO
+
 /* DMIC (hal_dmic.c) */
 extern int hal_dmic_init(void *ctx, const rss_audio_config_t *cfg);
 extern int hal_dmic_deinit(void *ctx);
@@ -462,6 +476,10 @@ extern int hal_dmic_get_pub_attr(void *ctx, int dev, void *attr);
 extern int hal_dmic_get_frame_and_ref(void *ctx, int dev, int chn, void *frame, void *ref,
                                       int block);
 
+#endif /* HAL_MODULE_AUDIO */
+
+#ifdef HAL_MODULE_VIDEO
+
 /* Memory (hal_memory.c) */
 extern void *hal_mem_alloc(void *ctx, uint32_t size, const char *name);
 extern void hal_mem_free(void *ctx, void *ptr);
@@ -473,6 +491,8 @@ extern uint32_t hal_mem_pool_virt_to_phys(void *ctx, void *virt_addr);
 extern void *hal_mem_pool_alloc(void *ctx, uint32_t pool_id, uint32_t size);
 extern void hal_mem_pool_free(void *ctx, void *ptr);
 extern int hal_mem_pool_flush_cache(void *ctx, void *ptr, uint32_t size);
+
+#endif /* HAL_MODULE_VIDEO */
 
 /* ── Forward declarations for functions in this file ─────────────── */
 
@@ -614,6 +634,8 @@ static const rss_hal_ops_t g_ops = {
     .sys_read_reg32 = hal_sys_read_reg32,
     .sys_write_reg32 = hal_sys_write_reg32,
     .sys_get_bind_by_dest = hal_sys_get_bind_by_dest,
+
+#ifdef HAL_MODULE_VIDEO
 
     /* Framesource */
     .fs_create_channel = hal_fs_create_channel,
@@ -898,6 +920,10 @@ static const rss_hal_ops_t g_ops = {
     .isp_set_custom_mode_n = hal_isp_set_custom_mode_n,
     .isp_set_ae_freeze_n = hal_isp_set_ae_freeze_n,
 
+#endif /* HAL_MODULE_VIDEO */
+
+#ifdef HAL_MODULE_AUDIO
+
     /* Audio */
     .audio_init = hal_audio_init,
     .audio_deinit = hal_audio_deinit,
@@ -963,6 +989,10 @@ static const rss_hal_ops_t g_ops = {
     .ao_soft_unmute = hal_ao_soft_unmute,
     .ao_cache_switch = hal_ao_cache_switch,
 
+#endif /* HAL_MODULE_AUDIO */
+
+#ifdef HAL_MODULE_VIDEO
+
     /* OSD */
     .osd_set_pool_size = hal_osd_set_pool_size,
     .osd_create_group = hal_osd_create_group,
@@ -1018,6 +1048,10 @@ static const rss_hal_ops_t g_ops = {
     .ivs_create_jzdl_interface = hal_ivs_create_jzdl_stub,
     .ivs_destroy_jzdl_interface = hal_ivs_destroy_jzdl_stub,
 
+#endif /* HAL_MODULE_VIDEO */
+
+#ifdef HAL_MODULE_AUDIO
+
     /* DMIC */
     .dmic_init = hal_dmic_init,
     .dmic_deinit = hal_dmic_deinit,
@@ -1037,6 +1071,10 @@ static const rss_hal_ops_t g_ops = {
     .dmic_get_pub_attr = hal_dmic_get_pub_attr,
     .dmic_get_frame_and_ref = hal_dmic_get_frame_and_ref,
 
+#endif /* HAL_MODULE_AUDIO */
+
+#ifdef HAL_MODULE_VIDEO
+
     /* Memory */
     .mem_alloc = hal_mem_alloc,
     .mem_free = hal_mem_free,
@@ -1048,6 +1086,8 @@ static const rss_hal_ops_t g_ops = {
     .mem_pool_flush_cache = hal_mem_pool_flush_cache,
     .mem_pool_phys_to_virt = hal_mem_pool_phys_to_virt,
     .mem_pool_virt_to_phys = hal_mem_pool_virt_to_phys,
+
+#endif /* HAL_MODULE_VIDEO */
 };
 
 /* ================================================================
