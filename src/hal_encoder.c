@@ -335,8 +335,10 @@ static int hal_enc_create_channel_old(int chn, const rss_video_config_t *cfg)
         if (pt == PT_H264) {
             chnAttr.rcAttr.attrRcMode.attrH264Cbr.outBitRate =
                 cfg->bitrate / 1000; /* old SDK uses kbps */
-            chnAttr.rcAttr.attrRcMode.attrH264Cbr.maxQp = (uint32_t)cfg->max_qp;
-            chnAttr.rcAttr.attrRcMode.attrH264Cbr.minQp = (uint32_t)cfg->min_qp;
+            chnAttr.rcAttr.attrRcMode.attrH264Cbr.maxQp =
+                (cfg->max_qp >= 0) ? (uint32_t)cfg->max_qp : 45;
+            chnAttr.rcAttr.attrRcMode.attrH264Cbr.minQp =
+                (cfg->min_qp >= 0) ? (uint32_t)cfg->min_qp : 15;
             chnAttr.rcAttr.attrRcMode.attrH264Cbr.frmQPStep = 3;
             chnAttr.rcAttr.attrRcMode.attrH264Cbr.gopQPStep = 15;
             chnAttr.rcAttr.attrRcMode.attrH264Cbr.adaptiveMode = false;
@@ -345,8 +347,10 @@ static int hal_enc_create_channel_old(int chn, const rss_video_config_t *cfg)
 #if defined(PLATFORM_T21) || defined(PLATFORM_T23) || defined(PLATFORM_T30)
         else if (pt == PT_H265) {
             chnAttr.rcAttr.attrRcMode.attrH265Cbr.outBitRate = cfg->bitrate / 1000;
-            chnAttr.rcAttr.attrRcMode.attrH265Cbr.maxQp = (uint32_t)cfg->max_qp;
-            chnAttr.rcAttr.attrRcMode.attrH265Cbr.minQp = (uint32_t)cfg->min_qp;
+            chnAttr.rcAttr.attrRcMode.attrH265Cbr.maxQp =
+                (cfg->max_qp >= 0) ? (uint32_t)cfg->max_qp : 45;
+            chnAttr.rcAttr.attrRcMode.attrH265Cbr.minQp =
+                (cfg->min_qp >= 0) ? (uint32_t)cfg->min_qp : 15;
             chnAttr.rcAttr.attrRcMode.attrH265Cbr.frmQPStep = 3;
             chnAttr.rcAttr.attrRcMode.attrH265Cbr.gopQPStep = 15;
         }
@@ -356,8 +360,10 @@ static int hal_enc_create_channel_old(int chn, const rss_video_config_t *cfg)
     case ENC_RC_MODE_VBR:
         if (pt == PT_H264) {
             chnAttr.rcAttr.attrRcMode.attrH264Vbr.maxBitRate = cfg->max_bitrate / 1000;
-            chnAttr.rcAttr.attrRcMode.attrH264Vbr.maxQp = (uint32_t)cfg->max_qp;
-            chnAttr.rcAttr.attrRcMode.attrH264Vbr.minQp = (uint32_t)cfg->min_qp;
+            chnAttr.rcAttr.attrRcMode.attrH264Vbr.maxQp =
+                (cfg->max_qp >= 0) ? (uint32_t)cfg->max_qp : 45;
+            chnAttr.rcAttr.attrRcMode.attrH264Vbr.minQp =
+                (cfg->min_qp >= 0) ? (uint32_t)cfg->min_qp : 15;
             chnAttr.rcAttr.attrRcMode.attrH264Vbr.staticTime = 1;
             chnAttr.rcAttr.attrRcMode.attrH264Vbr.changePos = 80;
             chnAttr.rcAttr.attrRcMode.attrH264Vbr.qualityLvl = 2;
@@ -368,8 +374,10 @@ static int hal_enc_create_channel_old(int chn, const rss_video_config_t *cfg)
 #if defined(PLATFORM_T21) || defined(PLATFORM_T23) || defined(PLATFORM_T30)
         else if (pt == PT_H265) {
             chnAttr.rcAttr.attrRcMode.attrH265Vbr.maxBitRate = cfg->max_bitrate / 1000;
-            chnAttr.rcAttr.attrRcMode.attrH265Vbr.maxQp = (uint32_t)cfg->max_qp;
-            chnAttr.rcAttr.attrRcMode.attrH265Vbr.minQp = (uint32_t)cfg->min_qp;
+            chnAttr.rcAttr.attrRcMode.attrH265Vbr.maxQp =
+                (cfg->max_qp >= 0) ? (uint32_t)cfg->max_qp : 45;
+            chnAttr.rcAttr.attrRcMode.attrH265Vbr.minQp =
+                (cfg->min_qp >= 0) ? (uint32_t)cfg->min_qp : 15;
             chnAttr.rcAttr.attrRcMode.attrH265Vbr.staticTime = 1;
             chnAttr.rcAttr.attrRcMode.attrH265Vbr.changePos = 80;
             chnAttr.rcAttr.attrRcMode.attrH265Vbr.qualityLvl = 2;
@@ -382,8 +390,10 @@ static int hal_enc_create_channel_old(int chn, const rss_video_config_t *cfg)
     case ENC_RC_MODE_SMART:
         if (pt == PT_H264) {
             chnAttr.rcAttr.attrRcMode.attrH264Smart.maxBitRate = cfg->max_bitrate / 1000;
-            chnAttr.rcAttr.attrRcMode.attrH264Smart.maxQp = (uint32_t)cfg->max_qp;
-            chnAttr.rcAttr.attrRcMode.attrH264Smart.minQp = (uint32_t)cfg->min_qp;
+            chnAttr.rcAttr.attrRcMode.attrH264Smart.maxQp =
+                (cfg->max_qp >= 0) ? (uint32_t)cfg->max_qp : 45;
+            chnAttr.rcAttr.attrRcMode.attrH264Smart.minQp =
+                (cfg->min_qp >= 0) ? (uint32_t)cfg->min_qp : 15;
             chnAttr.rcAttr.attrRcMode.attrH264Smart.staticTime = 1;
             chnAttr.rcAttr.attrRcMode.attrH264Smart.changePos = 80;
             chnAttr.rcAttr.attrRcMode.attrH264Smart.qualityLvl = 2;
@@ -394,8 +404,10 @@ static int hal_enc_create_channel_old(int chn, const rss_video_config_t *cfg)
 #if defined(PLATFORM_T21) || defined(PLATFORM_T23) || defined(PLATFORM_T30)
         else if (pt == PT_H265) {
             chnAttr.rcAttr.attrRcMode.attrH265Smart.maxBitRate = cfg->max_bitrate / 1000;
-            chnAttr.rcAttr.attrRcMode.attrH265Smart.maxQp = (uint32_t)cfg->max_qp;
-            chnAttr.rcAttr.attrRcMode.attrH265Smart.minQp = (uint32_t)cfg->min_qp;
+            chnAttr.rcAttr.attrRcMode.attrH265Smart.maxQp =
+                (cfg->max_qp >= 0) ? (uint32_t)cfg->max_qp : 45;
+            chnAttr.rcAttr.attrRcMode.attrH265Smart.minQp =
+                (cfg->min_qp >= 0) ? (uint32_t)cfg->min_qp : 15;
             chnAttr.rcAttr.attrRcMode.attrH265Smart.staticTime = 1;
             chnAttr.rcAttr.attrRcMode.attrH265Smart.changePos = 80;
             chnAttr.rcAttr.attrRcMode.attrH265Smart.qualityLvl = 2;
@@ -408,6 +420,13 @@ static int hal_enc_create_channel_old(int chn, const rss_video_config_t *cfg)
     default:
         break;
     }
+
+    /* I/P frame pattern (matching prudynt): N1X skip with m = GOP-1 P-frames.
+     * Required on old SDK — without this the encoder produces all-IDR. */
+    chnAttr.rcAttr.attrHSkip.hSkipAttr.skipType = IMP_Encoder_STYPE_N1X;
+    chnAttr.rcAttr.attrHSkip.hSkipAttr.m = cfg->gop_length > 1 ? cfg->gop_length - 1 : 1;
+    chnAttr.rcAttr.attrHSkip.hSkipAttr.n = 1;
+    chnAttr.rcAttr.attrHSkip.maxHSkipType = IMP_Encoder_STYPE_N1X;
 
 #if defined(PLATFORM_T23)
     /* IVDC (ISP-VPU Direct Connect) — reduces rmem usage */
@@ -3105,26 +3124,15 @@ int hal_enc_set_resize_mode(void *ctx, int chn, int enable)
 
 /* Standard JPEG quantization tables (ITU-T T.81, Annex K) */
 static const uint8_t jpeg_luma_quantizer[64] = {
-    16, 11, 10, 16, 24, 40, 51, 61,
-    12, 12, 14, 19, 26, 58, 60, 55,
-    14, 13, 16, 24, 40, 57, 69, 56,
-    14, 17, 22, 29, 51, 87, 80, 62,
-    18, 22, 37, 56, 68,109,103, 77,
-    24, 35, 55, 64, 81,104,113, 92,
-    49, 64, 78, 87,103,121,120,101,
-    72, 92, 95, 98,112,100,103, 99
-};
+    16, 11, 10, 16, 24,  40,  51,  61,  12, 12, 14, 19, 26,  58,  60,  55,
+    14, 13, 16, 24, 40,  57,  69,  56,  14, 17, 22, 29, 51,  87,  80,  62,
+    18, 22, 37, 56, 68,  109, 103, 77,  24, 35, 55, 64, 81,  104, 113, 92,
+    49, 64, 78, 87, 103, 121, 120, 101, 72, 92, 95, 98, 112, 100, 103, 99};
 
 static const uint8_t jpeg_chroma_quantizer[64] = {
-    17, 18, 24, 47, 99, 99, 99, 99,
-    18, 21, 26, 66, 99, 99, 99, 99,
-    24, 26, 56, 99, 99, 99, 99, 99,
-    47, 66, 99, 99, 99, 99, 99, 99,
-    99, 99, 99, 99, 99, 99, 99, 99,
-    99, 99, 99, 99, 99, 99, 99, 99,
-    99, 99, 99, 99, 99, 99, 99, 99,
-    99, 99, 99, 99, 99, 99, 99, 99
-};
+    17, 18, 24, 47, 99, 99, 99, 99, 18, 21, 26, 66, 99, 99, 99, 99, 24, 26, 56, 99, 99, 99,
+    99, 99, 47, 66, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99};
 
 /*
  * Generate JPEG quantization tables from quality factor (1-99).
@@ -3134,8 +3142,10 @@ static const uint8_t jpeg_chroma_quantizer[64] = {
 static void hal_jpeg_make_tables(int quality, uint8_t *lqt, uint8_t *cqt)
 {
     int q = quality;
-    if (q < 1) q = 1;
-    if (q > 99) q = 99;
+    if (q < 1)
+        q = 1;
+    if (q > 99)
+        q = 99;
     int scale = (q < 50) ? (5000 / q) : (200 - q * 2);
     for (int i = 0; i < 64; i++) {
         int lq = (jpeg_luma_quantizer[i] * scale + 50) / 100;
@@ -3184,7 +3194,6 @@ int hal_enc_set_jpeg_ql(void *ctx, int chn, const rss_enc_jpeg_ql_t *ql)
     return RSS_ERR_NOTSUP;
 #endif
 }
-
 
 int hal_enc_get_jpeg_ql(void *ctx, int chn, rss_enc_jpeg_ql_t *ql)
 {
