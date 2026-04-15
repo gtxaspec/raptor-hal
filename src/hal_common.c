@@ -144,6 +144,7 @@ extern int hal_enc_get_jpeg_qp(void *ctx, int chn, int *qp);
 
 /* Framesource (hal_framesource.c) */
 extern int hal_fs_create_channel(void *ctx, int chn, const rss_fs_config_t *cfg);
+extern int hal_fs_set_channel_attr(void *ctx, int chn, const rss_fs_config_t *cfg);
 extern int hal_fs_destroy_channel(void *ctx, int chn);
 extern int hal_fs_enable_channel(void *ctx, int chn);
 extern int hal_fs_disable_channel(void *ctx, int chn);
@@ -649,6 +650,7 @@ static const rss_hal_ops_t g_ops = {
 
     /* Framesource */
     .fs_create_channel = hal_fs_create_channel,
+    .fs_set_channel_attr = hal_fs_set_channel_attr,
     .fs_destroy_channel = hal_fs_destroy_channel,
     .fs_enable_channel = hal_fs_enable_channel,
     .fs_disable_channel = hal_fs_disable_channel,

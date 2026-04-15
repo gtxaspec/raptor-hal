@@ -697,6 +697,7 @@ typedef struct rss_hal_ops {
     /* --- Framesource --- */
 
     int (*fs_create_channel)(void *ctx, int chn, const rss_fs_config_t *cfg);
+    int (*fs_set_channel_attr)(void *ctx, int chn, const rss_fs_config_t *cfg);
     int (*fs_destroy_channel)(void *ctx, int chn);
     int (*fs_enable_channel)(void *ctx, int chn);
     int (*fs_disable_channel)(void *ctx, int chn);

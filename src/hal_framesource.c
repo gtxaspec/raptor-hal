@@ -30,10 +30,73 @@ static IMPPixelFormat hal_translate_pixfmt(rss_pixfmt_t fmt)
 }
 
 /* ================================================================
+ * Build IMPFSChnAttr from rss_fs_config_t
+ *
+ * Shared by hal_fs_create_channel and hal_fs_set_channel_attr.
+ * The struct layout varies per SoC generation.
+ * ================================================================ */
+
+static void hal_fs_build_attr(IMPFSChnAttr *attr, const rss_fs_config_t *cfg)
+{
+    memset(attr, 0, sizeof(*attr));
+
+    /* ── I2D attributes (T32/T40/T41: placed at start of struct) ── */
+#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+    attr->i2dattr.i2d_enable = 0;
+    attr->i2dattr.flip_enable = 0;
+    attr->i2dattr.mirr_enable = 0;
+    attr->i2dattr.rotate_enable = 0;
+    attr->i2dattr.rotate_angle = 0;
+#endif
+
+    /* ── Core fields (all SoCs) ── */
+    attr->picWidth = cfg->width;
+    attr->picHeight = cfg->height;
+    attr->pixFmt = hal_translate_pixfmt(cfg->pixfmt);
+    attr->outFrmRateNum = cfg->fps_num;
+    attr->outFrmRateDen = cfg->fps_den;
+    attr->nrVBs = (cfg->nr_vbs > 0) ? cfg->nr_vbs : 3;
+    attr->type = (IMPFSChnType)cfg->chn_type;
+
+    /* ── ISP crop (all SoCs) ── */
+    if (cfg->crop.enable) {
+        attr->crop.enable = 1;
+        attr->crop.left = cfg->crop.x;
+        attr->crop.top = cfg->crop.y;
+        attr->crop.width = cfg->crop.w;
+        attr->crop.height = cfg->crop.h;
+    }
+
+    /* ── Frame crop (T23/T31/T32/T40/T41) ── */
+#if defined(HAL_NEW_SDK) || defined(PLATFORM_T23)
+    if (cfg->fcrop.enable) {
+        attr->fcrop.enable = 1;
+        attr->fcrop.left = cfg->fcrop.x;
+        attr->fcrop.top = cfg->fcrop.y;
+        attr->fcrop.width = cfg->fcrop.w;
+        attr->fcrop.height = cfg->fcrop.h;
+    }
+#endif
+
+    /* ── Mirror enable (T23/T32 have mirr_enable in struct; T40 does not) ── */
+#if defined(PLATFORM_T23) || defined(PLATFORM_T32)
+    attr->mirr_enable = 0;
+#endif
+
+    /* ── Scaler (required when output differs from sensor resolution) ── */
+    if (cfg->scaler.enable) {
+        attr->scaler.enable = 1;
+        attr->scaler.outwidth = cfg->scaler.out_width;
+        attr->scaler.outheight = cfg->scaler.out_height;
+    } else {
+        attr->scaler.enable = 0;
+    }
+}
+
+/* ================================================================
  * hal_fs_create_channel
  *
- * Build an IMPFSChnAttr from rss_fs_config_t and create+set the
- * channel. The struct layout varies per SoC generation.
+ * Create a framesource channel and set its attributes.
  * ================================================================ */
 
 int hal_fs_create_channel(void *ctx, int chn, const rss_fs_config_t *cfg)
@@ -45,61 +108,8 @@ int hal_fs_create_channel(void *ctx, int chn, const rss_fs_config_t *cfg)
     if (!cfg)
         return -EINVAL;
 
-    memset(&attr, 0, sizeof(attr));
+    hal_fs_build_attr(&attr, cfg);
 
-    /* ── I2D attributes (T32/T40/T41: placed at start of struct) ── */
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-    attr.i2dattr.i2d_enable = 0;
-    attr.i2dattr.flip_enable = 0;
-    attr.i2dattr.mirr_enable = 0;
-    attr.i2dattr.rotate_enable = 0;
-    attr.i2dattr.rotate_angle = 0;
-#endif
-
-    /* ── Core fields (all SoCs) ── */
-    attr.picWidth = cfg->width;
-    attr.picHeight = cfg->height;
-    attr.pixFmt = hal_translate_pixfmt(cfg->pixfmt);
-    attr.outFrmRateNum = cfg->fps_num;
-    attr.outFrmRateDen = cfg->fps_den;
-    attr.nrVBs = (cfg->nr_vbs > 0) ? cfg->nr_vbs : 3;
-    attr.type = (IMPFSChnType)cfg->chn_type;
-
-    /* ── ISP crop (all SoCs) ── */
-    if (cfg->crop.enable) {
-        attr.crop.enable = 1;
-        attr.crop.left = cfg->crop.x;
-        attr.crop.top = cfg->crop.y;
-        attr.crop.width = cfg->crop.w;
-        attr.crop.height = cfg->crop.h;
-    }
-
-    /* ── Frame crop (T23/T31/T32/T40/T41) ── */
-#if defined(HAL_NEW_SDK) || defined(PLATFORM_T23)
-    if (cfg->fcrop.enable) {
-        attr.fcrop.enable = 1;
-        attr.fcrop.left = cfg->fcrop.x;
-        attr.fcrop.top = cfg->fcrop.y;
-        attr.fcrop.width = cfg->fcrop.w;
-        attr.fcrop.height = cfg->fcrop.h;
-    }
-#endif
-
-    /* ── Mirror enable (T23/T32 have mirr_enable in struct; T40 does not) ── */
-#if defined(PLATFORM_T23) || defined(PLATFORM_T32)
-    attr.mirr_enable = 0;
-#endif
-
-    /* ── Scaler (required when output differs from sensor resolution) ── */
-    if (cfg->scaler.enable) {
-        attr.scaler.enable = 1;
-        attr.scaler.outwidth = cfg->scaler.out_width;
-        attr.scaler.outheight = cfg->scaler.out_height;
-    } else {
-        attr.scaler.enable = 0;
-    }
-
-    /* ── Create and set channel ── */
     ret = IMP_FrameSource_CreateChn(chn, &attr);
     if (ret != 0) {
         HAL_LOG_ERR("IMP_FrameSource_CreateChn(%d) failed: %d", chn, ret);
@@ -114,6 +124,32 @@ int hal_fs_create_channel(void *ctx, int chn, const rss_fs_config_t *cfg)
     }
 
     return 0;
+}
+
+/* ================================================================
+ * hal_fs_set_channel_attr
+ *
+ * Reconfigure a framesource channel (resolution, scaler, crop, fps).
+ * Channel must be disabled first (fs_disable_channel). Used for
+ * runtime resolution changes without destroying the channel.
+ * ================================================================ */
+
+int hal_fs_set_channel_attr(void *ctx, int chn, const rss_fs_config_t *cfg)
+{
+    (void)ctx;
+    IMPFSChnAttr attr;
+    int ret;
+
+    if (!cfg)
+        return -EINVAL;
+
+    hal_fs_build_attr(&attr, cfg);
+
+    ret = IMP_FrameSource_SetChnAttr(chn, &attr);
+    if (ret != 0)
+        HAL_LOG_ERR("IMP_FrameSource_SetChnAttr(%d) failed: %d", chn, ret);
+
+    return ret;
 }
 
 /* ================================================================
