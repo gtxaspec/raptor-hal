@@ -552,17 +552,38 @@ int hal_isp_osd_set_region_attr(void *ctx, int sensornum, int handle,
     memset(&asm_attr, 0, sizeof(asm_attr));
 
     asm_attr.type = ISP_OSD_REG_PIC;
-#if defined(PLATFORM_T23)
-    /* T23 SDK has chx+sensornum in the struct */
+
+#if defined(PLATFORM_T40) || defined(PLATFORM_T41)
+    /* T40/T41: flat struct, chx at top level, pic_num instead of pinum */
+    asm_attr.stsinglepicAttr.chx = chx;
+    asm_attr.stsinglepicAttr.pic_num = handle;
+    asm_attr.stsinglepicAttr.osd_type = IMP_ISP_PIC_ARGB_8888;
+    asm_attr.stsinglepicAttr.osd_argb_type = IMP_ISP_ARGB_TYPE_BGRA;
+    asm_attr.stsinglepicAttr.osd_pixel_alpha_disable = IMPISP_TUNING_OPS_MODE_DISABLE;
+#elif defined(PLATFORM_T23)
+    /* T23: nested chnOSDAttr, chx+sensornum in struct */
     asm_attr.stsinglepicAttr.chx = chx;
     asm_attr.stsinglepicAttr.sensornum = sensornum;
-#else
-    (void)chx;
-#endif
     asm_attr.stsinglepicAttr.chnOSDAttr.osd_type = IMP_ISP_PIC_ARGB_8888;
     asm_attr.stsinglepicAttr.chnOSDAttr.osd_argb_type = IMP_ISP_ARGB_TYPE_BGRA;
-    asm_attr.stsinglepicAttr.chnOSDAttr.osd_pixel_alpha_disable =
-        IMPISP_TUNING_OPS_MODE_DISABLE;
+    asm_attr.stsinglepicAttr.chnOSDAttr.osd_pixel_alpha_disable = IMPISP_TUNING_OPS_MODE_DISABLE;
+#else
+    /* T32: nested chnOSDAttr, no chx/sensornum */
+    asm_attr.stsinglepicAttr.chnOSDAttr.osd_type = IMP_ISP_PIC_ARGB_8888;
+    asm_attr.stsinglepicAttr.chnOSDAttr.osd_argb_type = IMP_ISP_ARGB_TYPE_BGRA;
+    asm_attr.stsinglepicAttr.chnOSDAttr.osd_pixel_alpha_disable = IMPISP_TUNING_OPS_MODE_DISABLE;
+#endif
+    (void)chx;
+
+#if defined(PLATFORM_T40) || defined(PLATFORM_T41)
+    asm_attr.stsinglepicAttr.pic.osd_enable = 1;
+    asm_attr.stsinglepicAttr.pic.osd_left = attr->x & ~1;
+    asm_attr.stsinglepicAttr.pic.osd_top = attr->y & ~1;
+    asm_attr.stsinglepicAttr.pic.osd_width = attr->width;
+    asm_attr.stsinglepicAttr.pic.osd_height = attr->height;
+    asm_attr.stsinglepicAttr.pic.osd_image = (char *)attr->bitmap_data;
+    asm_attr.stsinglepicAttr.pic.osd_stride = attr->width * 4;
+#else
     asm_attr.stsinglepicAttr.pic.pinum = handle;
     asm_attr.stsinglepicAttr.pic.osd_enable = 1;
     asm_attr.stsinglepicAttr.pic.osd_left = attr->x & ~1;
@@ -571,6 +592,7 @@ int hal_isp_osd_set_region_attr(void *ctx, int sensornum, int handle,
     asm_attr.stsinglepicAttr.pic.osd_height = attr->height;
     asm_attr.stsinglepicAttr.pic.osd_image = (char *)attr->bitmap_data;
     asm_attr.stsinglepicAttr.pic.osd_stride = attr->width * 4;
+#endif
 
     return IMP_ISP_Tuning_SetOsdRgnAttr(sensornum, handle, &asm_attr);
 #else
