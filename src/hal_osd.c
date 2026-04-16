@@ -615,7 +615,7 @@ int hal_isp_osd_set_mask(void *ctx, int sensornum, int chx, int pinum,
                          uint32_t color)
 {
     (void)ctx;
-#if defined(PLATFORM_T23) || defined(PLATFORM_T32)
+#if defined(PLATFORM_T23)
     IMPOSDRgnAttr attr;
     memset(&attr, 0, sizeof(attr));
     attr.type = OSD_REG_ISP_COVER;
@@ -634,7 +634,7 @@ int hal_isp_osd_set_mask(void *ctx, int sensornum, int chx, int pinum,
     }
     extern int IMP_OSD_MultiCamera_SetRgnAttr_ISP(int, IMPOSDRgnAttr *, int);
     return IMP_OSD_MultiCamera_SetRgnAttr_ISP(sensornum, &attr, 0);
-#elif defined(PLATFORM_T41)
+#elif defined(PLATFORM_T32) || defined(PLATFORM_T41)
     /* T41: per-block API, same struct fields as T32 */
     IMPISPMaskBlockAttr block;
     memset(&block, 0, sizeof(block));
