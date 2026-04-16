@@ -266,6 +266,11 @@ struct rss_hal_ctx {
     /* Per-channel vendor stream struct (reused across get/release_frame) */
     IMPEncoderStream stream_priv[RSS_MAX_ENC_CHANNELS];
 
+    /* Audio preallocated structs (reused across get/release calls) */
+    IMPAudioFrame ai_frame_priv;
+    IMPAudioStream aenc_stream_priv;
+    IMPAudioStream adec_stream_priv;
+
     /* Platform-specific opaque data */
     void *platform;
 

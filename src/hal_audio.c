@@ -312,17 +312,10 @@ int hal_audio_read_frame(void *ctx, int dev, int chn, rss_audio_frame_t *frame, 
     frame->timestamp = ai_frame.timeStamp;
     frame->seq = (uint32_t)ai_frame.seq;
 
-    /*
-     * Store the native frame in _priv so we can release it later.
-     * We allocate a copy of the IMPAudioFrame struct on the heap.
-     */
-    IMPAudioFrame *saved = (IMPAudioFrame *)malloc(sizeof(IMPAudioFrame));
-    if (!saved) {
-        IMP_AI_ReleaseFrame(dev, chn, &ai_frame);
-        return RSS_ERR_NOMEM;
-    }
-    memcpy(saved, &ai_frame, sizeof(IMPAudioFrame));
-    frame->_priv = saved;
+    /* Store in preallocated slot (avoids per-frame malloc) */
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
+    memcpy(&c->ai_frame_priv, &ai_frame, sizeof(IMPAudioFrame));
+    frame->_priv = &c->ai_frame_priv;
 
     return RSS_OK;
 }
@@ -342,7 +335,6 @@ int hal_audio_release_frame(void *ctx, int dev, int chn, rss_audio_frame_t *fram
         return RSS_OK;
 
     IMP_AI_ReleaseFrame(dev, chn, frame->_priv);
-    free(frame->_priv);
     frame->_priv = NULL;
 
     return RSS_OK;
@@ -504,25 +496,19 @@ int hal_aenc_poll_stream(void *ctx, int chn, uint32_t timeout_ms)
 
 int hal_aenc_get_stream(void *ctx, int chn, rss_audio_frame_t *stream)
 {
-    (void)ctx;
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
     if (!stream)
         return RSS_ERR_INVAL;
 
-    IMPAudioStream *imp_stream = (IMPAudioStream *)malloc(sizeof(*imp_stream));
-    if (!imp_stream)
-        return RSS_ERR_NOMEM;
-
-    int ret = IMP_AENC_GetStream(chn, imp_stream, 0);
-    if (ret != 0) {
-        free(imp_stream);
+    int ret = IMP_AENC_GetStream(chn, &c->aenc_stream_priv, 0);
+    if (ret != 0)
         return ret;
-    }
 
-    stream->data = (const int16_t *)imp_stream->stream;
-    stream->length = imp_stream->len;
-    stream->timestamp = imp_stream->timeStamp;
-    stream->seq = imp_stream->seq;
-    stream->_priv = imp_stream;
+    stream->data = (const int16_t *)c->aenc_stream_priv.stream;
+    stream->length = c->aenc_stream_priv.len;
+    stream->timestamp = c->aenc_stream_priv.timeStamp;
+    stream->seq = c->aenc_stream_priv.seq;
+    stream->_priv = &c->aenc_stream_priv;
     return RSS_OK;
 }
 
@@ -533,7 +519,6 @@ int hal_aenc_release_stream(void *ctx, int chn, rss_audio_frame_t *stream)
         return RSS_ERR_INVAL;
     IMPAudioStream *imp_stream = (IMPAudioStream *)stream->_priv;
     int ret = IMP_AENC_ReleaseStream(chn, imp_stream);
-    free(imp_stream);
     stream->_priv = NULL;
     return ret;
 }
@@ -714,25 +699,19 @@ int hal_adec_poll_stream(void *ctx, int chn, uint32_t timeout_ms)
 
 int hal_adec_get_stream(void *ctx, int chn, rss_audio_frame_t *stream)
 {
-    (void)ctx;
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
     if (!stream)
         return RSS_ERR_INVAL;
 
-    IMPAudioStream *imp_stream = (IMPAudioStream *)malloc(sizeof(*imp_stream));
-    if (!imp_stream)
-        return RSS_ERR_NOMEM;
-
-    int ret = IMP_ADEC_GetStream(chn, imp_stream, 0);
-    if (ret != 0) {
-        free(imp_stream);
+    int ret = IMP_ADEC_GetStream(chn, &c->adec_stream_priv, 0);
+    if (ret != 0)
         return ret;
-    }
 
-    stream->data = (const int16_t *)imp_stream->stream;
-    stream->length = imp_stream->len;
-    stream->timestamp = imp_stream->timeStamp;
-    stream->seq = imp_stream->seq;
-    stream->_priv = imp_stream;
+    stream->data = (const int16_t *)c->adec_stream_priv.stream;
+    stream->length = c->adec_stream_priv.len;
+    stream->timestamp = c->adec_stream_priv.timeStamp;
+    stream->seq = c->adec_stream_priv.seq;
+    stream->_priv = &c->adec_stream_priv;
     return RSS_OK;
 }
 
@@ -743,7 +722,6 @@ int hal_adec_release_stream(void *ctx, int chn, rss_audio_frame_t *stream)
         return RSS_ERR_INVAL;
     IMPAudioStream *imp_stream = (IMPAudioStream *)stream->_priv;
     int ret = IMP_ADEC_ReleaseStream(chn, imp_stream);
-    free(imp_stream);
     stream->_priv = NULL;
     return ret;
 }
