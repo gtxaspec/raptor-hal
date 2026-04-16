@@ -260,6 +260,9 @@ struct rss_hal_ctx {
     rss_nal_unit_t *nal_arrays[RSS_MAX_ENC_CHANNELS];
     int nal_array_caps[RSS_MAX_ENC_CHANNELS];
 
+    /* Per-channel vendor stream struct (reused across get/release_frame) */
+    IMPEncoderStream stream_priv[RSS_MAX_ENC_CHANNELS];
+
     /* Platform-specific opaque data */
     void *platform;
 

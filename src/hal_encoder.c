@@ -963,16 +963,10 @@ int hal_enc_get_frame(void *ctx, int chn, rss_frame_t *frame)
     frame->is_key = is_key;
 
     /*
-     * Store the vendor stream struct in _priv for release.
-     * We must heap-allocate because the stack copy goes away.
-     */
-    IMPEncoderStream *priv = (IMPEncoderStream *)malloc(sizeof(IMPEncoderStream));
-    if (!priv) {
-        IMP_Encoder_ReleaseStream(chn, &stream);
-        return -ENOMEM;
-    }
-    memcpy(priv, &stream, sizeof(stream));
-    frame->_priv = priv;
+     * Store the vendor stream struct in the per-channel preallocated slot
+     * (avoids malloc/free on every frame at 30fps × N streams). */
+    memcpy(&c->stream_priv[chn], &stream, sizeof(stream));
+    frame->_priv = &c->stream_priv[chn];
 
     return 0;
 }
@@ -987,7 +981,7 @@ int hal_enc_release_frame(void *ctx, int chn, rss_frame_t *frame)
     IMPEncoderStream *stream = (IMPEncoderStream *)frame->_priv;
     int ret = IMP_Encoder_ReleaseStream(chn, stream);
 
-    free(stream);
+    /* _priv points into ctx->stream_priv[] — not heap-allocated, don't free */
     frame->_priv = NULL;
     frame->nals = NULL;
     frame->nal_count = 0;
