@@ -3175,7 +3175,7 @@ int hal_enc_set_jpeg_ql(void *ctx, int chn, const rss_enc_jpeg_ql_t *ql)
     (void)ctx;
     if (!ql)
         return RSS_ERR_INVAL;
-#if defined(HAL_OLD_SDK) || defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_OLD_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPEncoderJpegeQl jql;
     jql.user_ql_en = ql->user_table_en;
     memcpy(jql.qmem_table, ql->qmem_table, sizeof(jql.qmem_table));
@@ -3194,7 +3194,7 @@ int hal_enc_get_jpeg_ql(void *ctx, int chn, rss_enc_jpeg_ql_t *ql)
     (void)ctx;
     if (!ql)
         return RSS_ERR_INVAL;
-#if defined(HAL_OLD_SDK) || defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_OLD_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPEncoderJpegeQl jql;
     int ret = IMP_Encoder_GetJpegeQl(chn, &jql);
     if (ret != 0) {
