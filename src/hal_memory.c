@@ -1,9 +1,3 @@
-/* MIPS cacheflush syscall */
-#ifdef __mips__
-#include <asm/cachectl.h>
-extern int cacheflush(void *addr, int nbytes, int cache);
-#endif
-
 /*
  * hal_memory.c -- Raptor HAL memory management implementation
  *
@@ -32,8 +26,8 @@ extern int cacheflush(void *addr, int nbytes, int cache);
 #include "hal_internal.h"
 
 #ifdef __mips__
-#define _GNU_SOURCE
 #include <sys/cachectl.h>
+extern int cacheflush(void *addr, int nbytes, int cache);
 #endif
 
 /* Extern declarations for functions present in libimp.so
@@ -89,10 +83,6 @@ void hal_mem_free(void *ctx, void *ptr)
  * T23+ has IMP_FlushCache.  On older SoCs, fall back to the
  * cacheflush() syscall on MIPS.
  * ================================================================ */
-
-#ifdef __mips__
-#include <sys/cachectl.h>
-#endif
 
 int hal_mem_flush_cache(void *ctx, void *ptr, uint32_t size)
 {
