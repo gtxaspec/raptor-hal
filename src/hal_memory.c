@@ -20,7 +20,7 @@
  * on the rmem region mapped by the SDK.
  *
  * Copyright (C) 2026 Thingino Project
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
 #include "hal_internal.h"
