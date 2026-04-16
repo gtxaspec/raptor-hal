@@ -552,8 +552,8 @@ int hal_isp_osd_set_region_attr(void *ctx, int sensornum, int handle,
     memset(&asm_attr, 0, sizeof(asm_attr));
 
     asm_attr.type = ISP_OSD_REG_PIC;
-#if defined(PLATFORM_T23) || defined(PLATFORM_T32)
-    /* T23/T32 SDK has chx+sensornum in the struct */
+#if defined(PLATFORM_T23)
+    /* T23 SDK has chx+sensornum in the struct */
     asm_attr.stsinglepicAttr.chx = chx;
     asm_attr.stsinglepicAttr.sensornum = sensornum;
 #else
@@ -600,7 +600,7 @@ int hal_isp_osd_set_mask(void *ctx, int sensornum, int chx, int pinum,
                          uint32_t color)
 {
     (void)ctx;
-#ifdef HAL_HAS_ISP_OSD
+#if defined(PLATFORM_T23) || defined(PLATFORM_T32)
     IMPOSDRgnAttr attr;
     memset(&attr, 0, sizeof(attr));
     attr.type = OSD_REG_ISP_COVER;
@@ -617,15 +617,10 @@ int hal_isp_osd_set_mask(void *ctx, int sensornum, int chx, int pinum,
         attr.osdispdraw.stCoverAttr.mask_value.argb.g_value = (color >> 8) & 0xFF;
         attr.osdispdraw.stCoverAttr.mask_value.argb.b_value = color & 0xFF;
     }
-#if defined(PLATFORM_T23) || defined(PLATFORM_T32)
     extern int IMP_OSD_MultiCamera_SetRgnAttr_ISP(int, IMPOSDRgnAttr *, int);
     return IMP_OSD_MultiCamera_SetRgnAttr_ISP(sensornum, &attr, 0);
 #else
-    /* T40/T41: ISP OSD mask not yet implemented */
-    (void)sensornum;
-    return RSS_ERR_NOTSUP;
-#endif
-#else
+    /* T40/T41: IMPISPMASKAttr uses different layout (mask_chx[3][4]) — not yet implemented */
     (void)sensornum; (void)chx; (void)pinum; (void)enable;
     (void)x; (void)y; (void)w; (void)h; (void)color;
     return RSS_ERR_NOTSUP;
