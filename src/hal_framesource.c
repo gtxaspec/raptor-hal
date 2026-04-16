@@ -403,7 +403,7 @@ int hal_fs_snap_frame(void *ctx, int chn, void **frame_data, rss_frame_info_t *i
 
     /* SnapFrame needs format, width, height, and a pre-allocated buffer.
      * We allocate the frame data buffer and let the SDK fill it. */
-    uint32_t alloc_size = info->width * info->height * 3 / 2; /* NV12 */
+    uint32_t alloc_size = (uint32_t)info->width * info->height * 3 / 2; /* NV12 */
     void *framedata = malloc(alloc_size);
     if (!framedata)
         return -ENOMEM;
