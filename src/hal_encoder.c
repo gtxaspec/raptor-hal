@@ -3153,7 +3153,7 @@ static void hal_jpeg_make_tables(int quality, uint8_t *lqt, uint8_t *cqt)
  * quality: 1-99 (higher = better). No-op on T31 (no QL table API). */
 static int hal_jpeg_set_quality(int chn, int quality)
 {
-#if defined(HAL_OLD_SDK) || defined(PLATFORM_T32) || defined(PLATFORM_T40)
+#if defined(HAL_OLD_SDK)
     IMPEncoderJpegeQl jql;
     memset(&jql, 0, sizeof(jql));
     jql.user_ql_en = 1;
