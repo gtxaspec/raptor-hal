@@ -1265,8 +1265,6 @@ static int hal_init(void *ctx, const rss_multi_sensor_config_t *multi_cfg)
     return 0;
 
     /* ── Cleanup on failure (reverse order) ── */
-err_disable_tuning:
-    __attribute__((unused)) IMP_ISP_DisableTuning();
 err_system_exit:
     IMP_System_Exit();
 err_disable_sensor:

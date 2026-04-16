@@ -213,11 +213,14 @@ extern rss_hal_log_func_t rss_hal_log_fn;
  * Calls an SDK function, logs on failure, and jumps to a cleanup label.
  * ═══════════════════════════════════════════════════════════════════════ */
 
+/* Requires an 'int ret' in the calling scope — sets it on failure
+ * so the cleanup path can propagate the error to the caller. */
 #define HAL_CHECK(call, label)                                                                     \
     do {                                                                                           \
-        int _ret = (call);                                                                         \
-        if (_ret != 0) {                                                                           \
-            HAL_LOG_ERR("%s failed: %d", #call, _ret);                                             \
+        int hal_rc = (call);                                                                       \
+        if (hal_rc != 0) {                                                                         \
+            HAL_LOG_ERR("%s failed: %d", #call, hal_rc);                                           \
+            ret = hal_rc;                                                                          \
             goto label;                                                                            \
         }                                                                                          \
     } while (0)
