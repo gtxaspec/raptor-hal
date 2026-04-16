@@ -634,8 +634,44 @@ int hal_isp_osd_set_mask(void *ctx, int sensornum, int chx, int pinum,
     }
     extern int IMP_OSD_MultiCamera_SetRgnAttr_ISP(int, IMPOSDRgnAttr *, int);
     return IMP_OSD_MultiCamera_SetRgnAttr_ISP(sensornum, &attr, 0);
+#elif defined(PLATFORM_T41)
+    /* T41: per-block API, same struct fields as T32 */
+    IMPISPMaskBlockAttr block;
+    memset(&block, 0, sizeof(block));
+    block.chx = (uint8_t)chx;
+    block.pinum = (uint8_t)pinum;
+    block.mask_en = enable ? 1 : 0;
+    if (enable) {
+        block.mask_pos_left = (uint16_t)x;
+        block.mask_pos_top = (uint16_t)y;
+        block.mask_width = (uint16_t)w;
+        block.mask_height = (uint16_t)h;
+        block.mask_type = IMPISP_MASK_TYPE_RGB;
+        block.mask_value.argb.r_value = (color >> 16) & 0xFF;
+        block.mask_value.argb.g_value = (color >> 8) & 0xFF;
+        block.mask_value.argb.b_value = color & 0xFF;
+    }
+    return IMP_ISP_Tuning_SetMaskBlock((IMPVI_NUM)sensornum, &block);
+#elif defined(PLATFORM_T40)
+    /* T40: array-based API — fill one entry in mask_chx[chx][pinum] */
+    IMPISPMASKAttr mask;
+    memset(&mask, 0, sizeof(mask));
+    if (chx < 0 || chx > 2 || pinum < 0 || pinum > 3)
+        return RSS_ERR_INVAL;
+    IMPISP_MASK_BLOCK_PAR *blk = &mask.mask_chx[chx][pinum];
+    blk->mask_en = enable ? 1 : 0;
+    if (enable) {
+        blk->mask_pos_left = (uint16_t)x;
+        blk->mask_pos_top = (uint16_t)y;
+        blk->mask_width = (uint16_t)w;
+        blk->mask_height = (uint16_t)h;
+        blk->mask_type = IMPISP_MASK_TYPE_RGB;
+        blk->mask_value.argb.r_value = (color >> 16) & 0xFF;
+        blk->mask_value.argb.g_value = (color >> 8) & 0xFF;
+        blk->mask_value.argb.b_value = color & 0xFF;
+    }
+    return IMP_ISP_Tuning_SetMask((IMPVI_NUM)sensornum, &mask);
 #else
-    /* T40/T41: IMPISPMASKAttr uses different layout (mask_chx[3][4]) — not yet implemented */
     (void)sensornum; (void)chx; (void)pinum; (void)enable;
     (void)x; (void)y; (void)w; (void)h; (void)color;
     return RSS_ERR_NOTSUP;
