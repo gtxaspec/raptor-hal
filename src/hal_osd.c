@@ -666,9 +666,9 @@ int hal_isp_osd_set_mask(void *ctx, int sensornum, int chx, int pinum,
         blk->mask_width = (uint16_t)w;
         blk->mask_height = (uint16_t)h;
         blk->mask_type = IMPISP_MASK_TYPE_RGB;
-        blk->mask_value.argb.r_value = (color >> 16) & 0xFF;
-        blk->mask_value.argb.g_value = (color >> 8) & 0xFF;
-        blk->mask_value.argb.b_value = color & 0xFF;
+        blk->mask_value.mask_argb.r_value = (color >> 16) & 0xFF;
+        blk->mask_value.mask_argb.g_value = (color >> 8) & 0xFF;
+        blk->mask_value.mask_argb.b_value = color & 0xFF;
     }
     return IMP_ISP_Tuning_SetMask((IMPVI_NUM)sensornum, &mask);
 #else
