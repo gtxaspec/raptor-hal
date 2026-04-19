@@ -2073,7 +2073,7 @@ int hal_enc_inject_stream_shm(void *ctx, int chn, void *shm_addr, uint32_t shm_s
 
     uintptr_t region_start;
     size_t region_size;
-    if (find_libimp_rw_region(&region_start, &region_size) < 0) {
+    if (find_libimp_rw_region(&region_start, &region_size) < 0 || region_size < 16) {
         HAL_LOG_ERR("inject_stream_shm: can't find libimp rw region");
         return -ENOENT;
     }
@@ -2099,8 +2099,16 @@ int hal_enc_inject_stream_shm(void *ctx, int chn, void *shm_addr, uint32_t shm_s
         return -ENOENT;
     }
 
+    /* Verify: after restoring orig_cnt, the found address should hold it.
+     * Guards against false positives from marker collision. */
+    if (*(uint32_t *)marker_addr != (uint32_t)orig_cnt) {
+        HAL_LOG_ERR("inject_stream_shm: marker verify failed (collision?)");
+        return -ENOENT;
+    }
+
     /* ext_buf = marker_addr + 8, ext_size = marker_addr + 12
-     * (verified offset from Ghidra RE of T20 channel struct) */
+     * Offset verified via Ghidra RE of T20 channel struct.
+     * Assumed consistent across T10-T30/T32/T33 Ingenic VPU SoCs. */
     uint32_t *ext_buf = (uint32_t *)(marker_addr + 8);
     uint32_t *ext_sz  = (uint32_t *)(marker_addr + 12);
 
