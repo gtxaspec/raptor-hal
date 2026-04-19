@@ -193,6 +193,10 @@ typedef struct {
     /* Buffer size hint; 0 = SDK default */
     uint32_t buf_size;
 
+    /* Stream buffer tuning (T31+, before CreateChn) */
+    uint8_t max_stream_cnt;   /* 0 = SDK default (2); encoder output buffer count */
+    uint32_t stream_buf_size; /* 0 = SDK default; per-buffer size in bytes */
+
     /* IVDC (ISP-VPU Direct Connect) — T23+ only, main channel only */
     bool ivdc;
 } rss_video_config_t;
@@ -765,6 +769,7 @@ typedef struct rss_hal_ops {
     int (*enc_set_max_stream_cnt)(void *ctx, int chn, int cnt);
     int (*enc_set_pool)(void *ctx, int chn, int pool_id);
     int (*enc_get_pool)(void *ctx, int chn);
+    int (*enc_get_rmem_info)(void *ctx, uintptr_t *virt_base, uint32_t *size);
 
     /* Encoder: Phase 1 — Bandwidth reduction */
     int (*enc_set_gop_mode)(void *ctx, int chn, rss_gop_mode_t mode);

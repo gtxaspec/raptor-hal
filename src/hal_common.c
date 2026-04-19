@@ -87,6 +87,7 @@ extern int hal_enc_get_max_stream_cnt(void *ctx, int chn, int *cnt);
 extern int hal_enc_set_max_stream_cnt(void *ctx, int chn, int cnt);
 extern int hal_enc_set_pool(void *ctx, int chn, int pool_id);
 extern int hal_enc_get_pool(void *ctx, int chn);
+extern int hal_enc_get_rmem_info(void *ctx, uintptr_t *virt_base, uint32_t *size);
 
 /* Encoder: Phase 1 — Bandwidth reduction (hal_encoder.c) */
 extern int hal_enc_set_gop_mode(void *ctx, int chn, rss_gop_mode_t mode);
@@ -716,6 +717,7 @@ static const rss_hal_ops_t g_ops = {
     .enc_set_max_stream_cnt = hal_enc_set_max_stream_cnt,
     .enc_set_pool = hal_enc_set_pool,
     .enc_get_pool = hal_enc_get_pool,
+    .enc_get_rmem_info = hal_enc_get_rmem_info,
 
     /* Encoder: Phase 1 — Bandwidth reduction */
     .enc_set_gop_mode = hal_enc_set_gop_mode,

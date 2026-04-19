@@ -11,6 +11,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -691,6 +692,16 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
     if (cfg->ivdc)
         HAL_LOG_INFO("enc chn %d: IVDC enabled", chn);
 #endif
+
+    /* Pre-CreateChn tuning: must be set while channel is uninitialized */
+    if (cfg->max_stream_cnt > 0) {
+        HAL_LOG_INFO("enc chn %d: SetMaxStreamCnt(%d)", chn, cfg->max_stream_cnt);
+        IMP_Encoder_SetMaxStreamCnt(chn, cfg->max_stream_cnt);
+    }
+    if (cfg->stream_buf_size > 0) {
+        HAL_LOG_INFO("enc chn %d: SetStreamBufSize(%u)", chn, cfg->stream_buf_size);
+        IMP_Encoder_SetStreamBufSize(chn, cfg->stream_buf_size);
+    }
 
     return IMP_Encoder_CreateChn(chn, &chnAttr);
 }
@@ -1970,6 +1981,41 @@ int hal_enc_get_pool(void *ctx, int chn)
     (void)chn;
     return RSS_ERR_NOTSUP;
 #endif
+}
+
+/*
+ * hal_enc_get_rmem_info -- find /dev/rmem virtual mapping in this process.
+ *
+ * Parses /proc/self/maps for the /dev/rmem mmap region created by libimp.
+ * Returns the virtual base address and size. Used by RVD to compute rmem
+ * offsets from encoder virAddr pointers for zero-copy ring reference mode.
+ */
+int hal_enc_get_rmem_info(void *ctx, uintptr_t *virt_base, uint32_t *size)
+{
+    (void)ctx;
+    if (!virt_base || !size)
+        return -EINVAL;
+
+    FILE *f = fopen("/proc/self/maps", "r");
+    if (!f)
+        return -EIO;
+
+    char line[256];
+    int found = 0;
+    while (fgets(line, sizeof(line), f)) {
+        if (!strstr(line, "/dev/rmem"))
+            continue;
+        uintptr_t start, end;
+        if (sscanf(line, "%lx-%lx", (unsigned long *)&start, (unsigned long *)&end) == 2) {
+            *virt_base = start;
+            *size = (uint32_t)(end - start);
+            found = 1;
+            break;
+        }
+    }
+
+    fclose(f);
+    return found ? 0 : -ENOENT;
 }
 
 /* ══════════════════════════════════════════════════════════════════════
