@@ -2024,6 +2024,95 @@ int hal_enc_get_rmem_info(void *ctx, uintptr_t *virt_base, uint32_t *size,
     return found ? 0 : -ENOENT;
 }
 
+/*
+ * hal_enc_inject_stream_shm -- inject POSIX SHM as encoder output buffer.
+ *
+ * Runtime-probes the libimp channel struct by writing a marker via
+ * SetMaxStreamCnt, scanning libimp's data segment for it, then writing
+ * the SHM address to the external buffer fields. Must be called BEFORE
+ * IMP_Encoder_CreateChn. Works on all Ingenic VPU SoCs (T10-T30/T32/T33).
+ *
+ * The external buffer fields are at a fixed offset (+8, +12) relative to
+ * the max_stream_cnt field in the channel struct — verified via Ghidra RE.
+ */
+static int find_libimp_rw_region(uintptr_t *start, size_t *size)
+{
+    FILE *f = fopen("/proc/self/maps", "r");
+    if (!f) return -1;
+
+    char line[512];
+    uintptr_t seg_start = 0, seg_end = 0;
+    int found = 0;
+
+    while (fgets(line, sizeof(line), f)) {
+        uintptr_t s, e;
+        if (sscanf(line, "%lx-%lx", (unsigned long *)&s, (unsigned long *)&e) != 2)
+            continue;
+        if (strstr(line, "libimp.so") && strstr(line, "rw-")) {
+            if (!found || s < seg_start) seg_start = s;
+            if (e > seg_end) seg_end = e;
+            found = 1;
+        } else if (found && s == seg_end && strstr(line, "rw-p") &&
+                   !strstr(line, ".so") && !strstr(line, "[")) {
+            seg_end = e;
+        }
+    }
+    fclose(f);
+
+    if (!found) return -1;
+    *start = seg_start;
+    *size = seg_end - seg_start;
+    return 0;
+}
+
+int hal_enc_inject_stream_shm(void *ctx, int chn, void *shm_addr, uint32_t shm_size)
+{
+    (void)ctx;
+    if (!shm_addr || shm_size == 0)
+        return -EINVAL;
+
+    uintptr_t region_start;
+    size_t region_size;
+    if (find_libimp_rw_region(&region_start, &region_size) < 0) {
+        HAL_LOG_ERR("inject_stream_shm: can't find libimp rw region");
+        return -ENOENT;
+    }
+
+    int orig_cnt = 0;
+    IMP_Encoder_GetMaxStreamCnt(chn, &orig_cnt);
+
+    uint32_t marker = 0xDEADBEEF;
+    IMP_Encoder_SetMaxStreamCnt(chn, (int)marker);
+
+    uint32_t *p = (uint32_t *)region_start;
+    uint32_t *end = (uint32_t *)(region_start + region_size - 4);
+    uintptr_t marker_addr = 0;
+    while (p <= end) {
+        if (*p == marker) { marker_addr = (uintptr_t)p; break; }
+        p++;
+    }
+
+    IMP_Encoder_SetMaxStreamCnt(chn, orig_cnt);
+
+    if (!marker_addr) {
+        HAL_LOG_ERR("inject_stream_shm: marker not found in libimp");
+        return -ENOENT;
+    }
+
+    /* ext_buf = marker_addr + 8, ext_size = marker_addr + 12
+     * (verified offset from Ghidra RE of T20 channel struct) */
+    uint32_t *ext_buf = (uint32_t *)(marker_addr + 8);
+    uint32_t *ext_sz  = (uint32_t *)(marker_addr + 12);
+
+    *ext_buf = (uint32_t)(uintptr_t)shm_addr;
+    *ext_sz  = shm_size;
+
+    HAL_LOG_INFO("inject_stream_shm chn %d: shm=0x%lx size=%u marker_off=+0x%lx",
+                 chn, (unsigned long)(uintptr_t)shm_addr, shm_size,
+                 (unsigned long)(marker_addr - region_start));
+    return 0;
+}
+
 /* ══════════════════════════════════════════════════════════════════════
  * 11. Phase 1 — Bandwidth Reduction Features
  * ══════════════════════════════════════════════════════════════════════ */

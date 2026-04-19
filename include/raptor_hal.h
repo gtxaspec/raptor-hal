@@ -771,6 +771,7 @@ typedef struct rss_hal_ops {
     int (*enc_get_pool)(void *ctx, int chn);
     int (*enc_get_rmem_info)(void *ctx, uintptr_t *virt_base, uint32_t *size,
                                uint32_t *mmap_offset);
+    int (*enc_inject_stream_shm)(void *ctx, int chn, void *shm_addr, uint32_t shm_size);
 
     /* Encoder: Phase 1 — Bandwidth reduction */
     int (*enc_set_gop_mode)(void *ctx, int chn, rss_gop_mode_t mode);
