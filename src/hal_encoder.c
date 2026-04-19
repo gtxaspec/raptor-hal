@@ -1990,25 +1990,31 @@ int hal_enc_get_pool(void *ctx, int chn)
  * Returns the virtual base address and size. Used by RVD to compute rmem
  * offsets from encoder virAddr pointers for zero-copy ring reference mode.
  */
-int hal_enc_get_rmem_info(void *ctx, uintptr_t *virt_base, uint32_t *size)
+int hal_enc_get_rmem_info(void *ctx, uintptr_t *virt_base, uint32_t *size,
+                          uint32_t *mmap_offset)
 {
     (void)ctx;
-    if (!virt_base || !size)
+    if (!virt_base || !size || !mmap_offset)
         return -EINVAL;
 
     FILE *f = fopen("/proc/self/maps", "r");
     if (!f)
         return -EIO;
 
+    /* Format: start-end perms offset dev inode pathname
+     * Example: 756a5000-76fa5000 rw-s 02700000 00:05 92 /dev/rmem */
     char line[256];
     int found = 0;
     while (fgets(line, sizeof(line), f)) {
         if (!strstr(line, "/dev/rmem"))
             continue;
         uintptr_t start, end;
-        if (sscanf(line, "%lx-%lx", (unsigned long *)&start, (unsigned long *)&end) == 2) {
+        unsigned long offset;
+        if (sscanf(line, "%lx-%lx %*s %lx", (unsigned long *)&start,
+                   (unsigned long *)&end, &offset) == 3) {
             *virt_base = start;
             *size = (uint32_t)(end - start);
+            *mmap_offset = (uint32_t)offset;
             found = 1;
             break;
         }

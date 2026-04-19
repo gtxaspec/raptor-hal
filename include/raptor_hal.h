@@ -769,7 +769,8 @@ typedef struct rss_hal_ops {
     int (*enc_set_max_stream_cnt)(void *ctx, int chn, int cnt);
     int (*enc_set_pool)(void *ctx, int chn, int pool_id);
     int (*enc_get_pool)(void *ctx, int chn);
-    int (*enc_get_rmem_info)(void *ctx, uintptr_t *virt_base, uint32_t *size);
+    int (*enc_get_rmem_info)(void *ctx, uintptr_t *virt_base, uint32_t *size,
+                               uint32_t *mmap_offset);
 
     /* Encoder: Phase 1 — Bandwidth reduction */
     int (*enc_set_gop_mode)(void *ctx, int chn, rss_gop_mode_t mode);
