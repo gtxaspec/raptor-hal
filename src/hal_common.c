@@ -26,6 +26,9 @@ static void hal_log_stderr(int level, const char *file, int line, const char *fm
         level = 0;
     if (level > 4)
         level = 4;
+    const char *basename = strrchr(file, '/');
+    if (basename)
+        file = basename + 1;
     fprintf(stderr, "[HAL %s] %s:%d: ", hal_level_str[level], file, line);
     va_list ap;
     va_start(ap, fmt);
