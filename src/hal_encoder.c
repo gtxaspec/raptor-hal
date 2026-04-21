@@ -1013,6 +1013,9 @@ int hal_enc_request_idr(void *ctx, int chn)
     int ret = IMP_Encoder_RequestIDR(chn);
     if (ret != 0)
         HAL_LOG_ERR("IMP_Encoder_RequestIDR(%d) failed: %d", chn, ret);
+    int flush_ret = IMP_Encoder_FlushStream(chn);
+    if (flush_ret != 0)
+        HAL_LOG_ERR("IMP_Encoder_FlushStream(%d) failed: %d", chn, flush_ret);
     return ret;
 }
 
