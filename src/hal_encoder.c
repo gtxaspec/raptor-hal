@@ -698,10 +698,12 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
         HAL_LOG_INFO("enc chn %d: SetMaxStreamCnt(%d)", chn, cfg->max_stream_cnt);
         IMP_Encoder_SetMaxStreamCnt(chn, cfg->max_stream_cnt);
     }
+#if !defined(PLATFORM_T32)
     if (cfg->stream_buf_size > 0) {
         HAL_LOG_INFO("enc chn %d: SetStreamBufSize(%u)", chn, cfg->stream_buf_size);
         IMP_Encoder_SetStreamBufSize(chn, cfg->stream_buf_size);
     }
+#endif
 
     return IMP_Encoder_CreateChn(chn, &chnAttr);
 }
@@ -3268,6 +3270,7 @@ int hal_enc_set_resize_mode(void *ctx, int chn, int enable)
  * 16. Phase 6 -- JPEG Features
  * ====================================================================== */
 
+#if defined(HAL_OLD_SDK)
 /* Standard JPEG quantization tables (ITU-T T.81, Annex K) */
 static const uint8_t jpeg_luma_quantizer[64] = {
     16, 11, 10, 16, 24,  40,  51,  61,  12, 12, 14, 19, 26,  58,  60,  55,
@@ -3300,6 +3303,7 @@ static void hal_jpeg_make_tables(int quality, uint8_t *lqt, uint8_t *cqt)
         cqt[i] = (uint8_t)(cq < 1 ? 1 : (cq > 255 ? 255 : cq));
     }
 }
+#endif /* HAL_OLD_SDK */
 
 /* Apply JPEG quality via QL table on platforms that support SetJpegeQl.
  * quality: 1-99 (higher = better). No-op on T31 (no QL table API). */
