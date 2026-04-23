@@ -59,32 +59,34 @@
 #endif
 
 /* New-style encoder structs, unified RC, packs with offset into ring buffer */
-#if defined(PLATFORM_T31) || defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(PLATFORM_T31) || defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) ||   \
+    defined(PLATFORM_T41)
 #define HAL_NEW_SDK
 #endif
 
 /* ISP functions take IMPVI_NUM as first parameter */
-#if defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
 #define HAL_IMPVI_SDK
 #endif
 
-/* T32 is a hybrid: new-style encoder internals but old-style type names */
-#if defined(PLATFORM_T32)
+/* T32/T33 are hybrids: new-style encoder internals but old-style type names */
+#if defined(PLATFORM_T32) || defined(PLATFORM_T33)
 #define HAL_HYBRID_SDK
 #endif
 
 /* ISP tuning functions that take pointer args (not scalar) */
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
 #define HAL_ISP_PTR_ARGS
 #endif
 
 /* Extended OSD region types (enum values shifted) */
-#if defined(PLATFORM_T23) || defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(PLATFORM_T23) || defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) ||   \
+    defined(PLATFORM_T41)
 #define HAL_EXTENDED_OSD
 #endif
 
 /* Multi-sensor support via IMPVI_NUM parameter */
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
 #define HAL_MULTI_SENSOR
 #endif
 
@@ -102,14 +104,14 @@
  * ═══════════════════════════════════════════════════════════════════════ */
 
 #if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T30) ||                     \
-    defined(PLATFORM_T40) || defined(PLATFORM_T41)
+    defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
 struct IMPISPAEAttr {
 }; /* not defined on these SoCs */
 #endif
 
-#if defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
 struct IMPISPEVAttr {
-}; /* not defined on T40/T41 */
+}; /* not defined on T33/T40/T41 */
 #endif
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -133,7 +135,7 @@ struct IMPISPEVAttr {
  * the translation.
  * ═══════════════════════════════════════════════════════════════════════ */
 
-#if defined(HAL_NEW_SDK) && !defined(PLATFORM_T32)
+#if defined(HAL_NEW_SDK) && !defined(HAL_HYBRID_SDK)
 #define IMPEncoderCHNAttr IMPEncoderChnAttr
 #define IMPEncoderCHNStat IMPEncoderChnStat
 #endif
@@ -142,7 +144,7 @@ struct IMPISPEVAttr {
  * RC mode enum names (ENC_RC_MODE_* not IMP_ENC_RC_MODE_*) and old-style
  * struct layout (no gopAttr, old RC attr union members).  Define
  * compatibility macros so the new-SDK code path can use IMP_ENC_RC_MODE_*. */
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
 #define IMP_ENC_RC_MODE_FIXQP ENC_RC_MODE_FIXQP
 #define IMP_ENC_RC_MODE_CBR ENC_RC_MODE_CBR
 #define IMP_ENC_RC_MODE_VBR ENC_RC_MODE_VBR
@@ -158,9 +160,8 @@ struct IMPISPEVAttr {
 #define IMPISPCOEFFTWB IMPISPCoefftWb
 #endif
 
-/* T32/T40/T41 use IMPISPAEExprInfo (capital AE), not IMPISPAeExprInfo.
- * Define the name used in hal_isp.c for consistency. */
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+/* T32/T33/T40/T41 use IMPISPAEExprInfo (capital AE), not IMPISPAeExprInfo. */
+#if defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
 #define IMPISPAeExprInfo IMPISPAEExprInfo
 #endif
 
