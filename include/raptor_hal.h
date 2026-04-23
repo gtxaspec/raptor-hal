@@ -1218,6 +1218,8 @@ static inline int rss_hal_init_single(const rss_hal_ops_t *ops, void *ctx,
 int rss_hal_get_imp_version(char *buf, int size);
 int rss_hal_get_sysutils_version(char *buf, int size);
 const char *rss_hal_get_cpu_info(void);
+const char *rss_hal_get_platform_name(void);
+void rss_hal_check_platform(const char *name);
 
 /* ================================================================
  * HAL Logging Callback

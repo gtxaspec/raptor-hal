@@ -28,6 +28,31 @@
  * These derived macros group SoCs by API compatibility.
  * ═══════════════════════════════════════════════════════════════════════ */
 
+/* Compile-time platform name string (for runtime SoC verification) */
+#if defined(PLATFORM_T20)
+#define HAL_PLATFORM_NAME "T20"
+#elif defined(PLATFORM_T21)
+#define HAL_PLATFORM_NAME "T21"
+#elif defined(PLATFORM_T23)
+#define HAL_PLATFORM_NAME "T23"
+#elif defined(PLATFORM_T30)
+#define HAL_PLATFORM_NAME "T30"
+#elif defined(PLATFORM_T31)
+#define HAL_PLATFORM_NAME "T31"
+#elif defined(PLATFORM_T32)
+#define HAL_PLATFORM_NAME "T32"
+#elif defined(PLATFORM_T33)
+#define HAL_PLATFORM_NAME "T33"
+#elif defined(PLATFORM_T40)
+#define HAL_PLATFORM_NAME "T40"
+#elif defined(PLATFORM_T41)
+#define HAL_PLATFORM_NAME "T41"
+#elif defined(PLATFORM_A1)
+#define HAL_PLATFORM_NAME "A1"
+#else
+#error "No PLATFORM_* defined"
+#endif
+
 /* Old-style encoder structs, per-codec RC unions, packs with direct virAddr */
 #if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) || defined(PLATFORM_T30)
 #define HAL_OLD_SDK

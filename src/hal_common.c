@@ -12,6 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <unistd.h>
+#include <syslog.h>
 #include <errno.h>
 
 #include "hal_internal.h"
@@ -1540,4 +1542,21 @@ int rss_hal_get_sysutils_version(char *buf, int size)
 const char *rss_hal_get_cpu_info(void)
 {
     return IMP_System_GetCPUInfo();
+}
+
+const char *rss_hal_get_platform_name(void)
+{
+    return HAL_PLATFORM_NAME;
+}
+
+void rss_hal_check_platform(const char *name)
+{
+    const char *cpu = IMP_System_GetCPUInfo();
+    if (!cpu || strncmp(cpu, HAL_PLATFORM_NAME, strlen(HAL_PLATFORM_NAME)) == 0)
+        return;
+    fprintf(stderr, "FATAL: built for %s but running on %s\n", HAL_PLATFORM_NAME, cpu);
+    openlog(name ? name : "raptor", LOG_PID, LOG_DAEMON);
+    syslog(LOG_ERR, "FATAL: built for %s but running on %s", HAL_PLATFORM_NAME, cpu);
+    closelog();
+    _exit(1);
 }
