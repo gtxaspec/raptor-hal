@@ -2,8 +2,8 @@
 
 Hardware Abstraction Layer for the Raptor Streaming System (RSS). Provides a
 unified C API over the Ingenic IMP SDK, abstracting away the differences between
-three SDK generations so that RSS daemons (RVD, RAD, RIC) can target all 8
-Ingenic T-series SoCs from a single codebase.
+three SDK generations so that RSS daemons (RVD, RAD, RIC) can target all 9
+Ingenic SoCs from a single codebase.
 
 ## Supported Platforms
 
@@ -14,7 +14,8 @@ Ingenic T-series SoCs from a single codebase.
 | T23 | Old | XBurst1, extended OSD |
 | T30 | Old | XBurst1 |
 | T31 | New | XBurst1, primary dev target |
-| T32 | New (hybrid) | XBurst2, multi-sensor, old-style type names |
+| T32 | New (hybrid) | XBurst1, multi-sensor, old-style type names |
+| T33 | New (hybrid) | XBurst1, T32-compatible, no DMIC/WDR |
 | T40 | IMPVI | XBurst2, multi-sensor |
 | T41 | IMPVI | XBurst2, multi-sensor |
 
@@ -35,7 +36,7 @@ make PLATFORM=T31 CROSS_COMPILE=mipsel-linux-
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `PLATFORM` | yes | -- | Target SoC: T20, T21, T23, T30, T31, T32, T40, T41 |
+| `PLATFORM` | yes | -- | Target SoC: T20, T21, T23, T30, T31, T32, T33, T40, T41 |
 | `CROSS_COMPILE` | yes | -- | Toolchain prefix (e.g. `mipsel-linux-`) |
 | `INGENIC_HEADERS` | no | `../ingenic-headers` | Path to SDK header repo |
 | `INGENIC_LIB` | no | `../ingenic-lib` | Path to SDK library repo |
