@@ -91,7 +91,7 @@ extern int hal_enc_set_max_stream_cnt(void *ctx, int chn, int cnt);
 extern int hal_enc_set_pool(void *ctx, int chn, int pool_id);
 extern int hal_enc_get_pool(void *ctx, int chn);
 extern int hal_enc_get_rmem_info(void *ctx, uintptr_t *virt_base, uint32_t *size,
-                                uint32_t *mmap_offset);
+                                 uint32_t *mmap_offset);
 extern int hal_enc_inject_stream_shm(void *ctx, int chn, void *shm_addr, uint32_t shm_size);
 
 /* Encoder: Phase 1 — Bandwidth reduction (hal_encoder.c) */
@@ -1522,8 +1522,12 @@ int rss_hal_get_imp_version(char *buf, int size)
     return 0;
 }
 
+__attribute__((weak)) int SU_Base_GetVersion(SUVersion *ver);
+
 int rss_hal_get_sysutils_version(char *buf, int size)
 {
+    if (!SU_Base_GetVersion)
+        return -1;
     SUVersion ver;
     memset(&ver, 0, sizeof(ver));
     int ret = SU_Base_GetVersion(&ver);
