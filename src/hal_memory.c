@@ -39,7 +39,7 @@ extern void *IMP_Phys_to_Virt(uint32_t phys_addr);
 extern uint32_t IMP_Virt_to_Phys(void *virt_addr);
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31) || defined(PLATFORM_T32) ||                     \
-    defined(PLATFORM_T40) || defined(PLATFORM_T41)
+    defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
 extern void *IMP_PoolAlloc(uint32_t pool_id, uint32_t size);
 extern void IMP_PoolFree(void *ptr);
 extern int IMP_PoolFlushCache(void *ptr, uint32_t size);
@@ -92,7 +92,7 @@ int hal_mem_flush_cache(void *ctx, void *ptr, uint32_t size)
         return RSS_ERR_INVAL;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31) || defined(PLATFORM_T32) ||                     \
-    defined(PLATFORM_T40) || defined(PLATFORM_T41)
+    defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     return IMP_FlushCache(ptr, size);
 #elif defined(__mips__)
     /* MIPS cacheflush: flush data cache */
@@ -155,7 +155,7 @@ void *hal_mem_pool_alloc(void *ctx, uint32_t pool_id, uint32_t size)
         return NULL;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31) || defined(PLATFORM_T32) ||                     \
-    defined(PLATFORM_T40) || defined(PLATFORM_T41)
+    defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     void *ptr = IMP_PoolAlloc(pool_id, size);
     if (!ptr) {
         HAL_LOG_ERR("IMP_PoolAlloc(%u, %u) failed", pool_id, size);
@@ -184,7 +184,7 @@ void hal_mem_pool_free(void *ctx, void *ptr)
         return;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31) || defined(PLATFORM_T32) ||                     \
-    defined(PLATFORM_T40) || defined(PLATFORM_T41)
+    defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMP_PoolFree(ptr);
 #else
     /* T20/T21/T30: fall back to general free */
@@ -202,7 +202,7 @@ void hal_mem_pool_free(void *ctx, void *ptr)
 int hal_mem_pool_flush_cache(void *ctx, void *ptr, uint32_t size)
 {
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31) || defined(PLATFORM_T32) ||                     \
-    defined(PLATFORM_T40) || defined(PLATFORM_T41)
+    defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     (void)ctx;
     if (!ptr || size == 0)
         return RSS_ERR_INVAL;
@@ -225,7 +225,7 @@ void *hal_mem_pool_phys_to_virt(void *ctx, uint32_t phys_addr)
     (void)ctx;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31) || defined(PLATFORM_T32) ||                     \
-    defined(PLATFORM_T40) || defined(PLATFORM_T41)
+    defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     void *virt = IMP_PoolPhys_to_Virt(phys_addr);
     if (!virt)
         HAL_LOG_WARN("IMP_PoolPhys_to_Virt(0x%08x) returned NULL", phys_addr);
@@ -244,7 +244,7 @@ uint32_t hal_mem_pool_virt_to_phys(void *ctx, void *virt_addr)
         return 0;
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31) || defined(PLATFORM_T32) ||                     \
-    defined(PLATFORM_T40) || defined(PLATFORM_T41)
+    defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     return IMP_PoolVirt_to_Phys(virt_addr);
 #else
     /* T20/T21/T30: fall back to non-pool */

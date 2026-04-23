@@ -77,7 +77,7 @@ int hal_audio_init(void *ctx, const rss_audio_config_t *cfg)
     IMPAudioIChnParam param;
     memset(&param, 0, sizeof(param));
     param.usrFrmDepth = (cfg->frame_depth > 0) ? cfg->frame_depth : 20;
-#if defined(PLATFORM_T23) || defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(PLATFORM_T23) || defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     /* Extended struct: set aecChn to default first channel */
     param.aecChn = 0;
 #endif
@@ -868,7 +868,7 @@ int hal_audio_set_hpf_co_freq(void *ctx, int freq)
 {
     (void)ctx;
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31) || defined(PLATFORM_T32) ||                     \
-    defined(PLATFORM_T40) || defined(PLATFORM_T41)
+    defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     return IMP_AI_SetHpfCoFrequency(freq);
 #else
     (void)freq;
@@ -944,7 +944,7 @@ int hal_ao_set_hpf_co_freq(void *ctx, int freq)
 {
     (void)ctx;
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31) || defined(PLATFORM_T32) ||                     \
-    defined(PLATFORM_T40) || defined(PLATFORM_T41)
+    defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     return IMP_AO_SetHpfCoFrequency(freq);
 #else
     (void)freq;

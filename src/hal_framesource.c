@@ -41,7 +41,7 @@ static void hal_fs_build_attr(IMPFSChnAttr *attr, const rss_fs_config_t *cfg)
     memset(attr, 0, sizeof(*attr));
 
     /* ── I2D attributes (T32/T40/T41: placed at start of struct) ── */
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     attr->i2dattr.i2d_enable = 0;
     attr->i2dattr.flip_enable = 0;
     attr->i2dattr.mirr_enable = 0;
@@ -79,7 +79,7 @@ static void hal_fs_build_attr(IMPFSChnAttr *attr, const rss_fs_config_t *cfg)
 #endif
 
     /* ── Mirror enable (T23/T32 have mirr_enable in struct; T40 does not) ── */
-#if defined(PLATFORM_T23) || defined(PLATFORM_T32)
+#if defined(PLATFORM_T23) || defined(PLATFORM_T32) || defined(PLATFORM_T33)
     attr->mirr_enable = 0;
 #endif
 
@@ -249,7 +249,7 @@ int hal_fs_set_rotation(void *ctx, int chn, int degrees)
         return 0;
     }
 
-#elif defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#elif defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     {
         IMPFSI2DAttr i2d;
         int ret;

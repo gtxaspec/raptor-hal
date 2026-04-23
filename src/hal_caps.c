@@ -541,6 +541,94 @@ const rss_hal_caps_t g_hal_caps = {
 };
 
 /* ═══════════════════════════════════════════════════════════════════════
+ * T33 (T32-compatible, no DMIC/DVP/WDR)
+ * ═══════════════════════════════════════════════════════════════════════ */
+#elif defined(PLATFORM_T33)
+const rss_hal_caps_t g_hal_caps = {
+    /* Encoder */
+    .has_h265 = true,
+    .has_rotation = false,
+    .has_i2d = true,
+    .has_bufshare = false,
+    .has_set_default_param = true,
+    .has_capped_rc = true,
+    .has_smart_rc = true,
+    .has_gop_attr = false,
+    .has_set_bitrate = true,
+    .has_stream_buf_size = false,
+    .has_encoder_pool = true,
+    .has_smartp_gop = false,
+    .has_rc_options = false,
+    .has_pskip = true,
+    .has_srd = true,
+    .has_max_pic_size = true,
+    .has_super_frame = true,
+    .has_color2grey = false,
+    .has_roi = true,
+    .has_map_roi = true,
+    .has_qp_bounds_per_frame = true,
+    .has_qpg_mode = true,
+    .has_qpg_ai = true,
+    .has_mbrc = false,
+    .has_enc_denoise = false,
+    .has_gdr = true,
+    .has_sei_userdata = true,
+    .has_h264_vui = true,
+    .has_h265_vui = true,
+    .has_h264_trans = true,
+    .has_h265_trans = true,
+    .has_enc_crop = true,
+    .has_eval_info = false,
+    .has_poll_module = false,
+    .has_resize_mode = false,
+    .has_jpeg_ql = false,
+    .has_jpeg_qp = true,
+    /* ISP */
+    .has_multi_sensor = true,
+    .max_sensors = 3,
+    .has_t23_multicam_api = false,
+    .has_defog = false,
+    .has_dpc = false,
+    .has_drc = false,
+    .has_face_ae = true,
+    .has_bcsh_hue = true,
+    .has_sinter = false,
+    .has_temper = false,
+    .has_highlight_depress = false,
+    .has_backlight_comp = false,
+    .has_ae_comp = false,
+    .has_max_gain = false,
+    .has_switch_bin = true,
+    .has_gamma = false,
+    .has_gamma_attr = true,
+    .has_module_control = true,
+    .has_wdr = false,
+    /* OSD */
+    .has_isp_osd = true,
+    .has_osd_mosaic = true,
+    .has_osd_group_callback = false,
+    .has_osd_region_invert = true,
+    .has_extended_osd_types = true,
+    /* Audio */
+    .has_audio_process_lib = true,
+    .has_audio_aec_channel = true,
+    .has_alc_gain = false,
+    .has_agc_mode = false,
+    .has_digital_gain = true,
+    .has_howling_suppress = true,
+    .has_hpf_cutoff = true,
+    /* System */
+    .uses_xburst2 = false,
+    .uses_new_sdk = true,
+    .uses_impvi = true,
+    /* Limits */
+    .max_enc_channels = 3,
+    .max_osd_regions = 16,
+    .max_osd_groups = 2,
+    .max_isp_osd_regions = 8,
+};
+
+/* ═══════════════════════════════════════════════════════════════════════
  * T40
  * ═══════════════════════════════════════════════════════════════════════ */
 #elif defined(PLATFORM_T40)
@@ -673,7 +761,7 @@ const rss_hal_caps_t g_hal_caps = {
     .has_jpeg_qp = false,
     /* ISP */
     .has_multi_sensor = true, /* IMPVI_NUM defined but SEC/THR unsupported */
-    .max_sensors = 3, /* experimental — vendor docs say SEC/THR not yet functional */
+    .max_sensors = 3,         /* experimental — vendor docs say SEC/THR not yet functional */
     .has_t23_multicam_api = false,
     .has_defog = false,
     .has_dpc = false,

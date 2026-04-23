@@ -130,7 +130,7 @@ int hal_isp_set_hflip(void *ctx, int enable)
     IMPISPHVFLIP hvflip = (IMPISPHVFLIP)mode;
     return IMP_ISP_Tuning_SetHVFLIP(IMPVI_MAIN, &hvflip);
 
-#elif defined(PLATFORM_T32) || defined(PLATFORM_T41)
+#elif defined(HAL_HYBRID_SDK) || defined(PLATFORM_T41)
     int mode = (c->hflip_state[0] ? 1 : 0) | (c->vflip_state[0] ? 2 : 0);
     IMPISPHVFLIPAttr attr;
     memset(&attr, 0, sizeof(attr));
@@ -160,7 +160,7 @@ int hal_isp_set_vflip(void *ctx, int enable)
     IMPISPHVFLIP hvflip = (IMPISPHVFLIP)mode;
     return IMP_ISP_Tuning_SetHVFLIP(IMPVI_MAIN, &hvflip);
 
-#elif defined(PLATFORM_T32) || defined(PLATFORM_T41)
+#elif defined(HAL_HYBRID_SDK) || defined(PLATFORM_T41)
     int mode = (c->hflip_state[0] ? 1 : 0) | (c->vflip_state[0] ? 2 : 0);
     IMPISPHVFLIPAttr attr;
     memset(&attr, 0, sizeof(attr));
@@ -205,7 +205,7 @@ int hal_isp_set_sensor_fps(void *ctx, uint32_t fps_num, uint32_t fps_den)
 
 #if defined(PLATFORM_T40)
     return IMP_ISP_Tuning_SetSensorFPS(IMPVI_MAIN, &fps_num, &fps_den);
-#elif defined(PLATFORM_T32) || defined(PLATFORM_T41)
+#elif defined(HAL_HYBRID_SDK) || defined(PLATFORM_T41)
     IMPISPSensorFps fps = {.num = fps_num, .den = fps_den};
     return IMP_ISP_Tuning_SetSensorFPS(IMPVI_MAIN, &fps);
 #else
@@ -224,7 +224,7 @@ int hal_isp_set_antiflicker(void *ctx, rss_antiflicker_t mode)
 {
     (void)ctx;
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     /* Gen3: IMPISPAntiflickerAttr is a struct with .mode and .freq */
     {
         IMPISPAntiflickerAttr attr;
@@ -232,7 +232,7 @@ int hal_isp_set_antiflicker(void *ctx, rss_antiflicker_t mode)
         switch (mode) {
         case RSS_ANTIFLICKER_50HZ:
             attr.mode = IMPISP_ANTIFLICKER_NORMAL_MODE;
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
             attr.freq = IMPISP_ANTIFLICKER_FREQ_50HZ;
 #else
             attr.freq = 50;
@@ -240,7 +240,7 @@ int hal_isp_set_antiflicker(void *ctx, rss_antiflicker_t mode)
             break;
         case RSS_ANTIFLICKER_60HZ:
             attr.mode = IMPISP_ANTIFLICKER_NORMAL_MODE;
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
             attr.freq = IMPISP_ANTIFLICKER_FREQ_60HZ;
 #else
             attr.freq = 60;
@@ -309,7 +309,7 @@ int hal_isp_set_wb(void *ctx, const rss_wb_config_t *wb_cfg)
         attr.mode = (IMPISPAWBMode)wb_cfg->mode;
         return IMP_ISP_Tuning_SetAwbAttr(IMPVI_MAIN, &attr);
     }
-#elif defined(PLATFORM_T32) || defined(PLATFORM_T40)
+#elif defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40)
     /*
      * T32/T40: Use SetAwbAttr for all modes.
      */
@@ -354,7 +354,7 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
 
     memset(exposure, 0, sizeof(*exposure));
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     /*
      * Gen3: single call to GetAeExprInfo.
      * The struct layout is SoC-specific but includes at minimum:
@@ -763,7 +763,7 @@ int hal_isp_get_hvflip(void *ctx, int *hflip, int *vflip)
     *vflip = ((int)hvf & 2) ? 1 : 0;
     return RSS_OK;
 
-#elif defined(PLATFORM_T32) || defined(PLATFORM_T41)
+#elif defined(HAL_HYBRID_SDK) || defined(PLATFORM_T41)
     IMPISPHVFLIPAttr attr;
     memset(&attr, 0, sizeof(attr));
     int ret = IMP_ISP_Tuning_GetHVFLIP(IMPVI_MAIN, &attr);
@@ -816,7 +816,7 @@ int hal_isp_get_sensor_fps(void *ctx, uint32_t *fps_num, uint32_t *fps_den)
 
 #if defined(PLATFORM_T40)
     return IMP_ISP_Tuning_GetSensorFPS(IMPVI_MAIN, fps_num, fps_den);
-#elif defined(PLATFORM_T32) || defined(PLATFORM_T41)
+#elif defined(HAL_HYBRID_SDK) || defined(PLATFORM_T41)
     {
         IMPISPSensorFps fps;
         memset(&fps, 0, sizeof(fps));
@@ -847,7 +847,7 @@ int hal_isp_get_antiflicker(void *ctx, rss_antiflicker_t *mode)
     if (!mode)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPISPAntiflickerAttr attr;
     memset(&attr, 0, sizeof(attr));
     int ret = IMP_ISP_Tuning_GetAntiFlickerAttr(IMPVI_MAIN, &attr);
@@ -895,7 +895,7 @@ int hal_isp_get_wb(void *ctx, rss_wb_config_t *wb_cfg)
 
     memset(wb_cfg, 0, sizeof(*wb_cfg));
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPISPWBAttr attr;
     memset(&attr, 0, sizeof(attr));
     int ret = IMP_ISP_Tuning_GetAwbAttr(IMPVI_MAIN, &attr);
@@ -968,7 +968,7 @@ int hal_isp_get_sensor_attr(void *ctx, uint32_t *width, uint32_t *height)
     if (!width || !height)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPISPSENSORAttr attr;
     memset(&attr, 0, sizeof(attr));
     int ret = IMP_ISP_Tuning_GetSensorAttr(IMPVI_MAIN, &attr);
@@ -1018,7 +1018,7 @@ int hal_isp_get_module_control(void *ctx, uint32_t *modules)
     if (!modules)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPISPModuleCtl ctl;
     memset(&ctl, 0, sizeof(ctl));
     int ret = IMP_ISP_Tuning_GetModuleControl(IMPVI_MAIN, &ctl);
@@ -1044,7 +1044,7 @@ int hal_isp_set_module_control(void *ctx, uint32_t modules)
 {
     (void)ctx;
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPISPModuleCtl ctl;
     memset(&ctl, 0, sizeof(ctl));
     ctl.key = modules;
@@ -1205,7 +1205,7 @@ int hal_isp_set_ae_weight(void *ctx, const uint8_t weight[15][15])
     if (!weight)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPISPAEWeightAttr attr;
     memset(&attr, 0, sizeof(attr));
     attr.weight_enable = IMPISP_TUNING_OPS_MODE_ENABLE;
@@ -1227,7 +1227,7 @@ int hal_isp_get_ae_weight(void *ctx, uint8_t weight[15][15])
     if (!weight)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPISPAEWeightAttr attr;
     memset(&attr, 0, sizeof(attr));
     int ret = IMP_ISP_Tuning_GetAeWeight(IMPVI_MAIN, &attr);
@@ -1261,7 +1261,7 @@ int hal_isp_get_ae_zone(void *ctx, uint32_t zone[15][15])
     if (!zone)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPISPAEStatisInfo info;
     memset(&info, 0, sizeof(info));
     int ret = IMP_ISP_Tuning_GetAeStatistics(IMPVI_MAIN, &info);
@@ -1309,7 +1309,7 @@ int hal_isp_set_ae_roi(void *ctx, const uint8_t roi[15][15])
         memcpy(attr.ae_roi.weight, roi, sizeof(attr.ae_roi.weight));
         return IMP_ISP_Tuning_SetAeWeight(IMPVI_MAIN, &attr);
     }
-#elif defined(PLATFORM_T32)
+#elif defined(HAL_HYBRID_SDK)
     {
         IMPISPAEWeightAttr attr;
         memset(&attr, 0, sizeof(attr));
@@ -1343,7 +1343,7 @@ int hal_isp_get_ae_roi(void *ctx, uint8_t roi[15][15])
         memcpy(roi, attr.ae_roi.weight, 15 * 15);
         return RSS_OK;
     }
-#elif defined(PLATFORM_T32)
+#elif defined(HAL_HYBRID_SDK)
     {
         IMPISPAEWeightAttr attr;
         memset(&attr, 0, sizeof(attr));
@@ -1396,7 +1396,7 @@ int hal_isp_get_ae_hist(void *ctx, uint8_t thresholds[4], uint16_t bins[5])
     if (!thresholds || !bins)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPISPAEStatisInfo info;
     memset(&info, 0, sizeof(info));
     int ret = IMP_ISP_Tuning_GetAeStatistics(IMPVI_MAIN, &info);
@@ -1433,7 +1433,7 @@ int hal_isp_get_ae_hist_origin(void *ctx, uint32_t bins[256])
     if (!bins)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPISPAEStatisInfo info;
     memset(&info, 0, sizeof(info));
     int ret = IMP_ISP_Tuning_GetAeStatistics(IMPVI_MAIN, &info);
@@ -1466,7 +1466,7 @@ int hal_isp_set_ae_it_max(void *ctx, uint32_t it_max)
 {
     (void)ctx;
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPISPAEExprInfo info;
     memset(&info, 0, sizeof(info));
     int ret = IMP_ISP_Tuning_GetAeExprInfo(IMPVI_MAIN, &info);
@@ -1489,7 +1489,7 @@ int hal_isp_get_ae_it_max(void *ctx, uint32_t *it_max)
     if (!it_max)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPISPAEExprInfo info;
     memset(&info, 0, sizeof(info));
     int ret = IMP_ISP_Tuning_GetAeExprInfo(IMPVI_MAIN, &info);
@@ -1516,7 +1516,7 @@ int hal_isp_set_ae_min(void *ctx, int min_it, int min_again)
 {
     (void)ctx;
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPISPAEExprInfo info;
     memset(&info, 0, sizeof(info));
     int ret = IMP_ISP_Tuning_GetAeExprInfo(IMPVI_MAIN, &info);
@@ -1546,7 +1546,7 @@ int hal_isp_get_ae_min(void *ctx, int *min_it, int *min_again)
     if (!min_it || !min_again)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPISPAEExprInfo info;
     memset(&info, 0, sizeof(info));
     int ret = IMP_ISP_Tuning_GetAeExprInfo(IMPVI_MAIN, &info);
@@ -1584,7 +1584,7 @@ int hal_isp_set_awb_weight(void *ctx, const uint8_t weight[15][15])
     if (!weight)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     {
         IMPISPAwbWeight w;
         memset(&w, 0, sizeof(w));
@@ -1615,7 +1615,7 @@ int hal_isp_get_awb_weight(void *ctx, uint8_t weight[15][15])
     if (!weight)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     {
         IMPISPAwbWeight w;
         memset(&w, 0, sizeof(w));
@@ -1663,7 +1663,7 @@ int hal_isp_get_awb_zone(void *ctx, uint8_t zone_r[225], uint8_t zone_g[225], ui
     if (!zone_r || !zone_g || !zone_b)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     {
         IMPISPAWBStatisInfo info;
         memset(&info, 0, sizeof(info));
@@ -1819,7 +1819,7 @@ int hal_isp_set_gamma(void *ctx, const uint16_t gamma[129])
     if (!gamma)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPISPGammaAttr attr;
     memset(&attr, 0, sizeof(attr));
     attr.Curve_type = IMP_ISP_GAMMA_CURVE_USER;
@@ -1841,7 +1841,7 @@ int hal_isp_get_gamma(void *ctx, uint16_t gamma[129])
     if (!gamma)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPISPGammaAttr attr;
     memset(&attr, 0, sizeof(attr));
     int ret = IMP_ISP_Tuning_GetGammaAttr(IMPVI_MAIN, &attr);
@@ -1876,7 +1876,7 @@ int hal_isp_set_ccm(void *ctx, const void *ccm_attr)
     if (!ccm_attr)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     return IMP_ISP_Tuning_SetCCMAttr(IMPVI_MAIN, (IMPISPCCMAttr *)(uintptr_t)ccm_attr);
 #else
     (void)ccm_attr;
@@ -1890,7 +1890,7 @@ int hal_isp_get_ccm(void *ctx, void *ccm_attr)
     if (!ccm_attr)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     return IMP_ISP_Tuning_GetCCMAttr(IMPVI_MAIN, (IMPISPCCMAttr *)ccm_attr);
 #else
     (void)ccm_attr;
@@ -1910,7 +1910,7 @@ int hal_isp_set_wdr_mode(void *ctx, int mode)
 {
     (void)ctx;
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPISPTuningOpsMode ops = mode ? IMPISP_TUNING_OPS_MODE_ENABLE : IMPISP_TUNING_OPS_MODE_DISABLE;
     return IMP_ISP_WDR_ENABLE(IMPVI_MAIN, &ops);
 #elif defined(PLATFORM_T31)
@@ -1928,7 +1928,7 @@ int hal_isp_get_wdr_mode(void *ctx, int *mode)
     if (!mode)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPISPTuningOpsMode ops;
     int ret = IMP_ISP_WDR_ENABLE_GET(IMPVI_MAIN, &ops);
     if (ret != 0)
@@ -1979,7 +1979,7 @@ int hal_isp_set_bypass(void *ctx, int enable)
     IMPISPTuningOpsMode mode =
         enable ? IMPISP_TUNING_OPS_MODE_ENABLE : IMPISP_TUNING_OPS_MODE_DISABLE;
     return IMP_ISP_Tuning_SetISPBypass(IMPVI_MAIN, &mode);
-#elif defined(PLATFORM_T32) || defined(PLATFORM_T41)
+#elif defined(HAL_HYBRID_SDK) || defined(PLATFORM_T41)
     (void)enable;
     return RSS_ERR_NOTSUP;
 #elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                   \
@@ -2006,7 +2006,7 @@ int hal_isp_set_default_bin_path(void *ctx, const char *path)
     if (!path)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     {
         IMPISPDefaultBinAttr attr;
         memset(&attr, 0, sizeof(attr));
@@ -2029,7 +2029,7 @@ int hal_isp_get_default_bin_path(void *ctx, char *path, int path_len)
     if (!path || path_len <= 0)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     {
         IMPISPDefaultBinAttr attr;
         memset(&attr, 0, sizeof(attr));
@@ -2062,7 +2062,7 @@ int hal_isp_set_frame_drop(void *ctx, int drop)
 {
     (void)ctx;
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPISPFrameDropAttr fd;
     memset(&fd, 0, sizeof(fd));
     /* Set frame drop on channel 0 */
@@ -2085,7 +2085,7 @@ int hal_isp_get_frame_drop(void *ctx, int *drop)
     if (!drop)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPISPFrameDropAttr fd;
     memset(&fd, 0, sizeof(fd));
     int ret = IMP_ISP_GetFrameDrop(IMPVI_MAIN, &fd);
@@ -2119,7 +2119,7 @@ int hal_isp_set_sensor_register(void *ctx, uint32_t reg, uint32_t val)
 #if defined(PLATFORM_T40)
     /* T40: separate uint32_t* args */
     return IMP_ISP_SetSensorRegister(IMPVI_MAIN, &reg, &val);
-#elif defined(PLATFORM_T32) || defined(PLATFORM_T41)
+#elif defined(HAL_HYBRID_SDK) || defined(PLATFORM_T41)
     /* T32/T41: IMPISPSensorRegister struct */
     {
         IMPISPSensorRegister sr;
@@ -2141,7 +2141,7 @@ int hal_isp_get_sensor_register(void *ctx, uint32_t reg, uint32_t *val)
 #if defined(PLATFORM_T40)
     /* T40: separate uint32_t* args */
     return IMP_ISP_GetSensorRegister(IMPVI_MAIN, &reg, val);
-#elif defined(PLATFORM_T32) || defined(PLATFORM_T41)
+#elif defined(HAL_HYBRID_SDK) || defined(PLATFORM_T41)
     /* T32/T41: IMPISPSensorRegister struct */
     {
         IMPISPSensorRegister sr;
@@ -2845,7 +2845,7 @@ int hal_isp_get_af_weight(void *ctx, void *af_weight)
     if (!af_weight)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     return IMP_ISP_Tuning_GetAfWeight(IMPVI_MAIN, (IMPISPWeight *)af_weight);
 #elif defined(PLATFORM_T21) || defined(PLATFORM_T23) || defined(PLATFORM_T31)
     return IMP_ISP_Tuning_GetAfWeight((IMPISPWeight *)af_weight);
@@ -2861,7 +2861,7 @@ int hal_isp_set_af_weight(void *ctx, const void *af_weight)
     if (!af_weight)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     return IMP_ISP_Tuning_SetAfWeight(IMPVI_MAIN, (IMPISPWeight *)(uintptr_t)af_weight);
 #elif defined(PLATFORM_T21) || defined(PLATFORM_T23) || defined(PLATFORM_T31)
     return IMP_ISP_Tuning_SetAfWeight((IMPISPWeight *)(uintptr_t)af_weight);
@@ -2983,7 +2983,7 @@ int hal_isp_set_scaler_lv(void *ctx, int chn, int level)
 {
     (void)ctx;
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T41)
     {
         IMPISPScalerLvAttr attr;
         memset(&attr, 0, sizeof(attr));
@@ -3116,7 +3116,7 @@ int hal_isp_set_hflip_n(void *ctx, int sensor_idx, int enable)
 #if defined(PLATFORM_T40)
         IMPISPHVFLIP hvflip = (IMPISPHVFLIP)mode;
         return IMP_ISP_Tuning_SetHVFLIP((IMPVI_NUM)sensor_idx, &hvflip);
-#elif defined(PLATFORM_T32) || defined(PLATFORM_T41)
+#elif defined(HAL_HYBRID_SDK) || defined(PLATFORM_T41)
         IMPISPHVFLIPAttr attr;
         memset(&attr, 0, sizeof(attr));
         attr.sensor_mode = (IMPISPHVFLIP)mode;
@@ -3153,7 +3153,7 @@ int hal_isp_set_vflip_n(void *ctx, int sensor_idx, int enable)
 #if defined(PLATFORM_T40)
         IMPISPHVFLIP hvflip = (IMPISPHVFLIP)mode;
         return IMP_ISP_Tuning_SetHVFLIP((IMPVI_NUM)sensor_idx, &hvflip);
-#elif defined(PLATFORM_T32) || defined(PLATFORM_T41)
+#elif defined(HAL_HYBRID_SDK) || defined(PLATFORM_T41)
         IMPISPHVFLIPAttr attr;
         memset(&attr, 0, sizeof(attr));
         attr.sensor_mode = (IMPISPHVFLIP)mode;
@@ -3193,7 +3193,7 @@ int hal_isp_set_sensor_fps_n(void *ctx, int sensor_idx, uint32_t fps_num, uint32
     (void)ctx;
 #if defined(PLATFORM_T40)
     return IMP_ISP_Tuning_SetSensorFPS((IMPVI_NUM)sensor_idx, &fps_num, &fps_den);
-#elif defined(PLATFORM_T32) || defined(PLATFORM_T41)
+#elif defined(HAL_HYBRID_SDK) || defined(PLATFORM_T41)
     IMPISPSensorFps fps = {.num = fps_num, .den = fps_den};
     return IMP_ISP_Tuning_SetSensorFPS((IMPVI_NUM)sensor_idx, &fps);
 #elif defined(HAL_T23_MULTICAM)
@@ -3208,14 +3208,14 @@ int hal_isp_set_sensor_fps_n(void *ctx, int sensor_idx, uint32_t fps_num, uint32
 int hal_isp_set_antiflicker_n(void *ctx, int sensor_idx, rss_antiflicker_t mode)
 {
     (void)ctx;
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     {
         IMPISPAntiflickerAttr attr;
         memset(&attr, 0, sizeof(attr));
         switch (mode) {
         case RSS_ANTIFLICKER_50HZ:
             attr.mode = IMPISP_ANTIFLICKER_NORMAL_MODE;
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
             attr.freq = IMPISP_ANTIFLICKER_FREQ_50HZ;
 #else
             attr.freq = 50;
@@ -3223,7 +3223,7 @@ int hal_isp_set_antiflicker_n(void *ctx, int sensor_idx, rss_antiflicker_t mode)
             break;
         case RSS_ANTIFLICKER_60HZ:
             attr.mode = IMPISP_ANTIFLICKER_NORMAL_MODE;
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
             attr.freq = IMPISP_ANTIFLICKER_FREQ_60HZ;
 #else
             attr.freq = 60;
@@ -3359,7 +3359,7 @@ int hal_isp_get_exposure_n(void *ctx, int sensor_idx, rss_exposure_t *exposure)
         return RSS_ERR_INVAL;
     memset(exposure, 0, sizeof(*exposure));
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPISPAeExprInfo expr_info;
     memset(&expr_info, 0, sizeof(expr_info));
     int ret = IMP_ISP_Tuning_GetAeExprInfo((IMPVI_NUM)sensor_idx, &expr_info);

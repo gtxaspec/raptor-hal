@@ -495,7 +495,7 @@ int hal_osd_attach_to_group(void *ctx, int handle, int grp)
  * never need vendor types.
  * ================================================================ */
 
-#if defined(PLATFORM_T23) || defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(PLATFORM_T23) || defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
 #define HAL_HAS_ISP_OSD
 #endif
 
@@ -634,7 +634,7 @@ int hal_isp_osd_set_mask(void *ctx, int sensornum, int chx, int pinum,
     }
     extern int IMP_OSD_MultiCamera_SetRgnAttr_ISP(int, IMPOSDRgnAttr *, int);
     return IMP_OSD_MultiCamera_SetRgnAttr_ISP(sensornum, &attr, 0);
-#elif defined(PLATFORM_T32) || defined(PLATFORM_T41)
+#elif defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T41)
     /* T41: per-block API, same struct fields as T32 */
     IMPISPMaskBlockAttr block;
     memset(&block, 0, sizeof(block));

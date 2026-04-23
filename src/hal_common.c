@@ -1262,7 +1262,7 @@ static int hal_init(void *ctx, const rss_multi_sensor_config_t *multi_cfg)
     if (c->osd_pool_size == 0)
         c->osd_pool_size = 512 * 1024;
     IMP_OSD_SetPoolSize((int)c->osd_pool_size);
-#if defined(PLATFORM_T23) || defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(PLATFORM_T23) || defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMP_ISP_Tuning_SetOsdPoolSize((int)c->osd_pool_size);
 #endif
 

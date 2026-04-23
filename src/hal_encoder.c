@@ -92,7 +92,7 @@ static IMPEncoderRcMode hal_translate_rc_mode(rss_rc_mode_t mode)
         return IMP_ENC_RC_MODE_CBR;
     case RSS_RC_VBR:
         return IMP_ENC_RC_MODE_VBR;
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     case RSS_RC_SMART:
         return IMP_ENC_RC_MODE_SMART;
 #else
@@ -229,7 +229,7 @@ static int hal_ensure_nal_array(rss_hal_ctx_t *c, int chn, int count)
     return 0;
 }
 
-#if defined(HAL_NEW_SDK) && !defined(PLATFORM_T32)
+#if defined(HAL_NEW_SDK) && !defined(HAL_HYBRID_SDK)
 /*
  * hal_ensure_scratch -- ensure the scratch linearization buffer exists.
  * Only needed on new SDK (except T32) for ring-buffer pack linearization.
@@ -507,7 +507,7 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
      *   T31/T40/T41: (..., uMaxSameSenceCnt, iInitialQP, uTargetBitRate)
      *   T32:         (..., uBufSize, iInitialQP, uTargetBitRate)
      */
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     ret = IMP_Encoder_SetDefaultParam(&chnAttr, profile, rc, cfg->width, cfg->height, cfg->fps_num,
                                       cfg->fps_den, cfg->gop_length,
                                       cfg->buf_size,               /* T32: uBufSize */
@@ -530,7 +530,7 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
     /* Override QP bounds if caller specified non-default values.
      * T32 uses old-style RC attr member names (attrH264Cbr etc.)
      * while T31/T40/T41 use new-style (attrCbr etc.). */
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     /* T32: SetDefaultParam fills old-style RC attrs;
      * just override QP bounds in the H264 CBR/VBR structs.
      * CAPPED_VBR maps to CVBR, CAPPED_QUALITY maps to AVBR. */
@@ -686,7 +686,7 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
     }
 #endif
 
-#if defined(PLATFORM_T32) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T41)
     /* IVDC (ISP-VPU Direct Connect) — reduces rmem usage */
     chnAttr.bEnableIvdc = cfg->ivdc;
     if (cfg->ivdc)
@@ -698,7 +698,7 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
         HAL_LOG_INFO("enc chn %d: SetMaxStreamCnt(%d)", chn, cfg->max_stream_cnt);
         IMP_Encoder_SetMaxStreamCnt(chn, cfg->max_stream_cnt);
     }
-#if !defined(PLATFORM_T32)
+#if !defined(HAL_HYBRID_SDK)
     if (cfg->stream_buf_size > 0) {
         HAL_LOG_INFO("enc chn %d: SetStreamBufSize(%u)", chn, cfg->stream_buf_size);
         IMP_Encoder_SetStreamBufSize(chn, cfg->stream_buf_size);
@@ -839,7 +839,7 @@ int hal_enc_get_frame(void *ctx, int chn, rss_frame_t *frame)
     rss_codec_t codec = RSS_CODEC_H264;
     bool is_key = false;
 
-#if defined(HAL_OLD_SDK) || defined(PLATFORM_T32)
+#if defined(HAL_OLD_SDK) || defined(HAL_HYBRID_SDK)
     /*
      * Old SDK (and T32 hybrid): each pack has its own virAddr/length.
      * NAL type is in pack[i].dataType.h264Type (T20) or
@@ -1050,7 +1050,7 @@ int hal_enc_set_rc_mode(void *ctx, int chn, rss_rc_mode_t mode, uint32_t bitrate
     }
     rcAttr.rcMode = vendor_mode;
 
-#if defined(HAL_NEW_SDK) && !defined(PLATFORM_T32)
+#if defined(HAL_NEW_SDK) && !defined(HAL_HYBRID_SDK)
     /* New SDK (T31/T40/T41): patch bitrate in the target mode struct */
     switch (vendor_mode) {
     case IMP_ENC_RC_MODE_FIXQP:
@@ -1095,7 +1095,7 @@ int hal_enc_set_rc_mode(void *ctx, int chn, rss_rc_mode_t mode, uint32_t bitrate
     default:
         break;
     }
-#elif defined(PLATFORM_T32)
+#elif defined(HAL_HYBRID_SDK)
     /* T32 hybrid: H264-prefixed structs but different member names */
     switch (vendor_mode) {
     case ENC_RC_MODE_FIXQP:
@@ -1248,7 +1248,7 @@ int hal_enc_set_gop(void *ctx, int chn, uint32_t gop_length)
     int ret;
 
 #if defined(HAL_NEW_SDK)
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     /* T32 uses the old-style SetGOPSize function */
     IMPEncoderGOPSizeCfg gopCfg;
     gopCfg.gopsize = (int)gop_length;
@@ -1304,7 +1304,7 @@ int hal_enc_set_bufshare(void *ctx, int src_chn, int dst_chn)
 {
     (void)ctx;
 
-#if defined(HAL_NEW_SDK) && !defined(PLATFORM_T32)
+#if defined(HAL_NEW_SDK) && !defined(HAL_HYBRID_SDK)
     int ret = IMP_Encoder_SetbufshareChn(src_chn, dst_chn);
     if (ret != 0)
         HAL_LOG_ERR("SetbufshareChn(%d, %d) failed: %d", src_chn, dst_chn, ret);
@@ -1344,7 +1344,7 @@ int hal_enc_get_channel_attr(void *ctx, int chn, rss_video_config_t *cfg)
 
     memset(cfg, 0, sizeof(*cfg));
 
-#if defined(HAL_NEW_SDK) && !defined(PLATFORM_T32)
+#if defined(HAL_NEW_SDK) && !defined(HAL_HYBRID_SDK)
     /* New SDK (T31/T40/T41): unified struct with encAttr containing profile enum */
     cfg->width = chnAttr.encAttr.uWidth;
     cfg->height = chnAttr.encAttr.uHeight;
@@ -1521,7 +1521,7 @@ int hal_enc_get_gop_attr(void *ctx, int chn, uint32_t *gop_length)
         return ret;
     }
 
-#if defined(HAL_NEW_SDK) && !defined(PLATFORM_T32)
+#if defined(HAL_NEW_SDK) && !defined(HAL_HYBRID_SDK)
     *gop_length = chnAttr.gopAttr.uGopLength;
 #else
     *gop_length = chnAttr.rcAttr.maxGop;
@@ -1685,7 +1685,7 @@ int hal_enc_set_qp_ip_delta(void *ctx, int chn, int delta)
     (void)ctx;
 #if defined(PLATFORM_T31)
     return IMP_Encoder_SetChnQpIPDelta(chn, delta);
-#elif defined(HAL_NEW_SDK) && !defined(PLATFORM_T32)
+#elif defined(HAL_NEW_SDK) && !defined(HAL_HYBRID_SDK)
     int ret;
     IMPEncoderAttrRcMode rcAttr;
     memset(&rcAttr, 0, sizeof(rcAttr));
@@ -1719,7 +1719,7 @@ int hal_enc_set_qp_ip_delta(void *ctx, int chn, int delta)
 int hal_enc_set_qp_pb_delta(void *ctx, int chn, int delta)
 {
     (void)ctx;
-#if defined(HAL_NEW_SDK) && !defined(PLATFORM_T32)
+#if defined(HAL_NEW_SDK) && !defined(HAL_HYBRID_SDK)
     int ret;
     IMPEncoderAttrRcMode rcAttr;
     memset(&rcAttr, 0, sizeof(rcAttr));
@@ -1753,7 +1753,7 @@ int hal_enc_set_qp_pb_delta(void *ctx, int chn, int delta)
 int hal_enc_set_max_psnr(void *ctx, int chn, int psnr)
 {
     (void)ctx;
-#if defined(HAL_NEW_SDK) && !defined(PLATFORM_T32)
+#if defined(HAL_NEW_SDK) && !defined(HAL_HYBRID_SDK)
     int ret;
     IMPEncoderAttrRcMode rcAttr;
     memset(&rcAttr, 0, sizeof(rcAttr));
@@ -1879,7 +1879,7 @@ int hal_enc_get_chn_enc_type(void *ctx, int chn, void *enc_type)
 #if defined(PLATFORM_T20)
     (void)chn;
     return RSS_ERR_NOTSUP;
-#elif defined(HAL_NEW_SDK) && !defined(PLATFORM_T32)
+#elif defined(HAL_NEW_SDK) && !defined(HAL_HYBRID_SDK)
     return IMP_Encoder_GetChnEncType(chn, (IMPEncoderEncType *)enc_type);
 #else
     /* Old SDK (T21/T23/T30) and T32: output type is IMPPayloadType */
@@ -1960,7 +1960,7 @@ int hal_enc_set_max_stream_cnt(void *ctx, int chn, int cnt)
 int hal_enc_set_pool(void *ctx, int chn, int pool_id)
 {
     (void)ctx;
-#if defined(PLATFORM_T23) || defined(PLATFORM_T31) || defined(PLATFORM_T32) ||                     \
+#if defined(PLATFORM_T23) || defined(PLATFORM_T31) || defined(HAL_HYBRID_SDK) ||                   \
     defined(PLATFORM_T40) || defined(PLATFORM_T41)
     return IMP_Encoder_SetPool(chn, pool_id);
 #else
@@ -1979,7 +1979,7 @@ int hal_enc_set_pool(void *ctx, int chn, int pool_id)
 int hal_enc_get_pool(void *ctx, int chn)
 {
     (void)ctx;
-#if defined(PLATFORM_T23) || defined(PLATFORM_T31) || defined(PLATFORM_T32) ||                     \
+#if defined(PLATFORM_T23) || defined(PLATFORM_T31) || defined(HAL_HYBRID_SDK) ||                   \
     defined(PLATFORM_T40) || defined(PLATFORM_T41)
     return IMP_Encoder_GetPool(chn);
 #else
@@ -1995,8 +1995,7 @@ int hal_enc_get_pool(void *ctx, int chn)
  * Returns the virtual base address and size. Used by RVD to compute rmem
  * offsets from encoder virAddr pointers for zero-copy ring reference mode.
  */
-int hal_enc_get_rmem_info(void *ctx, uintptr_t *virt_base, uint32_t *size,
-                          uint32_t *mmap_offset)
+int hal_enc_get_rmem_info(void *ctx, uintptr_t *virt_base, uint32_t *size, uint32_t *mmap_offset)
 {
     (void)ctx;
     if (!virt_base || !size || !mmap_offset)
@@ -2015,8 +2014,8 @@ int hal_enc_get_rmem_info(void *ctx, uintptr_t *virt_base, uint32_t *size,
             continue;
         uintptr_t start, end;
         unsigned long offset;
-        if (sscanf(line, "%lx-%lx %*s %lx", (unsigned long *)&start,
-                   (unsigned long *)&end, &offset) == 3) {
+        if (sscanf(line, "%lx-%lx %*s %lx", (unsigned long *)&start, (unsigned long *)&end,
+                   &offset) == 3) {
             *virt_base = start;
             *size = (uint32_t)(end - start);
             *mmap_offset = (uint32_t)offset;
@@ -2043,7 +2042,8 @@ int hal_enc_get_rmem_info(void *ctx, uintptr_t *virt_base, uint32_t *size,
 static int find_libimp_rw_region(uintptr_t *start, size_t *size)
 {
     FILE *f = fopen("/proc/self/maps", "r");
-    if (!f) return -1;
+    if (!f)
+        return -1;
 
     char line[512];
     uintptr_t seg_start = 0, seg_end = 0;
@@ -2054,17 +2054,20 @@ static int find_libimp_rw_region(uintptr_t *start, size_t *size)
         if (sscanf(line, "%lx-%lx", (unsigned long *)&s, (unsigned long *)&e) != 2)
             continue;
         if (strstr(line, "libimp.so") && strstr(line, "rw-")) {
-            if (!found || s < seg_start) seg_start = s;
-            if (e > seg_end) seg_end = e;
+            if (!found || s < seg_start)
+                seg_start = s;
+            if (e > seg_end)
+                seg_end = e;
             found = 1;
-        } else if (found && s == seg_end && strstr(line, "rw-p") &&
-                   !strstr(line, ".so") && !strstr(line, "[")) {
+        } else if (found && s == seg_end && strstr(line, "rw-p") && !strstr(line, ".so") &&
+                   !strstr(line, "[")) {
             seg_end = e;
         }
     }
     fclose(f);
 
-    if (!found) return -1;
+    if (!found)
+        return -1;
     *start = seg_start;
     *size = seg_end - seg_start;
     return 0;
@@ -2093,7 +2096,10 @@ int hal_enc_inject_stream_shm(void *ctx, int chn, void *shm_addr, uint32_t shm_s
     uint32_t *end = (uint32_t *)(region_start + region_size - 4);
     uintptr_t marker_addr = 0;
     while (p <= end) {
-        if (*p == marker) { marker_addr = (uintptr_t)p; break; }
+        if (*p == marker) {
+            marker_addr = (uintptr_t)p;
+            break;
+        }
         p++;
     }
 
@@ -2115,13 +2121,13 @@ int hal_enc_inject_stream_shm(void *ctx, int chn, void *shm_addr, uint32_t shm_s
      * Offset verified via Ghidra RE of T20 channel struct.
      * Assumed consistent across T10-T30/T32/T33 Ingenic VPU SoCs. */
     uint32_t *ext_buf = (uint32_t *)(marker_addr + 8);
-    uint32_t *ext_sz  = (uint32_t *)(marker_addr + 12);
+    uint32_t *ext_sz = (uint32_t *)(marker_addr + 12);
 
     *ext_buf = (uint32_t)(uintptr_t)shm_addr;
-    *ext_sz  = shm_size;
+    *ext_sz = shm_size;
 
-    HAL_LOG_INFO("inject_stream_shm chn %d: shm=0x%lx size=%u marker_off=+0x%lx",
-                 chn, (unsigned long)(uintptr_t)shm_addr, shm_size,
+    HAL_LOG_INFO("inject_stream_shm chn %d: shm=0x%lx size=%u marker_off=+0x%lx", chn,
+                 (unsigned long)(uintptr_t)shm_addr, shm_size,
                  (unsigned long)(marker_addr - region_start));
     return 0;
 }
@@ -2351,7 +2357,7 @@ int hal_enc_set_pskip(void *ctx, int chn, const rss_pskip_cfg_t *cfg)
     (void)ctx;
     if (!cfg)
         return RSS_ERR_INVAL;
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     IMPEncoderPskipCfg pskip;
     memset(&pskip, 0, sizeof(pskip));
     pskip.enable = cfg->enable;
@@ -2375,7 +2381,7 @@ int hal_enc_get_pskip(void *ctx, int chn, rss_pskip_cfg_t *cfg)
     (void)ctx;
     if (!cfg)
         return RSS_ERR_INVAL;
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     IMPEncoderPskipCfg pskip;
     int ret = IMP_Encoder_GetPskipCfg(chn, &pskip);
     if (ret != 0) {
@@ -2398,7 +2404,7 @@ int hal_enc_get_pskip(void *ctx, int chn, rss_pskip_cfg_t *cfg)
 int hal_enc_request_pskip(void *ctx, int chn)
 {
     (void)ctx;
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     int ret = IMP_Encoder_RequestPskip(chn);
     if (ret != 0)
         HAL_LOG_ERR("RequestPskip(%d) failed: %d", chn, ret);
@@ -2419,7 +2425,7 @@ int hal_enc_set_srd(void *ctx, int chn, const rss_srd_cfg_t *cfg)
     (void)ctx;
     if (!cfg)
         return RSS_ERR_INVAL;
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     IMPEncoderSrdCfg srd;
     memset(&srd, 0, sizeof(srd));
     srd.enable = cfg->enable;
@@ -2442,7 +2448,7 @@ int hal_enc_get_srd(void *ctx, int chn, rss_srd_cfg_t *cfg)
     (void)ctx;
     if (!cfg)
         return RSS_ERR_INVAL;
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     IMPEncoderSrdCfg srd;
     int ret = IMP_Encoder_GetSrdCfg(chn, &srd);
     if (ret != 0) {
@@ -2466,7 +2472,7 @@ int hal_enc_get_srd(void *ctx, int chn, rss_srd_cfg_t *cfg)
 int hal_enc_set_max_pic_size(void *ctx, int chn, uint32_t max_i_kbits, uint32_t max_p_kbits)
 {
     (void)ctx;
-#if defined(PLATFORM_T32) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T41)
     int ret = IMP_Encoder_SetChnMaxPictureSize(chn, max_i_kbits, max_p_kbits);
     if (ret != 0)
         HAL_LOG_ERR("SetChnMaxPictureSize(%d, I=%u, P=%u) failed: %d", chn, max_i_kbits,
@@ -2491,7 +2497,7 @@ int hal_enc_set_super_frame(void *ctx, int chn, const rss_super_frame_cfg_t *cfg
     (void)ctx;
     if (!cfg)
         return RSS_ERR_INVAL;
-#if defined(PLATFORM_T21) || defined(PLATFORM_T32)
+#if defined(PLATFORM_T21) || defined(HAL_HYBRID_SDK)
     IMPEncoderSuperFrmCfg sfcfg;
     memset(&sfcfg, 0, sizeof(sfcfg));
     sfcfg.superFrmMode = (IMPEncoderSuperFrmMode)cfg->mode;
@@ -2499,7 +2505,7 @@ int hal_enc_set_super_frame(void *ctx, int chn, const rss_super_frame_cfg_t *cfg
     sfcfg.superPFrmBitsThr = cfg->p_bits_thr;
     sfcfg.superBFrmBitsThr = 0;
     sfcfg.rcPriority = (IMPEncoderRcPriority)cfg->priority;
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     sfcfg.maxReEncodeTimes = cfg->max_reencode;
 #endif
     int ret = IMP_Encoder_SetSuperFrameCfg(chn, &sfcfg);
@@ -2520,7 +2526,7 @@ int hal_enc_get_super_frame(void *ctx, int chn, rss_super_frame_cfg_t *cfg)
     (void)ctx;
     if (!cfg)
         return RSS_ERR_INVAL;
-#if defined(PLATFORM_T21) || defined(PLATFORM_T32)
+#if defined(PLATFORM_T21) || defined(HAL_HYBRID_SDK)
     IMPEncoderSuperFrmCfg sfcfg;
     int ret = IMP_Encoder_GetSuperFrameCfg(chn, &sfcfg);
     if (ret != 0) {
@@ -2531,7 +2537,7 @@ int hal_enc_get_super_frame(void *ctx, int chn, rss_super_frame_cfg_t *cfg)
     cfg->i_bits_thr = sfcfg.superIFrmBitsThr;
     cfg->p_bits_thr = sfcfg.superPFrmBitsThr;
     cfg->priority = (rss_rc_priority_t)sfcfg.rcPriority;
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     cfg->max_reencode = sfcfg.maxReEncodeTimes;
 #else
     cfg->max_reencode = 0;
@@ -2621,7 +2627,7 @@ int hal_enc_set_roi(void *ctx, int chn, const rss_enc_roi_t *roi)
         HAL_LOG_ERR("SetChnROI(%d, idx=%u) failed: %d", chn, roi->index, ret);
     return ret;
 
-#elif defined(PLATFORM_T32)
+#elif defined(HAL_HYBRID_SDK)
     IMPEncoderROIAttr roiAttr;
     int ret = IMP_Encoder_GetChnROI(chn, &roiAttr);
     if (ret != 0) {
@@ -2680,7 +2686,7 @@ int hal_enc_get_roi(void *ctx, int chn, uint32_t index, rss_enc_roi_t *roi)
     roi->h = roiCfg.rect.p1.y - roiCfg.rect.p0.y;
     return RSS_OK;
 
-#elif defined(PLATFORM_T32)
+#elif defined(HAL_HYBRID_SDK)
     IMPEncoderROIAttr roiAttr;
     int ret = IMP_Encoder_GetChnROI(chn, &roiAttr);
     if (ret != 0) {
@@ -2719,7 +2725,7 @@ int hal_enc_set_map_roi(void *ctx, int chn, const uint8_t *map, uint32_t map_siz
     if (!map)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     IMPEncoderMapRoiCfg mapCfg;
     IMPEncoderMappingList list;
 
@@ -2752,7 +2758,7 @@ int hal_enc_set_map_roi(void *ctx, int chn, const uint8_t *map, uint32_t map_siz
 int hal_enc_set_qp_bounds_per_frame(void *ctx, int chn, int min_i, int max_i, int min_p, int max_p)
 {
     (void)ctx;
-#if defined(PLATFORM_T32) || defined(PLATFORM_T41)
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T41)
     int ret = IMP_Encoder_SetChnQpBoundsPerFrame(chn, min_i, max_i, min_p, max_p);
     if (ret != 0)
         HAL_LOG_ERR("SetChnQpBoundsPerFrame(%d) failed: %d", chn, ret);
@@ -2777,7 +2783,7 @@ int hal_enc_set_qp_bounds_per_frame(void *ctx, int chn, int min_i, int max_i, in
 int hal_enc_set_qpg_mode(void *ctx, int chn, int mode)
 {
     (void)ctx;
-#if defined(PLATFORM_T21) || defined(PLATFORM_T32)
+#if defined(PLATFORM_T21) || defined(HAL_HYBRID_SDK)
     IMPEncoderQpgMode qpg = (IMPEncoderQpgMode)mode;
     int ret = IMP_Encoder_SetQpgMode(chn, &qpg);
     if (ret != 0)
@@ -2798,7 +2804,7 @@ int hal_enc_get_qpg_mode(void *ctx, int chn, int *mode)
     (void)ctx;
     if (!mode)
         return RSS_ERR_INVAL;
-#if defined(PLATFORM_T21) || defined(PLATFORM_T32)
+#if defined(PLATFORM_T21) || defined(HAL_HYBRID_SDK)
     IMPEncoderQpgMode qpg;
     int ret = IMP_Encoder_GetQpgMode(chn, &qpg);
     if (ret != 0) {
@@ -2825,7 +2831,7 @@ int hal_enc_set_qpg_ai(void *ctx, int chn, const uint8_t *map, uint32_t w, uint3
     if (!map)
         return RSS_ERR_INVAL;
 
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     IMPEncoderQpgAICfg aiCfg;
     memset(&aiCfg, 0, sizeof(aiCfg));
     aiCfg.map = (uint8_t *)map;
@@ -2953,7 +2959,7 @@ int hal_enc_set_gdr(void *ctx, int chn, const rss_enc_gdr_cfg_t *cfg)
     (void)ctx;
     if (!cfg)
         return RSS_ERR_INVAL;
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     IMPEncoderGDRCfg gdr;
     memset(&gdr, 0, sizeof(gdr));
     gdr.enable = cfg->enable;
@@ -2974,7 +2980,7 @@ int hal_enc_get_gdr(void *ctx, int chn, rss_enc_gdr_cfg_t *cfg)
     (void)ctx;
     if (!cfg)
         return RSS_ERR_INVAL;
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     IMPEncoderGDRCfg gdr;
     int ret = IMP_Encoder_GetGDRCfg(chn, &gdr);
     if (ret != 0) {
@@ -2994,7 +3000,7 @@ int hal_enc_get_gdr(void *ctx, int chn, rss_enc_gdr_cfg_t *cfg)
 int hal_enc_request_gdr(void *ctx, int chn, int gdr_frames)
 {
     (void)ctx;
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     int ret = IMP_Encoder_RequestGDR(chn, gdr_frames);
     if (ret != 0)
         HAL_LOG_ERR("RequestGDR(%d, %d) failed: %d", chn, gdr_frames, ret);
@@ -3011,7 +3017,7 @@ int hal_enc_insert_userdata(void *ctx, int chn, const void *data, uint32_t len)
     (void)ctx;
     if (!data || len == 0)
         return RSS_ERR_INVAL;
-#if defined(PLATFORM_T21) || defined(PLATFORM_T32)
+#if defined(PLATFORM_T21) || defined(HAL_HYBRID_SDK)
     int ret = IMP_Encoder_InsertUserData(chn, (void *)data, len);
     if (ret != 0)
         HAL_LOG_ERR("InsertUserData(%d, %u) failed: %d", chn, len, ret);
@@ -3031,7 +3037,7 @@ int hal_enc_set_h264_vui(void *ctx, int chn, const void *vui)
     (void)ctx;
     if (!vui)
         return RSS_ERR_INVAL;
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     int ret = IMP_Encoder_SetH264Vui(chn, (const IMPEncoderH264Vui *)vui);
     if (ret != 0)
         HAL_LOG_ERR("SetH264Vui(%d) failed: %d", chn, ret);
@@ -3047,7 +3053,7 @@ int hal_enc_get_h264_vui(void *ctx, int chn, void *vui)
     (void)ctx;
     if (!vui)
         return RSS_ERR_INVAL;
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     int ret = IMP_Encoder_GetH264Vui(chn, (IMPEncoderH264Vui *)vui);
     if (ret != 0)
         HAL_LOG_ERR("GetH264Vui(%d) failed: %d", chn, ret);
@@ -3063,7 +3069,7 @@ int hal_enc_set_h265_vui(void *ctx, int chn, const void *vui)
     (void)ctx;
     if (!vui)
         return RSS_ERR_INVAL;
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     int ret = IMP_Encoder_SetH265Vui(chn, (const IMPEncoderH265Vui *)vui);
     if (ret != 0)
         HAL_LOG_ERR("SetH265Vui(%d) failed: %d", chn, ret);
@@ -3079,7 +3085,7 @@ int hal_enc_get_h265_vui(void *ctx, int chn, void *vui)
     (void)ctx;
     if (!vui)
         return RSS_ERR_INVAL;
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     int ret = IMP_Encoder_GetH265Vui(chn, (IMPEncoderH265Vui *)vui);
     if (ret != 0)
         HAL_LOG_ERR("GetH265Vui(%d) failed: %d", chn, ret);
@@ -3095,7 +3101,7 @@ int hal_enc_set_h264_trans(void *ctx, int chn, const rss_enc_h264_trans_t *cfg)
     (void)ctx;
     if (!cfg)
         return RSS_ERR_INVAL;
-#if defined(PLATFORM_T21) || defined(PLATFORM_T32)
+#if defined(PLATFORM_T21) || defined(HAL_HYBRID_SDK)
     IMPEncoderH264TransCfg trans;
     trans.chroma_qp_index_offset = cfg->chroma_qp_index_offset;
     int ret = IMP_Encoder_SetH264TransCfg(chn, &trans);
@@ -3113,7 +3119,7 @@ int hal_enc_get_h264_trans(void *ctx, int chn, rss_enc_h264_trans_t *cfg)
     (void)ctx;
     if (!cfg)
         return RSS_ERR_INVAL;
-#if defined(PLATFORM_T21) || defined(PLATFORM_T32)
+#if defined(PLATFORM_T21) || defined(HAL_HYBRID_SDK)
     IMPEncoderH264TransCfg trans;
     int ret = IMP_Encoder_GetH264TransCfg(chn, &trans);
     if (ret != 0) {
@@ -3133,7 +3139,7 @@ int hal_enc_set_h265_trans(void *ctx, int chn, const rss_enc_h265_trans_t *cfg)
     (void)ctx;
     if (!cfg)
         return RSS_ERR_INVAL;
-#if defined(PLATFORM_T21) || defined(PLATFORM_T32)
+#if defined(PLATFORM_T21) || defined(HAL_HYBRID_SDK)
     IMPEncoderH265TransCfg trans;
     trans.chroma_cr_qp_offset = cfg->chroma_cr_qp_offset;
     trans.chroma_cb_qp_offset = cfg->chroma_cb_qp_offset;
@@ -3152,7 +3158,7 @@ int hal_enc_get_h265_trans(void *ctx, int chn, rss_enc_h265_trans_t *cfg)
     (void)ctx;
     if (!cfg)
         return RSS_ERR_INVAL;
-#if defined(PLATFORM_T21) || defined(PLATFORM_T32)
+#if defined(PLATFORM_T21) || defined(HAL_HYBRID_SDK)
     IMPEncoderH265TransCfg trans;
     int ret = IMP_Encoder_GetH265TransCfg(chn, &trans);
     if (ret != 0) {
@@ -3177,7 +3183,7 @@ int hal_enc_set_crop(void *ctx, int chn, const rss_enc_crop_cfg_t *cfg)
     (void)ctx;
     if (!cfg)
         return RSS_ERR_INVAL;
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     IMPEncoderCropCfg crop;
     memset(&crop, 0, sizeof(crop));
     crop.enable = cfg->enable;
@@ -3200,7 +3206,7 @@ int hal_enc_get_crop(void *ctx, int chn, rss_enc_crop_cfg_t *cfg)
     (void)ctx;
     if (!cfg)
         return RSS_ERR_INVAL;
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     IMPEncoderCropCfg crop;
     int ret = IMP_Encoder_GetChnCrop(chn, &crop);
     if (ret != 0) {
@@ -3369,7 +3375,7 @@ int hal_enc_get_jpeg_ql(void *ctx, int chn, rss_enc_jpeg_ql_t *ql)
 int hal_enc_set_jpeg_qp(void *ctx, int chn, int qp)
 {
     (void)ctx;
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     int ret = IMP_Encoder_SetJpegQp(chn, qp);
     if (ret != 0)
         HAL_LOG_ERR("SetJpegQp(%d, %d) failed: %d", chn, qp, ret);
@@ -3386,7 +3392,7 @@ int hal_enc_get_jpeg_qp(void *ctx, int chn, int *qp)
     (void)ctx;
     if (!qp)
         return RSS_ERR_INVAL;
-#if defined(PLATFORM_T32)
+#if defined(HAL_HYBRID_SDK)
     return IMP_Encoder_GetJpegQp(chn, qp);
 #else
     (void)chn;
