@@ -1910,7 +1910,7 @@ int hal_isp_set_wdr_mode(void *ctx, int mode)
 {
     (void)ctx;
 
-#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPISPTuningOpsMode ops = mode ? IMPISP_TUNING_OPS_MODE_ENABLE : IMPISP_TUNING_OPS_MODE_DISABLE;
     return IMP_ISP_WDR_ENABLE(IMPVI_MAIN, &ops);
 #elif defined(PLATFORM_T31)
@@ -1928,7 +1928,7 @@ int hal_isp_get_wdr_mode(void *ctx, int *mode)
     if (!mode)
         return RSS_ERR_INVAL;
 
-#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(PLATFORM_T32) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMPISPTuningOpsMode ops;
     int ret = IMP_ISP_WDR_ENABLE_GET(IMPVI_MAIN, &ops);
     if (ret != 0)
