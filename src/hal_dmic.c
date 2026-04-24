@@ -16,17 +16,11 @@
 
 #include "hal_internal.h"
 
-/* DMIC is available on T30/T31/T32/T40/T41 */
-#if defined(PLATFORM_T30) || defined(PLATFORM_T31) || defined(PLATFORM_T32) ||                     \
-    defined(PLATFORM_T40) || defined(PLATFORM_T41)
-#define HAL_HAS_DMIC
-#include <imp/imp_dmic.h>
 /* T30 header declares EnableAec but not DisableAec/DisableAecRefFrame
  * even though the functions exist in libimp.so */
 #if defined(PLATFORM_T30)
 int IMP_DMIC_DisableAec(int dmicDevId, int dmicChnId);
 int IMP_DMIC_DisableAecRefFrame(int dmicDevId, int dmicChnId);
-#endif
 #endif
 
 /* DMIC device and channel constants */

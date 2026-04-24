@@ -124,6 +124,11 @@ struct IMPISPEVAttr {
 #include <imp/imp_encoder.h>
 #include <imp/imp_isp.h>
 #include <imp/imp_audio.h>
+#if defined(PLATFORM_T30) || defined(PLATFORM_T31) || defined(PLATFORM_T32) ||                     \
+    defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#include <imp/imp_dmic.h>
+#define HAL_HAS_DMIC
+#endif
 #include <imp/imp_osd.h>
 #include <sysutils/su_base.h>
 
@@ -292,8 +297,14 @@ struct rss_hal_ctx {
     /* Per-channel vendor stream struct (reused across get/release_frame) */
     IMPEncoderStream stream_priv[RSS_MAX_ENC_CHANNELS];
 
+    /* Audio input type (AMIC or DMIC) */
+    rss_audio_input_t audio_input_type;
+
     /* Audio preallocated structs (reused across get/release calls) */
     IMPAudioFrame ai_frame_priv;
+#ifdef HAL_HAS_DMIC
+    IMPDmicChnFrame dmic_frame_priv;
+#endif
     IMPAudioStream aenc_stream_priv;
     IMPAudioStream adec_stream_priv;
 

@@ -23,6 +23,8 @@
 #define AI_CHN_ID 0
 #define AO_DEV_ID 0
 #define AO_CHN_ID 0
+#define DMIC_DEV_ID 0
+#define DMIC_CHN_ID 0
 
 /* Default polling timeout in milliseconds */
 #define AUDIO_POLL_TIMEOUT_MS 500
@@ -41,15 +43,10 @@
  *   T23/T32/T40/T41: { usrFrmDepth, aecChn, Rev }
  * ================================================================ */
 
-int hal_audio_init(void *ctx, const rss_audio_config_t *cfg)
+static int hal_audio_init_amic(const rss_audio_config_t *cfg)
 {
-    (void)ctx;
     int ret;
 
-    if (!cfg)
-        return RSS_ERR_INVAL;
-
-    /* Build IO attributes */
     IMPAudioIOAttr attr;
     memset(&attr, 0, sizeof(attr));
     attr.samplerate = (IMPAudioSampleRate)cfg->sample_rate;
@@ -57,29 +54,25 @@ int hal_audio_init(void *ctx, const rss_audio_config_t *cfg)
     attr.soundmode = (cfg->chn_count >= 2) ? AUDIO_SOUND_MODE_STEREO : AUDIO_SOUND_MODE_MONO;
     attr.frmNum = (cfg->frame_depth > 0) ? cfg->frame_depth : 20;
     attr.numPerFrm = cfg->samples_per_frame;
-    attr.chnCnt = 1; /* SDK supports only 1 channel per device */
+    attr.chnCnt = 1;
 
-    /* Step 1: set device attributes */
     ret = IMP_AI_SetPubAttr(AI_DEV_ID, &attr);
     if (ret != 0) {
         HAL_LOG_ERR("IMP_AI_SetPubAttr failed: %d", ret);
         return ret;
     }
 
-    /* Step 2: enable device */
     ret = IMP_AI_Enable(AI_DEV_ID);
     if (ret != 0) {
         HAL_LOG_ERR("IMP_AI_Enable failed: %d", ret);
         return ret;
     }
 
-    /* Step 3: set channel parameters */
     IMPAudioIChnParam param;
     memset(&param, 0, sizeof(param));
     param.usrFrmDepth = (cfg->frame_depth > 0) ? cfg->frame_depth : 20;
 #if defined(PLATFORM_T23) || defined(PLATFORM_T32) || defined(PLATFORM_T33) ||                     \
     defined(PLATFORM_T40) || defined(PLATFORM_T41)
-    /* Extended struct: set aecChn to default first channel */
     param.aecChn = 0;
 #endif
 
@@ -89,22 +82,18 @@ int hal_audio_init(void *ctx, const rss_audio_config_t *cfg)
         goto err_disable_dev;
     }
 
-    /* Step 4: enable channel */
     ret = IMP_AI_EnableChn(AI_DEV_ID, AI_CHN_ID);
     if (ret != 0) {
         HAL_LOG_ERR("IMP_AI_EnableChn failed: %d", ret);
         goto err_disable_dev;
     }
 
-    /* Apply initial volume and gain if non-default */
-    if (cfg->ai_vol != 0) {
+    if (cfg->ai_vol != 0)
         IMP_AI_SetVol(AI_DEV_ID, AI_CHN_ID, cfg->ai_vol);
-    }
-    if (cfg->ai_gain != 0) {
+    if (cfg->ai_gain != 0)
         IMP_AI_SetGain(AI_DEV_ID, AI_CHN_ID, cfg->ai_gain);
-    }
 
-    HAL_LOG_INFO("audio init: rate=%d samples=%d depth=%d", cfg->sample_rate,
+    HAL_LOG_INFO("audio init: amic rate=%d samples=%d depth=%d", cfg->sample_rate,
                  cfg->samples_per_frame, cfg->frame_depth);
     return RSS_OK;
 
@@ -113,24 +102,115 @@ err_disable_dev:
     return ret;
 }
 
+#ifdef HAL_HAS_DMIC
+static int hal_audio_init_dmic(const rss_audio_config_t *cfg)
+{
+    int ret;
+    int dmic_cnt = cfg->dmic_count > 0 ? cfg->dmic_count : 1;
+    int aec_id = cfg->dmic_aec_id;
+    int need_aec = (aec_id >= 0) ? 1 : 0;
+
+    ret = IMP_DMIC_SetUserInfo(DMIC_DEV_ID, aec_id >= 0 ? aec_id : 0, need_aec);
+    if (ret != 0) {
+        HAL_LOG_ERR("IMP_DMIC_SetUserInfo failed: %d", ret);
+        return ret;
+    }
+
+    IMPDmicAttr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.samplerate = (IMPDmicSampleRate)cfg->sample_rate;
+    attr.bitwidth = DMIC_BIT_WIDTH_16;
+    attr.soundmode = DMIC_SOUND_MODE_MONO;
+    attr.frmNum = (cfg->frame_depth > 0) ? cfg->frame_depth : 25;
+    attr.numPerFrm = cfg->samples_per_frame;
+    attr.chnCnt = dmic_cnt;
+
+    ret = IMP_DMIC_SetPubAttr(DMIC_DEV_ID, &attr);
+    if (ret != 0) {
+        HAL_LOG_ERR("IMP_DMIC_SetPubAttr failed: %d", ret);
+        return ret;
+    }
+
+    ret = IMP_DMIC_Enable(DMIC_DEV_ID);
+    if (ret != 0) {
+        HAL_LOG_ERR("IMP_DMIC_Enable failed: %d", ret);
+        return ret;
+    }
+
+    IMPDmicChnParam param;
+    memset(&param, 0, sizeof(param));
+    param.usrFrmDepth = (cfg->frame_depth > 0) ? cfg->frame_depth : 25;
+
+    ret = IMP_DMIC_SetChnParam(DMIC_DEV_ID, DMIC_CHN_ID, &param);
+    if (ret != 0) {
+        HAL_LOG_ERR("IMP_DMIC_SetChnParam failed: %d", ret);
+        goto err_disable_dev;
+    }
+
+    ret = IMP_DMIC_EnableChn(DMIC_DEV_ID, DMIC_CHN_ID);
+    if (ret != 0) {
+        HAL_LOG_ERR("IMP_DMIC_EnableChn failed: %d", ret);
+        goto err_disable_dev;
+    }
+
+    if (cfg->ai_vol != 0)
+        IMP_DMIC_SetVol(DMIC_DEV_ID, DMIC_CHN_ID, cfg->ai_vol);
+    if (cfg->ai_gain != 0)
+        IMP_DMIC_SetGain(DMIC_DEV_ID, DMIC_CHN_ID, cfg->ai_gain);
+
+    HAL_LOG_INFO("audio init: dmic rate=%d samples=%d depth=%d cnt=%d", cfg->sample_rate,
+                 cfg->samples_per_frame, cfg->frame_depth, dmic_cnt);
+    return RSS_OK;
+
+err_disable_dev:
+    IMP_DMIC_Disable(DMIC_DEV_ID);
+    return ret;
+}
+#endif
+
+int hal_audio_init(void *ctx, const rss_audio_config_t *cfg)
+{
+    if (!cfg)
+        return RSS_ERR_INVAL;
+
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
+    c->audio_input_type = cfg->input_type;
+
+#ifdef HAL_HAS_DMIC
+    if (cfg->input_type == RSS_AUDIO_INPUT_DMIC)
+        return hal_audio_init_dmic(cfg);
+#endif
+    return hal_audio_init_amic(cfg);
+}
+
 /* ================================================================
  * AUDIO INPUT DEINIT
  * ================================================================ */
 
 int hal_audio_deinit(void *ctx)
 {
-    (void)ctx;
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
     int ret;
     int first_err = 0;
+
+#ifdef HAL_HAS_DMIC
+    if (c->audio_input_type == RSS_AUDIO_INPUT_DMIC) {
+        ret = IMP_DMIC_DisableChn(DMIC_DEV_ID, DMIC_CHN_ID);
+        if (ret != 0 && first_err == 0)
+            first_err = ret;
+        ret = IMP_DMIC_Disable(DMIC_DEV_ID);
+        if (ret != 0 && first_err == 0)
+            first_err = ret;
+        return first_err;
+    }
+#endif
 
     ret = IMP_AI_DisableChn(AI_DEV_ID, AI_CHN_ID);
     if (ret != 0 && first_err == 0)
         first_err = ret;
-
     ret = IMP_AI_Disable(AI_DEV_ID);
     if (ret != 0 && first_err == 0)
         first_err = ret;
-
     return first_err;
 }
 
@@ -144,13 +224,23 @@ int hal_audio_deinit(void *ctx)
 
 int hal_audio_set_volume(void *ctx, int dev, int chn, int vol)
 {
-    (void)ctx;
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
+#ifdef HAL_HAS_DMIC
+    if (c->audio_input_type == RSS_AUDIO_INPUT_DMIC)
+        return IMP_DMIC_SetVol(DMIC_DEV_ID, DMIC_CHN_ID, vol);
+#endif
+    (void)c;
     return IMP_AI_SetVol(dev, chn, vol);
 }
 
 int hal_audio_set_gain(void *ctx, int dev, int chn, int gain)
 {
-    (void)ctx;
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
+#ifdef HAL_HAS_DMIC
+    if (c->audio_input_type == RSS_AUDIO_INPUT_DMIC)
+        return IMP_DMIC_SetGain(DMIC_DEV_ID, DMIC_CHN_ID, gain);
+#endif
+    (void)c;
     return IMP_AI_SetGain(dev, chn, gain);
 }
 
@@ -290,34 +380,54 @@ int hal_audio_disable_agc(void *ctx)
 
 int hal_audio_read_frame(void *ctx, int dev, int chn, rss_audio_frame_t *frame, bool block)
 {
-    (void)ctx;
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
 
     if (!frame)
         return RSS_ERR_INVAL;
 
-    /* Poll for available data */
+#ifdef HAL_HAS_DMIC
+    if (c->audio_input_type == RSS_AUDIO_INPUT_DMIC) {
+        (void)dev;
+        (void)chn;
+        int ret = IMP_DMIC_PollingFrame(DMIC_DEV_ID, DMIC_CHN_ID, AUDIO_POLL_TIMEOUT_MS);
+        if (ret != 0)
+            return (ret == -2) ? RSS_ERR_TIMEOUT : ret;
+
+        memset(&c->dmic_frame_priv, 0, sizeof(c->dmic_frame_priv));
+        ret = IMP_DMIC_GetFrame(DMIC_DEV_ID, DMIC_CHN_ID, &c->dmic_frame_priv,
+                                block ? BLOCK : NOBLOCK);
+        if (ret != 0)
+            return ret;
+
+        /* AEC-processed single-channel data if available, else raw */
+        IMPDmicFrame *src = c->dmic_frame_priv.aecFrame.virAddr ? &c->dmic_frame_priv.aecFrame
+                                                                : &c->dmic_frame_priv.rawFrame;
+        frame->data = (const int16_t *)src->virAddr;
+        frame->length = (uint32_t)src->len;
+        frame->timestamp = src->timeStamp;
+        frame->seq = (uint32_t)src->seq;
+        frame->_priv = &c->dmic_frame_priv;
+        return RSS_OK;
+    }
+#endif
+
     int ret = IMP_AI_PollingFrame(dev, chn, AUDIO_POLL_TIMEOUT_MS);
     if (ret != 0)
         return (ret == -2) ? RSS_ERR_TIMEOUT : ret;
 
-    /* Get the frame */
     IMPAudioFrame ai_frame;
     memset(&ai_frame, 0, sizeof(ai_frame));
     ret = IMP_AI_GetFrame(dev, chn, &ai_frame, block ? BLOCK : NOBLOCK);
     if (ret != 0)
         return ret;
 
-    /* Fill the HAL frame struct */
     frame->data = (const int16_t *)ai_frame.virAddr;
     frame->length = (uint32_t)ai_frame.len;
     frame->timestamp = ai_frame.timeStamp;
     frame->seq = (uint32_t)ai_frame.seq;
 
-    /* Store in preallocated slot (avoids per-frame malloc) */
-    rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
     memcpy(&c->ai_frame_priv, &ai_frame, sizeof(IMPAudioFrame));
     frame->_priv = &c->ai_frame_priv;
-
     return RSS_OK;
 }
 
@@ -330,14 +440,23 @@ int hal_audio_read_frame(void *ctx, int dev, int chn, rss_audio_frame_t *frame, 
 
 int hal_audio_release_frame(void *ctx, int dev, int chn, rss_audio_frame_t *frame)
 {
-    (void)ctx;
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
 
     if (!frame || !frame->_priv)
         return RSS_OK;
 
+#ifdef HAL_HAS_DMIC
+    if (c->audio_input_type == RSS_AUDIO_INPUT_DMIC) {
+        (void)dev;
+        (void)chn;
+        int ret = IMP_DMIC_ReleaseFrame(DMIC_DEV_ID, DMIC_CHN_ID, frame->_priv);
+        frame->_priv = NULL;
+        return ret;
+    }
+#endif
+
     IMP_AI_ReleaseFrame(dev, chn, frame->_priv);
     frame->_priv = NULL;
-
     return RSS_OK;
 }
 
@@ -641,29 +760,49 @@ int hal_audio_set_aec_profile_path(void *ctx, const char *dir)
 
 int hal_audio_enable_aec(void *ctx, int ai_dev, int ai_chn, int ao_dev, int ao_chn)
 {
-    (void)ctx;
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
+#ifdef HAL_HAS_DMIC
+    if (c->audio_input_type == RSS_AUDIO_INPUT_DMIC)
+        return IMP_DMIC_EnableAec(DMIC_DEV_ID, DMIC_CHN_ID, ao_dev, ao_chn);
+#endif
+    (void)c;
     return IMP_AI_EnableAec(ai_dev, ai_chn, ao_dev, ao_chn);
 }
 
 int hal_audio_disable_aec(void *ctx)
 {
-    (void)ctx;
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
+#ifdef HAL_HAS_DMIC
+    if (c->audio_input_type == RSS_AUDIO_INPUT_DMIC)
+        return IMP_DMIC_DisableAec(DMIC_DEV_ID, DMIC_CHN_ID);
+#endif
+    (void)c;
     return IMP_AI_DisableAec(AI_DEV_ID, AI_CHN_ID);
 }
 
 int hal_audio_get_volume(void *ctx, int dev, int chn, int *vol)
 {
-    (void)ctx;
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
     if (!vol)
         return RSS_ERR_INVAL;
+#ifdef HAL_HAS_DMIC
+    if (c->audio_input_type == RSS_AUDIO_INPUT_DMIC)
+        return IMP_DMIC_GetVol(DMIC_DEV_ID, DMIC_CHN_ID, vol);
+#endif
+    (void)c;
     return IMP_AI_GetVol(dev, chn, vol);
 }
 
 int hal_audio_get_gain(void *ctx, int dev, int chn, int *gain)
 {
-    (void)ctx;
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
     if (!gain)
         return RSS_ERR_INVAL;
+#ifdef HAL_HAS_DMIC
+    if (c->audio_input_type == RSS_AUDIO_INPUT_DMIC)
+        return IMP_DMIC_GetGain(DMIC_DEV_ID, DMIC_CHN_ID, gain);
+#endif
+    (void)c;
     return IMP_AI_GetGain(dev, chn, gain);
 }
 

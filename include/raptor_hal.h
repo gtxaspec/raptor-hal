@@ -386,6 +386,12 @@ typedef enum {
     RSS_AUDIO_RATE_48000 = 48000,
 } rss_audio_rate_t;
 
+/* Audio input type */
+typedef enum {
+    RSS_AUDIO_INPUT_AMIC = 0, /* Analog microphone (IMP_AI_*) */
+    RSS_AUDIO_INPUT_DMIC = 1, /* Digital microphone array (IMP_DMIC_*) */
+} rss_audio_input_t;
+
 /* Audio device and channel configuration */
 typedef struct {
     rss_audio_rate_t sample_rate;
@@ -394,6 +400,9 @@ typedef struct {
     int frame_depth; /* usrFrmDepth [2..50] */
     int ai_vol;      /* [-30..120], 60=unity */
     int ai_gain;     /* [0..31] */
+    rss_audio_input_t input_type; /* AMIC or DMIC */
+    int dmic_count;  /* DMIC: number of mics (1/2/4), 0=auto */
+    int dmic_aec_id; /* DMIC: which mic for AEC processing (0-3) */
 } rss_audio_config_t;
 
 /* ISP image tuning values; 128 = neutral */
