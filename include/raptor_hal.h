@@ -1025,6 +1025,7 @@ typedef struct rss_hal_ops {
     int (*audio_unregister_encoder)(void *ctx, int handle);
 
     /* AI additional */
+    int (*audio_set_aec_profile_path)(void *ctx, const char *dir);
     int (*audio_enable_aec)(void *ctx, int ai_dev, int ai_chn, int ao_dev, int ao_chn);
     int (*audio_disable_aec)(void *ctx);
     int (*audio_get_volume)(void *ctx, int dev, int chn, int *vol);

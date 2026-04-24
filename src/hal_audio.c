@@ -77,7 +77,8 @@ int hal_audio_init(void *ctx, const rss_audio_config_t *cfg)
     IMPAudioIChnParam param;
     memset(&param, 0, sizeof(param));
     param.usrFrmDepth = (cfg->frame_depth > 0) ? cfg->frame_depth : 20;
-#if defined(PLATFORM_T23) || defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(PLATFORM_T23) || defined(PLATFORM_T32) || defined(PLATFORM_T33) ||                     \
+    defined(PLATFORM_T40) || defined(PLATFORM_T41)
     /* Extended struct: set aecChn to default first channel */
     param.aecChn = 0;
 #endif
@@ -626,6 +627,18 @@ int hal_ao_set_gain(void *ctx, int gain)
  * IMP_AI_EnableAec(aiDevId, aiChn, aoDevId, aoChn)
  * Identical across all SoCs that support it.
  */
+int hal_audio_set_aec_profile_path(void *ctx, const char *dir)
+{
+    (void)ctx;
+#if defined(PLATFORM_T23) || defined(PLATFORM_T31) || defined(PLATFORM_T32) ||                     \
+    defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+    return IMP_AI_Set_WebrtcProfileIni_Path((char *)dir);
+#else
+    (void)dir;
+    return 0;
+#endif
+}
+
 int hal_audio_enable_aec(void *ctx, int ai_dev, int ai_chn, int ao_dev, int ao_chn)
 {
     (void)ctx;

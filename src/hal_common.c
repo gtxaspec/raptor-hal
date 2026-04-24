@@ -344,6 +344,7 @@ extern int hal_audio_read_frame(void *ctx, int dev, int chn, rss_audio_frame_t *
 extern int hal_audio_release_frame(void *ctx, int dev, int chn, rss_audio_frame_t *frame);
 extern int hal_audio_register_encoder(void *ctx, const rss_audio_encoder_t *enc, int *handle);
 extern int hal_audio_unregister_encoder(void *ctx, int handle);
+extern int hal_audio_set_aec_profile_path(void *ctx, const char *dir);
 extern int hal_audio_enable_aec(void *ctx, int ai_dev, int ai_chn, int ao_dev, int ao_chn);
 extern int hal_audio_disable_aec(void *ctx);
 extern int hal_audio_get_volume(void *ctx, int dev, int chn, int *vol);
@@ -961,6 +962,7 @@ static const rss_hal_ops_t g_ops = {
     .audio_release_frame = hal_audio_release_frame,
     .audio_register_encoder = hal_audio_register_encoder,
     .audio_unregister_encoder = hal_audio_unregister_encoder,
+    .audio_set_aec_profile_path = hal_audio_set_aec_profile_path,
     .audio_enable_aec = hal_audio_enable_aec,
     .audio_disable_aec = hal_audio_disable_aec,
     .audio_get_volume = hal_audio_get_volume,
