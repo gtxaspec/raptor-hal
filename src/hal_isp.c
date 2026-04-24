@@ -400,20 +400,30 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
     exposure->exposure_time =
         (uint32_t)expr.g_attr.integration_time * (uint32_t)expr.g_attr.one_line_expr_in_us;
 
-    /* AE luma */
+    /* AE luma + EV */
+    IMPISPEVAttr ev_attr;
+    memset(&ev_attr, 0, sizeof(ev_attr));
+    ret = IMP_ISP_Tuning_GetEVAttr(&ev_attr);
+    if (ret == 0)
+        exposure->ev = ev_attr.ev;
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
     int luma = 0;
     ret = IMP_ISP_Tuning_GetAeLuma(&luma);
     if (ret == 0)
         exposure->ae_luma = (uint32_t)luma;
 #else
-    /* T20/T21/T30: use EV attr for luma approximation */
-    IMPISPEVAttr ev_attr;
-    memset(&ev_attr, 0, sizeof(ev_attr));
-    ret = IMP_ISP_Tuning_GetEVAttr(&ev_attr);
-    if (ret == 0)
-        exposure->ae_luma = ev_attr.ev;
+    /* T20/T21/T30: no GetAeLuma, use EV as luma approximation */
+    exposure->ae_luma = exposure->ev;
 #endif
+
+    /* AWB R/B gain statistics */
+    IMPISPWB wb_statis;
+    memset(&wb_statis, 0, sizeof(wb_statis));
+    ret = IMP_ISP_Tuning_GetWB_Statis(&wb_statis);
+    if (ret == 0) {
+        exposure->wb_rgain = wb_statis.rgain;
+        exposure->wb_bgain = wb_statis.bgain;
+    }
 
     return RSS_OK;
 #endif

@@ -396,13 +396,13 @@ typedef enum {
 typedef struct {
     rss_audio_rate_t sample_rate;
     int samples_per_frame;
-    int chn_count;   /* 1=mono, 2=stereo */
-    int frame_depth; /* usrFrmDepth [2..50] */
-    int ai_vol;      /* [-30..120], 60=unity */
-    int ai_gain;     /* [0..31] */
+    int chn_count;                /* 1=mono, 2=stereo */
+    int frame_depth;              /* usrFrmDepth [2..50] */
+    int ai_vol;                   /* [-30..120], 60=unity */
+    int ai_gain;                  /* [0..31] */
     rss_audio_input_t input_type; /* AMIC or DMIC */
-    int dmic_count;  /* DMIC: number of mics (1/2/4), 0=auto */
-    int dmic_aec_id; /* DMIC: which mic for AEC processing (0-3) */
+    int dmic_count;               /* DMIC: number of mics (1/2/4), 0=auto */
+    int dmic_aec_id;              /* DMIC: which mic for AEC processing (0-3) */
 } rss_audio_config_t;
 
 /* ISP image tuning values; 128 = neutral */
@@ -504,6 +504,9 @@ typedef struct {
     uint32_t total_gain;
     uint32_t exposure_time; /* microseconds */
     uint32_t ae_luma;
+    uint32_t ev;       /* EV from GetEVAttr (T20-T31) */
+    uint16_t wb_rgain; /* AWB red gain from GetWB_Statis (T20-T31) */
+    uint16_t wb_bgain; /* AWB blue gain from GetWB_Statis (T20-T31) */
 } rss_exposure_t;
 
 /* White balance mode (matches ISP_CORE_WB_MODE_* from libimp) */
@@ -779,7 +782,7 @@ typedef struct rss_hal_ops {
     int (*enc_set_pool)(void *ctx, int chn, int pool_id);
     int (*enc_get_pool)(void *ctx, int chn);
     int (*enc_get_rmem_info)(void *ctx, uintptr_t *virt_base, uint32_t *size,
-                               uint32_t *mmap_offset);
+                             uint32_t *mmap_offset);
     int (*enc_inject_stream_shm)(void *ctx, int chn, void *shm_addr, uint32_t shm_size);
 
     /* Encoder: Phase 1 — Bandwidth reduction */
