@@ -378,6 +378,19 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
 #endif
     /* AE luma is not available in AEExprInfo; leave as 0 */
     exposure->ae_luma = 0;
+
+    /* EV from ExposureValue (uint32_t on T40, uint64_t on T32/T41) */
+    exposure->ev = (uint32_t)expr_info.ExposureValue;
+
+    /* AWB R/B gain from GetAwbGlobalStatistics */
+    IMPISPAWBGlobalStatisInfo awb_statis;
+    memset(&awb_statis, 0, sizeof(awb_statis));
+    ret = IMP_ISP_Tuning_GetAwbGlobalStatistics(IMPVI_MAIN, &awb_statis);
+    if (ret == 0) {
+        exposure->wb_rgain = (uint16_t)awb_statis.statis_gol_gain.rgain;
+        exposure->wb_bgain = (uint16_t)awb_statis.statis_gol_gain.bgain;
+    }
+
     return RSS_OK;
 #else
     /* Gen1/Gen2: two separate calls */
