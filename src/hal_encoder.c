@@ -312,7 +312,7 @@ static int hal_enc_create_channel_old(int chn, const rss_video_config_t *cfg)
     chnAttr.rcAttr.outFrmRate.frmRateNum = cfg->fps_num;
     chnAttr.rcAttr.outFrmRate.frmRateDen = cfg->fps_den;
 
-    /* GOP */
+    /* GOP — old SDK rounds maxGop up to the next multiple of fps */
     chnAttr.rcAttr.maxGop = cfg->gop_length;
 
     /* Rate control mode */
