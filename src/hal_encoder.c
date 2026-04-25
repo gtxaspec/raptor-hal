@@ -516,10 +516,12 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
 #else
     {
         int max_scene = (cfg->max_same_scene_cnt > 0) ? (int)cfg->max_same_scene_cnt : 2;
+        uint32_t br_kbps = (rc == IMP_ENC_RC_MODE_FIXQP) ? 0 : cfg->bitrate / 1000;
+        if (rc == IMP_ENC_RC_MODE_FIXQP && init_qp < 0)
+            init_qp = 35;
         ret = IMP_Encoder_SetDefaultParam(&chnAttr, profile, rc, cfg->width, cfg->height,
                                           cfg->fps_num, cfg->fps_den, cfg->gop_length, max_scene,
-                                          init_qp, cfg->bitrate / 1000 /* SDK expects kbps */
-        );
+                                          init_qp, br_kbps);
     }
 #endif
     if (ret != 0) {
