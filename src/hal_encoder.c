@@ -422,11 +422,12 @@ static int hal_enc_create_channel_old(int chn, const rss_video_config_t *cfg)
         break;
     }
 
-    /* I/P frame pattern (matching prudynt): N1X skip with m = GOP-1 P-frames.
-     * Required on old SDK — without this the encoder produces all-IDR. */
+    /* hSkip controls hierarchical frame reference patterns (H1M mode),
+     * not the IDR interval. For N1X (normal I/P encoding), the SDK
+     * ignores m/n — IDR interval is controlled solely by maxGop.
+     * Tested: identical output with and without hSkip on T20/jxf23.
+     * Keep N1X for compatibility with prudynt-based configurations. */
     chnAttr.rcAttr.attrHSkip.hSkipAttr.skipType = IMP_Encoder_STYPE_N1X;
-    chnAttr.rcAttr.attrHSkip.hSkipAttr.m = cfg->gop_length > 1 ? cfg->gop_length - 1 : 1;
-    chnAttr.rcAttr.attrHSkip.hSkipAttr.n = 1;
     chnAttr.rcAttr.attrHSkip.maxHSkipType = IMP_Encoder_STYPE_N1X;
 
 #if defined(PLATFORM_T23)
