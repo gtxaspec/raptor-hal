@@ -1212,7 +1212,7 @@ static inline int rss_hal_init_single(const rss_hal_ops_t *ops, void *ctx,
     rss_multi_sensor_config_t m = {0};
     m.sensor_count = 1;
     m.sensors[0] = *sensor;
-    return ops->init ? ops->init(ctx, &m) : -1;
+    return ops->init ? ops->init(ctx, &m) : RSS_ERR_NOTSUP;
 }
 
 /* ================================================================
