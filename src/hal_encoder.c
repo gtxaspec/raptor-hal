@@ -2041,10 +2041,16 @@ int hal_enc_get_rmem_info(void *ctx, uintptr_t *virt_base, uint32_t *size, uint3
  * Runtime-probes the libimp channel struct by writing a marker via
  * SetMaxStreamCnt, scanning libimp's data segment for it, then writing
  * the SHM address to the external buffer fields. Must be called BEFORE
- * IMP_Encoder_CreateChn. Works on all Ingenic VPU SoCs (T10-T30/T32/T33).
+ * IMP_Encoder_CreateChn.
  *
- * The external buffer fields are at a fixed offset (+8, +12) relative to
- * the max_stream_cnt field in the channel struct — verified via Ghidra RE.
+ * WARNING: this is a fragile technique that relies on the internal layout
+ * of libimp's channel struct. A vendor SDK update that changes the struct
+ * layout will silently corrupt encoder state. The marker-verify step
+ * catches some false positives but not all. Only used on old-SDK SoCs
+ * (T10-T30/T32/T33) where no official external-buffer API exists.
+ *
+ * The shm_addr and shm_size values come from the caller (RVD) which
+ * creates the SHM internally — they are NOT from external input.
  */
 static int find_libimp_rw_region(uintptr_t *start, size_t *size)
 {
@@ -2125,8 +2131,7 @@ int hal_enc_inject_stream_shm(void *ctx, int chn, void *shm_addr, uint32_t shm_s
     }
 
     /* ext_buf = marker_addr + 8, ext_size = marker_addr + 12
-     * Offset verified via Ghidra RE of T20 channel struct.
-     * Assumed consistent across T10-T30/T32/T33 Ingenic VPU SoCs. */
+     * Offsets verified on T20/T23/T30 libimp channel struct layout. */
     uint32_t *ext_buf = (uint32_t *)(marker_addr + 8);
     uint32_t *ext_sz = (uint32_t *)(marker_addr + 12);
 
