@@ -519,7 +519,7 @@ typedef enum {
     RSS_WB_FLUORESCENT = 5,
     RSS_WB_TWILIGHT = 6,
     RSS_WB_SHADE = 7,
-    RSS_WB_WARM_FLOURESCENT = 8,
+    RSS_WB_WARM_FLUORESCENT = 8,
     RSS_WB_CUSTOM = 9,
 } rss_wb_mode_t;
 
