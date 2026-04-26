@@ -174,6 +174,11 @@ extern "C" void *hal_jzdl_create(const rss_ivs_jzdl_param_t *param)
     if (!param)
         return NULL;
 
+    if (strnlen(param->model_path, sizeof(param->model_path)) >= sizeof(param->model_path)) {
+        HAL_LOG_ERR("JZDL: model_path not null-terminated");
+        return NULL;
+    }
+
     jzdl::BaseNet *net = jzdl::net_create();
     if (!net) {
         HAL_LOG_ERR("JZDL: net_create failed");
