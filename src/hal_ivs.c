@@ -293,7 +293,16 @@ void *hal_ivs_create_base_move_interface(void *ctx, void *param)
     (void)ctx;
     if (!param)
         return NULL;
-    return (void *)IMP_IVS_CreateBaseMoveInterface(param);
+
+    const rss_ivs_base_move_param_t *rp = (const rss_ivs_base_move_param_t *)param;
+    IMP_IVS_BaseMoveParam bp;
+    memset(&bp, 0, sizeof(bp));
+    bp.skipFrameCnt = rp->skip_frame_count;
+    bp.sense = rp->sense;
+    bp.frameInfo.width = rp->width;
+    bp.frameInfo.height = rp->height;
+
+    return (void *)IMP_IVS_CreateBaseMoveInterface(&bp);
 }
 
 int hal_ivs_destroy_base_move_interface(void *ctx, void *handle)
