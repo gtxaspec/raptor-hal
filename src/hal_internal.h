@@ -318,8 +318,6 @@ struct rss_hal_ctx {
  * 9. Internal Function Declarations
  * ═══════════════════════════════════════════════════════════════════════ */
 
-/* hal_caps.c */
-const rss_hal_caps_t *hal_caps_get(void);
 
 /* ═══════════════════════════════════════════════════════════════════════
  * 10. Input Clamping

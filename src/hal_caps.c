@@ -808,11 +808,3 @@ const rss_hal_caps_t g_hal_caps = {
 #error "No PLATFORM_* defined. Set one of: PLATFORM_T20 T21 T23 T30 T31 T32 T33 T40 T41"
 #endif
 
-/* ═══════════════════════════════════════════════════════════════════════
- * Public accessor
- * ═══════════════════════════════════════════════════════════════════════ */
-
-const rss_hal_caps_t *hal_caps_get(void)
-{
-    return &g_hal_caps;
-}
