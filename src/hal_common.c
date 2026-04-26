@@ -1528,6 +1528,8 @@ const rss_hal_ops_t *rss_hal_get_ops(rss_hal_ctx_t *ctx)
 
 int rss_hal_get_imp_version(char *buf, int size)
 {
+    if (!buf || size <= 0)
+        return -EINVAL;
     IMPVersion ver;
     memset(&ver, 0, sizeof(ver));
     int ret = IMP_System_GetVersion(&ver);
@@ -1541,6 +1543,8 @@ __attribute__((weak)) int SU_Base_GetVersion(SUVersion *ver);
 
 int rss_hal_get_sysutils_version(char *buf, int size)
 {
+    if (!buf || size <= 0)
+        return -EINVAL;
     if (!SU_Base_GetVersion)
         return -1;
     SUVersion ver;
