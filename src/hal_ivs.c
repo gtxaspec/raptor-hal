@@ -17,6 +17,7 @@
 
 #include <imp/imp_ivs.h>
 #include <imp/imp_ivs_move.h>
+#include <imp/imp_ivs_base_move.h>
 
 /*
  * PersonDet SDK types — from ivs_common.h / ivs_inf_personDet.h.
@@ -274,15 +275,7 @@ int hal_ivs_destroy_move_interface(void *ctx, void *handle)
  * IMP_IVS_CreateBaseMoveInterface / DestroyBaseMoveInterface are
  * available on all SoCs via imp_ivs_base_move.h.  They provide a
  * simpler motion detection algorithm without ROI support.
- *
- * These are declared in imp_ivs_base_move.h.  Since that header
- * may not be present in all SDK versions, we declare them extern
- * here and let the linker resolve them from libimp.so.
  * ================================================================ */
-
-/* Forward declarations -- present in libimp.so on all SoCs */
-extern IMPIVSInterface *IMP_IVS_CreateBaseMoveInterface(void *param);
-extern void IMP_IVS_DestroyBaseMoveInterface(IMPIVSInterface *iface);
 
 void *hal_ivs_create_base_move_interface(void *ctx, void *param)
 {
