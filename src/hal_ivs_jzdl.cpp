@@ -10,7 +10,9 @@
  * Requires: libjzdl.m.so (standalone JZDL with BaseNet API)
  */
 
+#ifndef JZ_MXU
 #define JZ_MXU 0
+#endif
 
 extern "C" {
 #include "hal_internal.h"
@@ -189,7 +191,7 @@ extern "C" void *hal_jzdl_create(const rss_ivs_jzdl_param_t *param)
 
     if (net->load_model(param->model_path) != 0) {
         HAL_LOG_ERR("JZDL: failed to load model: %s", param->model_path);
-        jzdl::net_destory(net);
+        jzdl::net_destory(net); /* sic — vendor typo in JZDL API */
         return NULL;
     }
 
