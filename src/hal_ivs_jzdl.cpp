@@ -201,6 +201,13 @@ extern "C" void *hal_jzdl_create(const rss_ivs_jzdl_param_t *param)
         return NULL;
     }
 
+    if (param->width <= 0 || param->height <= 0 || param->width > 8192 || param->height > 8192) {
+        HAL_LOG_ERR("JZDL: invalid frame dimensions %dx%d", param->width, param->height);
+        jzdl::net_destory(net);
+        delete ctx;
+        return NULL;
+    }
+
     ctx->net = net;
     ctx->input_w = (int)shape[0];
     ctx->input_h = (int)shape[1];
