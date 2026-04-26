@@ -16,6 +16,12 @@
 
 #include "hal_internal.h"
 
+/* T30 header declares EnableAec but not DisableAec even though
+ * the function exists in libimp.so */
+#if defined(PLATFORM_T30) && defined(HAL_HAS_DMIC)
+int IMP_DMIC_DisableAec(int dmicDevId, int dmicChnId);
+#endif
+
 /* Audio device and channel constants */
 /* T31-X: analog mic is device 1; T31-N: device 0
  * TODO: make this configurable via rss_audio_config_t */
