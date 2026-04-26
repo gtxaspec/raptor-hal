@@ -190,6 +190,7 @@ int hal_audio_init(void *ctx, const rss_audio_config_t *cfg)
 int hal_audio_deinit(void *ctx)
 {
     rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
+    (void)c;
     int ret;
     int first_err = 0;
 
@@ -442,6 +443,7 @@ int hal_audio_read_frame(void *ctx, int dev, int chn, rss_audio_frame_t *frame, 
 int hal_audio_release_frame(void *ctx, int dev, int chn, rss_audio_frame_t *frame)
 {
     rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
+    (void)c;
 
     if (!frame || !frame->_priv)
         return RSS_OK;
