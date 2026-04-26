@@ -3354,6 +3354,8 @@ int hal_enc_set_jpeg_ql(void *ctx, int chn, const rss_enc_jpeg_ql_t *ql)
     if (!ql)
         return RSS_ERR_INVAL;
 #if defined(HAL_OLD_SDK)
+    _Static_assert(sizeof(((IMPEncoderJpegeQl *)0)->qmem_table) == sizeof(ql->qmem_table),
+                   "JPEG quant table size mismatch");
     IMPEncoderJpegeQl jql;
     jql.user_ql_en = ql->user_table_en;
     memcpy(jql.qmem_table, ql->qmem_table, sizeof(jql.qmem_table));
