@@ -253,12 +253,8 @@ void *hal_ivs_create_move_interface(void *ctx, void *param)
         mp.roiRect[i].p1.y = rp->roi[i].p1_y;
     }
 
-    HAL_LOG_INFO("IVS move param: %dx%d, roi_count=%d, sense[0]=%d, skip=%d", mp.frameInfo.width,
+    HAL_LOG_INFO("IVS move: %dx%d roi=%d sense[0]=%d skip=%d", mp.frameInfo.width,
                  mp.frameInfo.height, mp.roiRectCnt, mp.sense[0], mp.skipFrameCnt);
-    HAL_LOG_INFO("IVS roi[0]: (%d,%d)-(%d,%d)", mp.roiRect[0].p0.x, mp.roiRect[0].p0.y,
-                 mp.roiRect[0].p1.x, mp.roiRect[0].p1.y);
-    HAL_LOG_INFO("IVS sizeof(IMP_IVS_MoveParam)=%zu sizeof(IMPFrameInfo)=%zu",
-                 sizeof(IMP_IVS_MoveParam), sizeof(IMPFrameInfo));
 
     return (void *)IMP_IVS_CreateMoveInterface(&mp);
 }
