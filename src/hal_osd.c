@@ -449,7 +449,6 @@ int hal_osd_set_region_attr_with_timestamp(void *ctx, int handle, const rss_osd_
      * all SDK versions.  The timestamp parameter is a pointer to
      * an opaque structure containing the 64-bit timestamp.
      */
-    (void)timestamp;
     ret = IMP_OSD_SetRgnAttrWithTimestamp((IMPRgnHandle)handle, &rgn_attr, (void *)&timestamp);
     if (ret != 0)
         HAL_LOG_ERR("IMP_OSD_SetRgnAttrWithTimestamp(%d) failed: %d", handle, ret);
