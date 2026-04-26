@@ -67,7 +67,7 @@ RANLIB  := $(CROSS_COMPILE)gcc-ranlib
 JZDL_INCLUDE ?=
 
 # Flags
-CFLAGS  := -Wall -Wextra -Werror=implicit-function-declaration
+CFLAGS  := -Wall -Wextra -Werror
 CFLAGS  += -std=c11
 CFLAGS  += -ffunction-sections -fdata-sections -flto
 CFLAGS  += -fno-asynchronous-unwind-tables -fmerge-all-constants -fno-ident
