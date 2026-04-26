@@ -163,6 +163,8 @@ struct jzdl_ctx {
     float nms_thresh;
     int num_classes;
     uint8_t *rgb_buf;
+    std::vector<DetBox> candidates;
+    std::vector<DetBox> detections;
 };
 
 /* ================================================================
@@ -264,23 +266,24 @@ extern "C" int hal_jzdl_detect(void *handle, const uint8_t *nv12_data,
         return RSS_OK;
     }
 
-    /* Post-process */
-    std::vector<DetBox> candidates, detections;
-    yolo_decode(output.data, candidates, ctx->input_w, ctx->input_h, ctx->conf_thresh,
+    /* Post-process (reuse per-context vectors to avoid alloc per frame) */
+    ctx->candidates.clear();
+    ctx->detections.clear();
+    yolo_decode(output.data, ctx->candidates, ctx->input_w, ctx->input_h, ctx->conf_thresh,
                 ctx->num_classes);
-    yolo_nms(candidates, detections, ctx->nms_thresh);
+    yolo_nms(ctx->candidates, ctx->detections, ctx->nms_thresh);
 
     /* Scale to frame coordinates and fill result */
     float sx = (float)ctx->frame_w / ctx->input_w;
     float sy = (float)ctx->frame_h / ctx->input_h;
 
-    result->count = (int)detections.size();
+    result->count = (int)ctx->detections.size();
     if (result->count > RSS_IVS_MAX_DETECTIONS)
         result->count = RSS_IVS_MAX_DETECTIONS;
     result->timestamp = 0; /* caller sets this */
 
     for (int i = 0; i < result->count; i++) {
-        DetBox &d = detections[i];
+        DetBox &d = ctx->detections[i];
         int x0 = (int)(d.x1 * sx);
         int y0 = (int)(d.y1 * sy);
         int x1 = (int)(d.x2 * sx);
