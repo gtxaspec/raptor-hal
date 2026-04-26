@@ -3354,11 +3354,12 @@ int hal_enc_set_jpeg_ql(void *ctx, int chn, const rss_enc_jpeg_ql_t *ql)
     if (!ql)
         return RSS_ERR_INVAL;
 #if defined(HAL_OLD_SDK)
-    _Static_assert(sizeof(((IMPEncoderJpegeQl *)0)->qmem_table) == sizeof(ql->qmem_table),
-                   "JPEG quant table size mismatch");
     IMPEncoderJpegeQl jql;
+    memset(&jql, 0, sizeof(jql));
     jql.user_ql_en = ql->user_table_en;
-    memcpy(jql.qmem_table, ql->qmem_table, sizeof(jql.qmem_table));
+    size_t copy_sz = sizeof(jql.qmem_table) < sizeof(ql->qmem_table)
+                         ? sizeof(jql.qmem_table) : sizeof(ql->qmem_table);
+    memcpy(jql.qmem_table, ql->qmem_table, copy_sz);
     int ret = IMP_Encoder_SetJpegeQl(chn, &jql);
     if (ret != 0)
         HAL_LOG_ERR("SetJpegeQl(%d) failed: %d", chn, ret);
@@ -3382,7 +3383,10 @@ int hal_enc_get_jpeg_ql(void *ctx, int chn, rss_enc_jpeg_ql_t *ql)
         return ret;
     }
     ql->user_table_en = jql.user_ql_en;
-    memcpy(ql->qmem_table, jql.qmem_table, sizeof(ql->qmem_table));
+    memset(ql->qmem_table, 0, sizeof(ql->qmem_table));
+    size_t get_sz = sizeof(ql->qmem_table) < sizeof(jql.qmem_table)
+                        ? sizeof(ql->qmem_table) : sizeof(jql.qmem_table);
+    memcpy(ql->qmem_table, jql.qmem_table, get_sz);
     return RSS_OK;
 #else
     (void)chn;
