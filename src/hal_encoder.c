@@ -918,7 +918,8 @@ int hal_enc_get_frame(void *ctx, int chn, rss_frame_t *frame)
     bool needs_linearize = false;
     for (i = 0; i < stream.packCount; i++) {
         total_size += stream.pack[i].length;
-        if (stream.pack[i].offset + stream.pack[i].length > stream_size)
+        if (stream.pack[i].offset > stream_size ||
+            stream.pack[i].length > stream_size - stream.pack[i].offset)
             needs_linearize = true;
     }
 
