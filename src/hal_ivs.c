@@ -240,7 +240,7 @@ void *hal_ivs_create_move_interface(void *ctx, void *param)
     IMP_IVS_MoveParam mp;
     memset(&mp, 0, sizeof(mp));
 
-    for (int i = 0; i < RSS_IVS_MAX_ROI; i++)
+    for (int i = 0; i < IMP_IVS_MOVE_MAX_ROI_CNT && i < RSS_IVS_MAX_ROI; i++)
         mp.sense[i] = rp->sense[i];
     mp.skipFrameCnt = rp->skip_frame_count;
     mp.frameInfo.width = rp->width;
