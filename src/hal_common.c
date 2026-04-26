@@ -1233,6 +1233,9 @@ static int hal_init(void *ctx, const rss_multi_sensor_config_t *multi_cfg)
     }
 #elif defined(HAL_T23_MULTICAM)
     /* T23 1.3.0: MIPI switch GPIO config must precede AddSensor */
+    if (multi_cfg->mipi_switch.enable && c->sensor_count <= 1)
+        HAL_LOG_WARN("mipi_switch enabled but only %d sensor configured — ignored",
+                     c->sensor_count);
     if (c->sensor_count > 1 && multi_cfg->mipi_switch.enable) {
         IMPUserSwitchgpio sgpio;
         memset(&sgpio, 0, sizeof(sgpio));
