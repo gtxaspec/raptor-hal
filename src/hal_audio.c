@@ -389,7 +389,8 @@ int hal_audio_read_frame(void *ctx, int dev, int chn, rss_audio_frame_t *frame, 
     if (c->audio_input_type == RSS_AUDIO_INPUT_DMIC) {
         (void)dev;
         (void)chn;
-        int ret = IMP_DMIC_PollingFrame(DMIC_DEV_ID, DMIC_CHN_ID, AUDIO_POLL_TIMEOUT_MS);
+        int ret = IMP_DMIC_PollingFrame(DMIC_DEV_ID, DMIC_CHN_ID,
+                                        block ? AUDIO_POLL_TIMEOUT_MS : 0);
         if (ret != 0)
             return (ret == -2) ? RSS_ERR_TIMEOUT : ret;
 
@@ -411,7 +412,7 @@ int hal_audio_read_frame(void *ctx, int dev, int chn, rss_audio_frame_t *frame, 
     }
 #endif
 
-    int ret = IMP_AI_PollingFrame(dev, chn, AUDIO_POLL_TIMEOUT_MS);
+    int ret = IMP_AI_PollingFrame(dev, chn, block ? AUDIO_POLL_TIMEOUT_MS : 0);
     if (ret != 0)
         return (ret == -2) ? RSS_ERR_TIMEOUT : ret;
 
