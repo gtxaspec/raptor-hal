@@ -1498,14 +1498,10 @@ void rss_hal_destroy(rss_hal_ctx_t *ctx)
     if (!ctx)
         return;
 
-    /* Free scratch buffer if allocated */
-    if (ctx->scratch_buf) {
-        free(ctx->scratch_buf);
-        ctx->scratch_buf = NULL;
-    }
-
-    /* Free per-channel NAL arrays */
+    /* Free per-channel scratch and NAL arrays */
     for (i = 0; i < RSS_MAX_ENC_CHANNELS; i++) {
+        free(ctx->scratch_buf[i]);
+        ctx->scratch_buf[i] = NULL;
         if (ctx->nal_arrays[i]) {
             free(ctx->nal_arrays[i]);
             ctx->nal_arrays[i] = NULL;

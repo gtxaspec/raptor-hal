@@ -286,9 +286,10 @@ struct rss_hal_ctx {
     /* Full multi-sensor config (stored for deinit ordering) */
     rss_multi_sensor_config_t multi_cfg;
 
-    /* Frame linearization scratch buffer (new SDK ring-buffer wrap) */
-    uint8_t *scratch_buf;
-    size_t scratch_size;
+    /* Per-channel frame linearization scratch (new SDK ring-buffer wrap).
+     * Must be per-channel because encoder threads run concurrently. */
+    uint8_t *scratch_buf[RSS_MAX_ENC_CHANNELS];
+    size_t scratch_size[RSS_MAX_ENC_CHANNELS];
 
     /* Per-channel NAL unit arrays (reused across get_frame calls) */
     rss_nal_unit_t *nal_arrays[RSS_MAX_ENC_CHANNELS];

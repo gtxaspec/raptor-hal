@@ -234,18 +234,21 @@ static int hal_ensure_nal_array(rss_hal_ctx_t *c, int chn, int count)
  * hal_ensure_scratch -- ensure the scratch linearization buffer exists.
  * Only needed on new SDK (except T32) for ring-buffer pack linearization.
  */
-static int hal_ensure_scratch(rss_hal_ctx_t *c, size_t needed)
+static int hal_ensure_scratch(rss_hal_ctx_t *c, int chn, size_t needed)
 {
-    if (c->scratch_size >= needed)
+    if (chn < 0 || chn >= RSS_MAX_ENC_CHANNELS)
+        return -EINVAL;
+
+    if (c->scratch_size[chn] >= needed)
         return 0;
 
     size_t alloc = needed > RSS_SCRATCH_DEFAULT_SIZE ? needed : RSS_SCRATCH_DEFAULT_SIZE;
-    uint8_t *buf = (uint8_t *)realloc(c->scratch_buf, alloc);
+    uint8_t *buf = (uint8_t *)realloc(c->scratch_buf[chn], alloc);
     if (!buf)
         return -ENOMEM;
 
-    c->scratch_buf = buf;
-    c->scratch_size = alloc;
+    c->scratch_buf[chn] = buf;
+    c->scratch_size[chn] = alloc;
     return 0;
 }
 #endif /* HAL_NEW_SDK */
@@ -926,12 +929,12 @@ int hal_enc_get_frame(void *ctx, int chn, rss_frame_t *frame)
     /* Allocate scratch buffer only if wrapping detected */
     uint8_t *scratch = NULL;
     if (needs_linearize) {
-        ret = hal_ensure_scratch(c, total_size);
+        ret = hal_ensure_scratch(c, chn, total_size);
         if (ret != 0) {
             IMP_Encoder_ReleaseStream(chn, &stream);
             return ret;
         }
-        scratch = c->scratch_buf;
+        scratch = c->scratch_buf[chn];
     }
 
     for (i = 0; i < stream.packCount; i++) {
