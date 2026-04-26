@@ -1203,6 +1203,11 @@ static int hal_init(void *ctx, const rss_multi_sensor_config_t *multi_cfg)
         multi_cfg->sensor_count > RSS_MAX_SENSORS)
         return -EINVAL;
 
+    if (c->initialized) {
+        HAL_LOG_ERR("hal_init: already initialized");
+        return -EBUSY;
+    }
+
     /* Save full config for deinit */
     memcpy(&c->multi_cfg, multi_cfg, sizeof(c->multi_cfg));
     c->sensor_count = multi_cfg->sensor_count;
@@ -1274,6 +1279,7 @@ static int hal_init(void *ctx, const rss_multi_sensor_config_t *multi_cfg)
     /* Step 7: enable ISP tuning */
     HAL_CHECK(IMP_ISP_EnableTuning(), err_system_exit);
 
+    c->initialized = true;
     return 0;
 
     /* ── Cleanup on failure (reverse order) ── */
@@ -1320,6 +1326,11 @@ static int hal_deinit(void *ctx)
 
     if (!c)
         return -EINVAL;
+
+    if (!c->initialized)
+        return 0;
+
+    c->initialized = false;
 
     /* Step 1: disable tuning -- must happen before System_Exit */
     ret = IMP_ISP_DisableTuning();
