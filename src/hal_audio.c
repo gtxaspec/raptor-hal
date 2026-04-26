@@ -652,16 +652,6 @@ int hal_aenc_release_stream(void *ctx, int chn, rss_audio_frame_t *stream)
  * API is identical across all SoCs.
  * ================================================================ */
 
-int hal_adec_register_decoder(void *ctx, int *handle, const char *name)
-{
-    (void)ctx;
-    if (!handle || !name)
-        return RSS_ERR_INVAL;
-    /* For built-in codecs (G711, G726), registration is not needed.
-     * Custom decoders would need IMPAudioDecDecoder struct. */
-    *handle = 0;
-    return RSS_OK;
-}
 
 int hal_adec_unregister_decoder(void *ctx, int handle)
 {
