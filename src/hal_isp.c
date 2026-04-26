@@ -3020,8 +3020,8 @@ int hal_isp_set_scaler_lv(void *ctx, int chn, int level)
 #elif defined(PLATFORM_T23) || defined(PLATFORM_T31)
     IMPISPScalerLv lv;
     memset(&lv, 0, sizeof(lv));
-    (void)chn;
-    (void)level;
+    lv.channel = (unsigned char)chn;
+    lv.level = (unsigned char)level;
     return IMP_ISP_Tuning_SetScalerLv(&lv);
 #else
     (void)chn;
