@@ -2844,11 +2844,13 @@ int hal_isp_set_shading(void *ctx, const void *shading_attr)
 int hal_isp_wait_frame(void *ctx, int timeout_ms)
 {
     (void)ctx;
-    (void)timeout_ms;
 
 #if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
     defined(PLATFORM_T30) || defined(PLATFORM_T31)
-    return IMP_ISP_Tuning_WaitFrame(NULL);
+    IMPISPWaitFrameAttr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.timeout = (uint32_t)(timeout_ms > 0 ? timeout_ms : 1000);
+    return IMP_ISP_Tuning_WaitFrame(&attr);
 #else
     (void)timeout_ms;
     return RSS_ERR_NOTSUP;
