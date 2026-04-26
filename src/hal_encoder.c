@@ -831,6 +831,11 @@ int hal_enc_get_frame(void *ctx, int chn, rss_frame_t *frame)
     if (ret != 0)
         return ret;
 
+    if (stream.packCount == 0) {
+        IMP_Encoder_ReleaseStream(chn, &stream);
+        return -EAGAIN;
+    }
+
     /* Ensure NAL array is large enough */
     ret = hal_ensure_nal_array(c, chn, (int)stream.packCount);
     if (ret != 0) {
