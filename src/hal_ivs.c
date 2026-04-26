@@ -17,6 +17,7 @@
 
 #include <imp/imp_ivs.h>
 #include <imp/imp_ivs_move.h>
+#undef IMP_IVS_MOVE_MAX_ROI_CNT
 #include <imp/imp_ivs_base_move.h>
 
 /*
