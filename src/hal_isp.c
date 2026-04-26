@@ -379,8 +379,9 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
     /* AE luma is not available in AEExprInfo; leave as 0 */
     exposure->ae_luma = 0;
 
-    /* EV from ExposureValue (uint32_t on T40, uint64_t on T32/T41) */
+#if defined(PLATFORM_T40) || defined(PLATFORM_T41)
     exposure->ev = (uint32_t)expr_info.ExposureValue;
+#endif
 
     /* AWB R/B gain from GetAwbGlobalStatistics */
     IMPISPAWBGlobalStatisInfo awb_statis;
