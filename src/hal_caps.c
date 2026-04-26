@@ -5,8 +5,8 @@
  * Exactly one PLATFORM_* macro is defined by the build system; the
  * corresponding capability block is compiled and all others are excluded.
  *
- * Values are derived from the SDK difference analysis across all 8
- * supported Ingenic SoCs (T20, T21, T23, T30, T31, T32, T40, T41).
+ * Values are derived from the SDK difference analysis across all 9
+ * supported Ingenic SoCs (T20, T21, T23, T30, T31, T32, T33, T40, T41).
  */
 
 #include "hal_internal.h"
@@ -805,7 +805,7 @@ const rss_hal_caps_t g_hal_caps = {
 };
 
 #else
-#error "No PLATFORM_* defined. Set one of: PLATFORM_T20 T21 T23 T30 T31 T32 T40 T41"
+#error "No PLATFORM_* defined. Set one of: PLATFORM_T20 T21 T23 T30 T31 T32 T33 T40 T41"
 #endif
 
 /* ═══════════════════════════════════════════════════════════════════════
