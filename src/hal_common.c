@@ -622,6 +622,7 @@ static int hal_sys_get_bind_by_dest(void *ctx, rss_cell_t *dst, rss_cell_t *src)
         src->device = RSS_DEV_OSD;
         break;
     default:
+        HAL_LOG_WARN("unknown deviceID %d in bind query, mapping to FS", imp_src.deviceID);
         src->device = RSS_DEV_FS;
         break;
     }
