@@ -391,6 +391,13 @@ int hal_fs_release_frame(void *ctx, int chn, void *frame_data)
  *
  * Snap a single frame (one-shot capture). Uses
  * IMP_FrameSource_SnapFrame on all SoCs.
+ *
+ * info is IN/OUT: caller must set info->width and info->height
+ * before calling. Other fields are populated on return.
+ *
+ * Ownership: the returned *frame_data is malloc'd by this function.
+ * Caller must free() it directly — do NOT pass it to release_frame
+ * (which expects an SDK-owned IMPFrameInfo pointer).
  * ================================================================ */
 
 int hal_fs_snap_frame(void *ctx, int chn, void **frame_data, rss_frame_info_t *info)
@@ -400,9 +407,9 @@ int hal_fs_snap_frame(void *ctx, int chn, void **frame_data, rss_frame_info_t *i
 
     if (!frame_data || !info)
         return -EINVAL;
+    if (info->width == 0 || info->height == 0)
+        return -EINVAL;
 
-    /* SnapFrame needs format, width, height, and a pre-allocated buffer.
-     * We allocate the frame data buffer and let the SDK fill it. */
     uint32_t alloc_size = (uint32_t)info->width * info->height * 3 / 2; /* NV12 */
     void *framedata = malloc(alloc_size);
     if (!framedata)
@@ -422,7 +429,7 @@ int hal_fs_snap_frame(void *ctx, int chn, void **frame_data, rss_frame_info_t *i
     info->timestamp = imp_frame.timeStamp;
     info->phys_addr = imp_frame.phyAddr;
     info->virt_addr = framedata;
-    info->size = alloc_size;
+    info->size = imp_frame.size > 0 ? imp_frame.size : alloc_size;
 
     *frame_data = framedata;
     return 0;
