@@ -208,34 +208,22 @@ int hal_dmic_poll_frame(void *ctx, uint32_t timeout_ms)
 
 int hal_dmic_read_frame(void *ctx, rss_audio_frame_t *frame, bool block)
 {
-    (void)ctx;
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
 
     if (!frame)
         return RSS_ERR_INVAL;
 
-    IMPDmicChnFrame chn_frame;
-    memset(&chn_frame, 0, sizeof(chn_frame));
-    int ret = IMP_DMIC_GetFrame(DMIC_DEV_ID, DMIC_CHN_ID, &chn_frame, block ? BLOCK : NOBLOCK);
+    memset(&c->dmic_frame_priv, 0, sizeof(c->dmic_frame_priv));
+    int ret = IMP_DMIC_GetFrame(DMIC_DEV_ID, DMIC_CHN_ID, &c->dmic_frame_priv,
+                                block ? BLOCK : NOBLOCK);
     if (ret != 0)
         return ret;
 
-    /* Fill the HAL frame from the raw DMIC frame */
-    frame->data = (const int16_t *)chn_frame.rawFrame.virAddr;
-    frame->length = (uint32_t)chn_frame.rawFrame.len;
-    frame->timestamp = chn_frame.rawFrame.timeStamp;
-    frame->seq = (uint32_t)chn_frame.rawFrame.seq;
-
-    /*
-     * Store the native frame in _priv so we can release it later.
-     * Allocate a copy of the IMPDmicChnFrame struct on the heap.
-     */
-    IMPDmicChnFrame *saved = (IMPDmicChnFrame *)malloc(sizeof(IMPDmicChnFrame));
-    if (!saved) {
-        IMP_DMIC_ReleaseFrame(DMIC_DEV_ID, DMIC_CHN_ID, &chn_frame);
-        return RSS_ERR_NOMEM;
-    }
-    memcpy(saved, &chn_frame, sizeof(IMPDmicChnFrame));
-    frame->_priv = saved;
+    frame->data = (const int16_t *)c->dmic_frame_priv.rawFrame.virAddr;
+    frame->length = (uint32_t)c->dmic_frame_priv.rawFrame.len;
+    frame->timestamp = c->dmic_frame_priv.rawFrame.timeStamp;
+    frame->seq = (uint32_t)c->dmic_frame_priv.rawFrame.seq;
+    frame->_priv = &c->dmic_frame_priv;
 
     return RSS_OK;
 }
@@ -246,9 +234,7 @@ int hal_dmic_release_frame(void *ctx, rss_audio_frame_t *frame)
     if (!frame || !frame->_priv)
         return RSS_ERR_INVAL;
 
-    IMPDmicChnFrame *chn_frame = (IMPDmicChnFrame *)frame->_priv;
-    int ret = IMP_DMIC_ReleaseFrame(DMIC_DEV_ID, DMIC_CHN_ID, chn_frame);
-    free(chn_frame);
+    int ret = IMP_DMIC_ReleaseFrame(DMIC_DEV_ID, DMIC_CHN_ID, frame->_priv);
     frame->_priv = NULL;
     return ret;
 }
