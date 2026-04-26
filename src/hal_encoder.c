@@ -20,7 +20,6 @@
 
 /* ── Constants ─────────────────────────────────────────────────────── */
 
-#define RSS_MAX_ENC_CHANNELS 8
 #define RSS_MAX_NALS_PER_FRAME 16
 
 /* Forward declaration — defined in Phase 6 (JPEG Features) section */
