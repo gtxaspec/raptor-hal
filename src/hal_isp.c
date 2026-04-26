@@ -3399,7 +3399,9 @@ int hal_isp_get_exposure_n(void *ctx, int sensor_idx, rss_exposure_t *exposure)
 #elif defined(HAL_T23_MULTICAM)
     {
         uint32_t gain = 0;
-        IMP_ISP_MultiCamera_Tuning_GetTotalGain((IMPVI_NUM)sensor_idx, &gain);
+        int ret = IMP_ISP_MultiCamera_Tuning_GetTotalGain((IMPVI_NUM)sensor_idx, &gain);
+        if (ret != 0)
+            return ret;
         exposure->total_gain = gain;
         return 0;
     }
