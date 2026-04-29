@@ -54,7 +54,7 @@ const rss_hal_caps_t g_hal_caps = {
     .has_poll_module = false,
     .has_resize_mode = false,
     .has_jpeg_ql = false,
-    .has_jpeg_qp = false,
+    .has_jpeg_qp = true,
     /* ISP */
     .has_multi_sensor = false,
     .max_sensors = 1,
