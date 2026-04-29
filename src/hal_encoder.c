@@ -448,8 +448,8 @@ static int hal_enc_create_channel_old(int chn, const rss_video_config_t *cfg)
     /* Apply JPEG quantization tables after channel creation */
     if (pt == PT_JPEG) {
         int quality = (cfg->init_qp >= 0) ? cfg->init_qp : 25;
-        if (quality > 99)
-            quality = 99;
+        if (quality > 98)
+            quality = 98;
         hal_jpeg_set_quality(chn, quality);
     }
 
@@ -488,8 +488,8 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
      * SetbufshareChn must be called BEFORE CreateChn. */
     if (cfg->codec == RSS_CODEC_JPEG || cfg->codec == RSS_CODEC_MJPEG) {
         int quality = (cfg->init_qp >= 0) ? cfg->init_qp : 25;
-        if (quality > 99)
-            quality = 99;
+        if (quality > 98)
+            quality = 98;
         ret = IMP_Encoder_SetDefaultParam(&chnAttr, profile, IMP_ENC_RC_MODE_FIXQP, cfg->width,
                                           cfg->height, cfg->fps_num, cfg->fps_den,
                                           0, /* gop_length=0 */
