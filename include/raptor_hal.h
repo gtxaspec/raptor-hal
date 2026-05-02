@@ -872,6 +872,7 @@ typedef struct rss_hal_ops {
     int (*isp_set_max_again)(void *ctx, int gain);
     int (*isp_set_max_dgain)(void *ctx, int gain);
     int (*isp_set_highlight_depress)(void *ctx, int val);
+    int (*isp_set_defog_strength)(void *ctx, int val);
 
     /* ISP getters (mirrors of existing setters) */
     int (*isp_get_brightness)(void *ctx, uint8_t *val);

@@ -1121,8 +1121,32 @@ int hal_isp_get_defog_strength(void *ctx, uint8_t *val)
     (void)ctx;
     if (!val)
         return RSS_ERR_INVAL;
+
+    if (!g_hal_caps.has_defog)
+        return RSS_ERR_NOTSUP;
+
+#if defined(PLATFORM_T23) || defined(PLATFORM_T31)
+    return IMP_ISP_Tuning_GetDefog_Strength(val);
+#else
     (void)val;
     return RSS_ERR_NOTSUP;
+#endif
+}
+
+int hal_isp_set_defog_strength(void *ctx, int val)
+{
+    (void)ctx;
+    uint8_t v = hal_clamp_u8(val);
+
+    if (!g_hal_caps.has_defog)
+        return RSS_ERR_NOTSUP;
+
+#if defined(PLATFORM_T23) || defined(PLATFORM_T31)
+    return IMP_ISP_Tuning_SetDefog_Strength(&v);
+#else
+    (void)v;
+    return RSS_ERR_NOTSUP;
+#endif
 }
 
 int hal_isp_get_dpc_strength(void *ctx, uint8_t *val)

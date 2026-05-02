@@ -199,6 +199,7 @@ extern int hal_isp_set_ae_comp(void *ctx, int val);
 extern int hal_isp_set_max_again(void *ctx, int gain);
 extern int hal_isp_set_max_dgain(void *ctx, int gain);
 extern int hal_isp_set_highlight_depress(void *ctx, int val);
+extern int hal_isp_set_defog_strength(void *ctx, int val);
 
 /* ISP getters and advanced tuning (hal_isp.c) */
 extern int hal_isp_get_brightness(void *ctx, uint8_t *val);
@@ -811,6 +812,7 @@ static const rss_hal_ops_t g_ops = {
     .isp_set_max_again = hal_isp_set_max_again,
     .isp_set_max_dgain = hal_isp_set_max_dgain,
     .isp_set_highlight_depress = hal_isp_set_highlight_depress,
+    .isp_set_defog_strength = hal_isp_set_defog_strength,
 
     /* ISP getters */
     .isp_get_brightness = hal_isp_get_brightness,
@@ -1273,7 +1275,8 @@ static int hal_init(void *ctx, const rss_multi_sensor_config_t *multi_cfg)
     if (c->osd_pool_size == 0)
         c->osd_pool_size = 512 * 1024;
     IMP_OSD_SetPoolSize((int)c->osd_pool_size);
-#if defined(PLATFORM_T23) || defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(PLATFORM_T23) || defined(PLATFORM_T32) || defined(PLATFORM_T33) ||                     \
+    defined(PLATFORM_T40) || defined(PLATFORM_T41)
     IMP_ISP_Tuning_SetOsdPoolSize((int)c->osd_pool_size);
 #endif
 
