@@ -78,10 +78,11 @@ typedef struct {
     int64_t timeStamp;
 } persondet_param_output_t;
 
-/* PersonDet interface — provided by libpersonDet_inf.so (optional).
- * Weak symbols so the HAL links without the lib when persondet is disabled. */
-__attribute__((weak)) IMPIVSInterface *PersonDetInterfaceInit(void *param) { (void)param; return NULL; }
-__attribute__((weak)) void PersonDetInterfaceExit(IMPIVSInterface *inf) { (void)inf; }
+/* PersonDet interface — provided by libpersonDet_inf.so */
+#ifdef PERSONDET
+extern IMPIVSInterface *PersonDetInterfaceInit(void *param);
+extern void PersonDetInterfaceExit(IMPIVSInterface *inf);
+#endif
 
 /* ================================================================
  * GROUP LIFECYCLE
@@ -313,6 +314,7 @@ int hal_ivs_destroy_base_move_interface(void *ctx, void *handle)
  * persondet_param_input_t.
  * ================================================================ */
 
+#ifdef PERSONDET
 void *hal_ivs_create_persondet_interface(void *ctx, void *param)
 {
     (void)ctx;
@@ -348,3 +350,4 @@ int hal_ivs_destroy_persondet_interface(void *ctx, void *handle)
     PersonDetInterfaceExit((IMPIVSInterface *)handle);
     return RSS_OK;
 }
+#endif

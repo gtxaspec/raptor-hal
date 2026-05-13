@@ -83,6 +83,10 @@ else
 CFLAGS  += -Os
 endif
 
+ifeq ($(PERSONDET),1)
+CFLAGS  += -DPERSONDET
+endif
+
 # Verbose
 ifeq ($(V),1)
 Q :=

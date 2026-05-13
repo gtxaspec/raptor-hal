@@ -457,8 +457,10 @@ extern void *hal_ivs_create_move_interface(void *ctx, void *param);
 extern int hal_ivs_destroy_move_interface(void *ctx, void *handle);
 extern void *hal_ivs_create_base_move_interface(void *ctx, void *param);
 extern int hal_ivs_destroy_base_move_interface(void *ctx, void *handle);
+#ifdef PERSONDET
 extern void *hal_ivs_create_persondet_interface(void *ctx, void *param);
 extern int hal_ivs_destroy_persondet_interface(void *ctx, void *handle);
+#endif
 /* JZDL uses standalone API (hal_jzdl_create/detect/destroy), not IVS interface */
 static void *hal_ivs_create_jzdl_stub(void *ctx, void *param)
 {
@@ -1070,8 +1072,10 @@ static const rss_hal_ops_t g_ops = {
     .ivs_destroy_move_interface = hal_ivs_destroy_move_interface,
     .ivs_create_base_move_interface = hal_ivs_create_base_move_interface,
     .ivs_destroy_base_move_interface = hal_ivs_destroy_base_move_interface,
+#ifdef PERSONDET
     .ivs_create_persondet_interface = hal_ivs_create_persondet_interface,
     .ivs_destroy_persondet_interface = hal_ivs_destroy_persondet_interface,
+#endif
     .ivs_create_jzdl_interface = hal_ivs_create_jzdl_stub,
     .ivs_destroy_jzdl_interface = hal_ivs_destroy_jzdl_stub,
 
