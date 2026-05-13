@@ -107,7 +107,7 @@ AUDIO_SRCS := src/hal_audio.c \
 CXX_SRCS :=
 ifneq ($(JZDL_INCLUDE),)
 CXX_SRCS += src/hal_ivs_jzdl.cpp
-CXXFLAGS := $(CFLAGS) -std=c++11 -DJZ_MXU=0 -I$(JZDL_INCLUDE) -fno-exceptions -fno-rtti
+CXXFLAGS := $(filter-out -std=c11,$(CFLAGS)) -std=c++11 -Wno-missing-field-initializers -DJZ_MXU=0 -I$(JZDL_INCLUDE) -fno-exceptions -fno-rtti
 endif
 
 CORE_OBJS  := $(CORE_SRCS:.c=.o)
