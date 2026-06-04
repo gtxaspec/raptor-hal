@@ -29,7 +29,9 @@
  * ═══════════════════════════════════════════════════════════════════════ */
 
 /* Compile-time platform name string (for runtime SoC verification) */
-#if defined(PLATFORM_T20)
+#if defined(PLATFORM_T10)
+#define HAL_PLATFORM_NAME "T10"
+#elif defined(PLATFORM_T20)
 #define HAL_PLATFORM_NAME "T20"
 #elif defined(PLATFORM_T21)
 #define HAL_PLATFORM_NAME "T21"
@@ -53,8 +55,13 @@
 #error "No PLATFORM_* defined"
 #endif
 
+/* T10 shares the same SDK as T20 — alias so all PLATFORM_T20 guards apply to T10 */
+#if defined(PLATFORM_T10) && !defined(PLATFORM_T20)
+#define PLATFORM_T20
+#endif
+
 /* Old-style encoder structs, per-codec RC unions, packs with direct virAddr */
-#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) || defined(PLATFORM_T30)
+#if defined(PLATFORM_T10) || defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) || defined(PLATFORM_T30)
 #define HAL_OLD_SDK
 #endif
 
@@ -103,7 +110,7 @@
  * including SDK headers.
  * ═══════════════════════════════════════════════════════════════════════ */
 
-#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T30) ||                     \
+#if defined(PLATFORM_T10) || defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T30) || \
     defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
 struct IMPISPAEAttr {
 }; /* not defined on these SoCs */
@@ -190,7 +197,7 @@ int IMP_OSD_SetPoolSize(int size);
 
 /* IMP_ISP_Tuning_GetAwbHist is present in libimp.so on T20-T31
  * but the header prototype is absent on some versions */
-#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
+#if defined(PLATFORM_T10) || defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) || \
     defined(PLATFORM_T30) || defined(PLATFORM_T31)
 int IMP_ISP_Tuning_GetAwbHist(IMPISPAWBHist *awb_hist);
 #endif

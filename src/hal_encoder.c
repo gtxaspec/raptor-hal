@@ -44,7 +44,7 @@ static IMPPayloadType hal_translate_codec(rss_codec_t codec)
     switch (codec) {
     case RSS_CODEC_H264:
         return PT_H264;
-#if !defined(PLATFORM_T20)
+#if !defined(PLATFORM_T10) && !defined(PLATFORM_T20)
     case RSS_CODEC_H265:
         return PT_H265;
 #endif
@@ -148,9 +148,9 @@ static rss_nal_type_t hal_translate_nal_type_h264(IMPEncoderH264NaluType nal)
 
 /*
  * hal_translate_nal_type_h265 -- vendor H265 NAL enum to rss_nal_type_t.
- * Not available on T20 (no H265 support).
+ * Not available on T10/T20 (no H265 support).
  */
-#if !defined(PLATFORM_T20)
+#if !defined(PLATFORM_T10) && !defined(PLATFORM_T20)
 static rss_nal_type_t hal_translate_nal_type_h265(IMPEncoderH265NaluType nal)
 {
     switch (nal) {
@@ -195,9 +195,9 @@ static bool hal_is_idr_h264(IMPEncoderH264NaluType nal)
 
 /*
  * hal_is_idr_h265 -- check if a vendor H265 NAL type is an IDR.
- * Not available on T20 (no H265 support).
+ * Not available on T10/T20 (no H265 support).
  */
-#if !defined(PLATFORM_T20)
+#if !defined(PLATFORM_T10) && !defined(PLATFORM_T20)
 static bool hal_is_idr_h265(IMPEncoderH265NaluType nal)
 {
     return nal == IMP_H265_NAL_SLICE_IDR_W_RADL || nal == IMP_H265_NAL_SLICE_IDR_N_LP ||
@@ -865,7 +865,7 @@ int hal_enc_get_frame(void *ctx, int chn, rss_frame_t *frame)
     {
         /* Peek at first pack to determine codec */
         IMPEncoderH264NaluType first_nal = stream.pack[0].dataType.h264Type;
-#if !defined(PLATFORM_T20)
+#if !defined(PLATFORM_T10) && !defined(PLATFORM_T20)
         if (first_nal == (IMPEncoderH264NaluType)IMP_H265_NAL_VPS ||
             first_nal == (IMPEncoderH264NaluType)IMP_H265_NAL_SPS ||
             first_nal == (IMPEncoderH264NaluType)IMP_H265_NAL_PPS || (int)first_nal >= 32) {
@@ -883,7 +883,7 @@ int hal_enc_get_frame(void *ctx, int chn, rss_frame_t *frame)
         nals[i].length = stream.pack[i].length;
         nals[i].frame_end = stream.pack[i].frameEnd;
 
-#if !defined(PLATFORM_T20)
+#if !defined(PLATFORM_T10) && !defined(PLATFORM_T20)
         if (codec == RSS_CODEC_H265) {
             IMPEncoderH265NaluType h265nal =
                 (IMPEncoderH265NaluType)stream.pack[i].dataType.h264Type;
@@ -1142,7 +1142,7 @@ int hal_enc_set_rc_mode(void *ctx, int chn, rss_rc_mode_t mode, uint32_t bitrate
         break;
     }
 #else
-    /* Old SDK (T20/T21/T23/T30): H264-prefixed structs with QP step fields */
+    /* Old SDK (T10/T20/T21/T23/T30): H264-prefixed structs with QP step fields */
     switch (vendor_mode) {
     case ENC_RC_MODE_FIXQP:
         if (rcAttr.attrH264FixQp.qp == 0)
@@ -1446,7 +1446,7 @@ int hal_enc_get_channel_attr(void *ctx, int chn, rss_video_config_t *cfg)
     case PT_H264:
         cfg->codec = RSS_CODEC_H264;
         break;
-#if !defined(PLATFORM_T20)
+#if !defined(PLATFORM_T10) && !defined(PLATFORM_T20)
     case PT_H265:
         cfg->codec = RSS_CODEC_H265;
         break;
@@ -1616,7 +1616,7 @@ int hal_enc_query(void *ctx, int chn, bool *busy)
 int hal_enc_get_fd(void *ctx, int chn)
 {
     (void)ctx;
-#if defined(PLATFORM_T20)
+#if defined(PLATFORM_T10) || defined(PLATFORM_T20)
     (void)chn;
     return RSS_ERR_NOTSUP;
 #else
@@ -1891,7 +1891,7 @@ int hal_enc_get_chn_enc_type(void *ctx, int chn, void *enc_type)
     (void)ctx;
     if (!enc_type)
         return RSS_ERR_INVAL;
-#if defined(PLATFORM_T20)
+#if defined(PLATFORM_T10) || defined(PLATFORM_T20)
     (void)chn;
     return RSS_ERR_NOTSUP;
 #elif defined(HAL_NEW_SDK) && !defined(HAL_HYBRID_SDK)

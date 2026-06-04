@@ -6,7 +6,7 @@
 #   make PLATFORM=T31 clean
 #
 # Required variables:
-#   PLATFORM        - Target SoC: T20, T21, T23, T30, T31, T32, T40, T41
+#   PLATFORM        - Target SoC: T10, T20, T21, T23, T30, T31, T32, T40, T41
 #   CROSS_COMPILE   - Cross-compiler prefix (e.g. mipsel-linux-)
 #
 # Optional variables:
@@ -21,13 +21,14 @@ $(error PLATFORM not set. Use: make PLATFORM=T31)
 endif
 
 # Validate platform
-VALID_PLATFORMS := T20 T21 T23 T30 T31 T32 T33 T40 T41
+VALID_PLATFORMS := T10 T20 T21 T23 T30 T31 T32 T33 T40 T41
 ifeq ($(filter $(PLATFORM),$(VALID_PLATFORMS)),)
 $(error Invalid PLATFORM=$(PLATFORM). Valid: $(VALID_PLATFORMS))
 endif
 endif # clean guard
 
 # SDK version mapping
+HEADER_VER_T10 := 3.12.0
 HEADER_VER_T20 := 3.12.0
 HEADER_VER_T21 := 1.0.33
 HEADER_VER_T23 := 1.3.0
@@ -39,6 +40,7 @@ HEADER_VER_T40 := 1.3.1
 HEADER_VER_T41 := 1.2.5
 
 # Language preference (en if available, zh otherwise)
+HEADER_LANG_T10 := zh
 HEADER_LANG_T20 := zh
 HEADER_LANG_T21 := zh
 HEADER_LANG_T23 := en
