@@ -313,6 +313,15 @@ struct rss_hal_ctx {
      * configured instead. */
     rss_codec_t chn_codec[RSS_MAX_ENC_CHANNELS];
 
+    /* Per-channel configured frame rate, and the last JPEG frame
+     * delivered by get_frame. Old-SDK rate control is H.264/H.265
+     * only (the JPEG dispatch path never consults outFrmRate), so
+     * get_frame enforces the configured JPEG fps itself. last == 0
+     * means "deliver the next frame" (reset at create/start). */
+    uint32_t chn_fps_num[RSS_MAX_ENC_CHANNELS];
+    uint32_t chn_fps_den[RSS_MAX_ENC_CHANNELS];
+    int64_t chn_jpeg_last_us[RSS_MAX_ENC_CHANNELS];
+
     /* Audio input type (AMIC or DMIC) */
     rss_audio_input_t audio_input_type;
 

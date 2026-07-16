@@ -728,8 +728,12 @@ int hal_enc_create_channel(void *ctx, int chn, const rss_video_config_t *cfg)
     HAL_LOG_INFO("enc create chn %d: %ux%u codec=%d rc=%d bitrate=%u gop=%u", chn, cfg->width,
                  cfg->height, cfg->codec, cfg->rc_mode, cfg->bitrate, cfg->gop_length);
 
-    if (c && chn >= 0 && chn < RSS_MAX_ENC_CHANNELS)
+    if (c && chn >= 0 && chn < RSS_MAX_ENC_CHANNELS) {
         c->chn_codec[chn] = cfg->codec;
+        c->chn_fps_num[chn] = cfg->fps_num;
+        c->chn_fps_den[chn] = (cfg->fps_den > 0) ? cfg->fps_den : 1;
+        c->chn_jpeg_last_us[chn] = 0;
+    }
 
 #if defined(HAL_OLD_SDK)
     return hal_enc_create_channel_old(chn, cfg);
@@ -777,7 +781,9 @@ int hal_enc_unregister_channel(void *ctx, int chn)
 
 int hal_enc_start(void *ctx, int chn)
 {
-    (void)ctx;
+    rss_hal_ctx_t *c = ctx;
+    if (c && chn >= 0 && chn < RSS_MAX_ENC_CHANNELS)
+        c->chn_jpeg_last_us[chn] = 0; /* first frame after a start always passes */
     int ret = IMP_Encoder_StartRecvPic(chn);
     if (ret != 0)
         HAL_LOG_ERR("IMP_Encoder_StartRecvPic(%d) failed: %d", chn, ret);
@@ -842,6 +848,28 @@ int hal_enc_get_frame(void *ctx, int chn, rss_frame_t *frame)
         IMP_Encoder_ReleaseStream(chn, &stream);
         return -EAGAIN;
     }
+
+#if defined(HAL_OLD_SDK)
+    /*
+     * Old-SDK rate control never touches JPEG channels (the group
+     * dispatcher calls ijpege_encode directly, bypassing the
+     * check_inframerate_valid divider that H.264 gets), so a JPEG
+     * channel emits at the framesource rate no matter what
+     * outFrmRate says. Enforce the configured fps here instead.
+     * 10% tolerance absorbs source-fps jitter; new SDK (T31+)
+     * honors outFrmRate in hardware and compiles this out.
+     */
+    if (c->chn_codec[chn] == RSS_CODEC_JPEG && c->chn_fps_num[chn] > 0) {
+        int64_t ts = (int64_t)stream.pack[0].timestamp;
+        int64_t interval = 1000000LL * c->chn_fps_den[chn] / c->chn_fps_num[chn];
+        int64_t last = c->chn_jpeg_last_us[chn];
+        if (last != 0 && ts > last && ts - last < interval - interval / 10) {
+            IMP_Encoder_ReleaseStream(chn, &stream);
+            return -EAGAIN; /* dropped by fps divider */
+        }
+        c->chn_jpeg_last_us[chn] = ts;
+    }
+#endif
 
     /* Ensure NAL array is large enough */
     ret = hal_ensure_nal_array(c, chn, (int)stream.packCount);
@@ -1297,7 +1325,7 @@ int hal_enc_set_gop(void *ctx, int chn, uint32_t gop_length)
  */
 int hal_enc_set_fps(void *ctx, int chn, uint32_t fps_num, uint32_t fps_den)
 {
-    (void)ctx;
+    rss_hal_ctx_t *c = ctx;
     IMPEncoderFrmRate frmRate;
 
     frmRate.frmRateNum = fps_num;
@@ -1306,6 +1334,12 @@ int hal_enc_set_fps(void *ctx, int chn, uint32_t fps_num, uint32_t fps_den)
     int ret = IMP_Encoder_SetChnFrmRate(chn, &frmRate);
     if (ret != 0)
         HAL_LOG_ERR("SetChnFrmRate(%d, %u/%u) failed: %d", chn, fps_num, fps_den, ret);
+
+    if (ret == 0 && c && chn >= 0 && chn < RSS_MAX_ENC_CHANNELS) {
+        c->chn_fps_num[chn] = fps_num;
+        c->chn_fps_den[chn] = (fps_den > 0) ? fps_den : 1;
+        c->chn_jpeg_last_us[chn] = 0;
+    }
     return ret;
 }
 
