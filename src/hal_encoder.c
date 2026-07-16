@@ -492,10 +492,10 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
             quality = 98;
         ret = IMP_Encoder_SetDefaultParam(&chnAttr, profile, IMP_ENC_RC_MODE_FIXQP, cfg->width,
                                           cfg->height, cfg->fps_num, cfg->fps_den,
-                                          0, /* gop_length=0 */
-                                          0,                  /* uMaxSameSenceCnt=0 */
-                                          quality,            /* iInitialQP = JPEG quality */
-                                          0                   /* uTargetBitRate=0 */
+                                          0,       /* gop_length=0 */
+                                          0,       /* uMaxSameSenceCnt=0 */
+                                          quality, /* iInitialQP = JPEG quality */
+                                          0        /* uTargetBitRate=0 */
         );
         if (ret != 0) {
             HAL_LOG_ERR("SetDefaultParam (JPEG) failed: %d", ret);
@@ -720,13 +720,16 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
 
 int hal_enc_create_channel(void *ctx, int chn, const rss_video_config_t *cfg)
 {
-    (void)ctx;
+    rss_hal_ctx_t *c = ctx;
 
     if (!cfg)
         return -EINVAL;
 
     HAL_LOG_INFO("enc create chn %d: %ux%u codec=%d rc=%d bitrate=%u gop=%u", chn, cfg->width,
                  cfg->height, cfg->codec, cfg->rc_mode, cfg->bitrate, cfg->gop_length);
+
+    if (c && chn >= 0 && chn < RSS_MAX_ENC_CHANNELS)
+        c->chn_codec[chn] = cfg->codec;
 
 #if defined(HAL_OLD_SDK)
     return hal_enc_create_channel_old(chn, cfg);
@@ -849,8 +852,10 @@ int hal_enc_get_frame(void *ctx, int chn, rss_frame_t *frame)
 
     rss_nal_unit_t *nals = c->nal_arrays[chn];
 
-    /* Detect codec from first pack's NAL type */
-    rss_codec_t codec = RSS_CODEC_H264;
+    /* JPEG channels are known from creation — the pack-shape heuristic
+     * below misfires on them (T31 JPEG is not single-pack UNKNOWN).
+     * H.264/H.265 keep NAL-based detection. */
+    rss_codec_t codec = (c->chn_codec[chn] == RSS_CODEC_JPEG) ? RSS_CODEC_JPEG : RSS_CODEC_H264;
     bool is_key = false;
 
 #if defined(HAL_OLD_SDK) || defined(HAL_HYBRID_SDK)
@@ -862,7 +867,7 @@ int hal_enc_get_frame(void *ctx, int chn, rss_frame_t *frame)
      * Detect codec from first non-filler NAL: if any pack has
      * h264Type >= 32 it's really H265 accessed via h265Type.
      */
-    {
+    if (codec != RSS_CODEC_JPEG) {
         /* Peek at first pack to determine codec */
         IMPEncoderH264NaluType first_nal = stream.pack[0].dataType.h264Type;
 #if !defined(PLATFORM_T10) && !defined(PLATFORM_T20)
@@ -908,7 +913,7 @@ int hal_enc_get_frame(void *ctx, int chn, rss_frame_t *frame)
      * stream.virAddr with total size stream.streamSize.
      * Must handle wrap-around.
      */
-    {
+    if (codec != RSS_CODEC_JPEG) {
         /* Detect codec from first pack */
         IMPEncoderH264NaluType first_h264 = stream.pack[0].nalType.h264NalType;
         IMPEncoderH265NaluType first_h265 = stream.pack[0].nalType.h265NalType;
@@ -3361,8 +3366,8 @@ int hal_enc_set_jpeg_ql(void *ctx, int chn, const rss_enc_jpeg_ql_t *ql)
     IMPEncoderJpegeQl jql;
     memset(&jql, 0, sizeof(jql));
     jql.user_ql_en = ql->user_table_en;
-    size_t copy_sz = sizeof(jql.qmem_table) < sizeof(ql->qmem_table)
-                         ? sizeof(jql.qmem_table) : sizeof(ql->qmem_table);
+    size_t copy_sz = sizeof(jql.qmem_table) < sizeof(ql->qmem_table) ? sizeof(jql.qmem_table)
+                                                                     : sizeof(ql->qmem_table);
     memcpy(jql.qmem_table, ql->qmem_table, copy_sz);
     int ret = IMP_Encoder_SetJpegeQl(chn, &jql);
     if (ret != 0)
@@ -3388,8 +3393,8 @@ int hal_enc_get_jpeg_ql(void *ctx, int chn, rss_enc_jpeg_ql_t *ql)
     }
     ql->user_table_en = jql.user_ql_en;
     memset(ql->qmem_table, 0, sizeof(ql->qmem_table));
-    size_t get_sz = sizeof(ql->qmem_table) < sizeof(jql.qmem_table)
-                        ? sizeof(ql->qmem_table) : sizeof(jql.qmem_table);
+    size_t get_sz = sizeof(ql->qmem_table) < sizeof(jql.qmem_table) ? sizeof(ql->qmem_table)
+                                                                    : sizeof(jql.qmem_table);
     memcpy(ql->qmem_table, jql.qmem_table, get_sz);
     return RSS_OK;
 #else

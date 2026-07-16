@@ -61,13 +61,14 @@
 #endif
 
 /* Old-style encoder structs, per-codec RC unions, packs with direct virAddr */
-#if defined(PLATFORM_T10) || defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) || defined(PLATFORM_T30)
+#if defined(PLATFORM_T10) || defined(PLATFORM_T20) || defined(PLATFORM_T21) ||                     \
+    defined(PLATFORM_T23) || defined(PLATFORM_T30)
 #define HAL_OLD_SDK
 #endif
 
 /* New-style encoder structs, unified RC, packs with offset into ring buffer */
-#if defined(PLATFORM_T31) || defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) ||   \
-    defined(PLATFORM_T41)
+#if defined(PLATFORM_T31) || defined(PLATFORM_T32) || defined(PLATFORM_T33) ||                     \
+    defined(PLATFORM_T40) || defined(PLATFORM_T41)
 #define HAL_NEW_SDK
 #endif
 
@@ -87,8 +88,8 @@
 #endif
 
 /* Extended OSD region types (enum values shifted) */
-#if defined(PLATFORM_T23) || defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) ||   \
-    defined(PLATFORM_T41)
+#if defined(PLATFORM_T23) || defined(PLATFORM_T32) || defined(PLATFORM_T33) ||                     \
+    defined(PLATFORM_T40) || defined(PLATFORM_T41)
 #define HAL_EXTENDED_OSD
 #endif
 
@@ -110,8 +111,9 @@
  * including SDK headers.
  * ═══════════════════════════════════════════════════════════════════════ */
 
-#if defined(PLATFORM_T10) || defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T30) || \
-    defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#if defined(PLATFORM_T10) || defined(PLATFORM_T20) || defined(PLATFORM_T21) ||                     \
+    defined(PLATFORM_T30) || defined(PLATFORM_T33) || defined(PLATFORM_T40) ||                     \
+    defined(PLATFORM_T41)
 struct IMPISPAEAttr {
 }; /* not defined on these SoCs */
 #endif
@@ -197,8 +199,8 @@ int IMP_OSD_SetPoolSize(int size);
 
 /* IMP_ISP_Tuning_GetAwbHist is present in libimp.so on T20-T31
  * but the header prototype is absent on some versions */
-#if defined(PLATFORM_T10) || defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) || \
-    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+#if defined(PLATFORM_T10) || defined(PLATFORM_T20) || defined(PLATFORM_T21) ||                     \
+    defined(PLATFORM_T23) || defined(PLATFORM_T30) || defined(PLATFORM_T31)
 int IMP_ISP_Tuning_GetAwbHist(IMPISPAWBHist *awb_hist);
 #endif
 
@@ -305,6 +307,12 @@ struct rss_hal_ctx {
     /* Per-channel vendor stream struct (reused across get/release_frame) */
     IMPEncoderStream stream_priv[RSS_MAX_ENC_CHANNELS];
 
+    /* Per-channel configured codec. The JPEG pack-shape heuristic in
+     * get_frame is unreliable (T31 JPEG packs are not single-pack
+     * UNKNOWN), so JPEG channels are identified from what the caller
+     * configured instead. */
+    rss_codec_t chn_codec[RSS_MAX_ENC_CHANNELS];
+
     /* Audio input type (AMIC or DMIC) */
     rss_audio_input_t audio_input_type;
 
@@ -325,7 +333,6 @@ struct rss_hal_ctx {
 /* ═══════════════════════════════════════════════════════════════════════
  * 9. Internal Function Declarations
  * ═══════════════════════════════════════════════════════════════════════ */
-
 
 /* ═══════════════════════════════════════════════════════════════════════
  * 10. Input Clamping
