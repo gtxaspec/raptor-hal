@@ -608,6 +608,12 @@ typedef struct {
     bool has_gop_attr;
     bool has_set_bitrate;
     bool has_stream_buf_size;
+    /* JPEG channels should duty-cycle RecvPic around each configured
+     * frame: the SoC's encoder has no JPEG rate control and a
+     * continuously receiving JPEG channel costs the H.264 streams
+     * ~25% throughput (measured T20/T21/T30; T23 and new-SDK parts
+     * are unaffected). */
+    bool jpeg_pulse;
     bool has_encoder_pool;
     bool has_smartp_gop;
     bool has_rc_options;

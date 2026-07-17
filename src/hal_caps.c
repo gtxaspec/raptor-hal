@@ -28,6 +28,7 @@ const rss_hal_caps_t g_hal_caps = {
     .has_gop_attr = false,
     .has_set_bitrate = false,
     .has_stream_buf_size = false,
+    .jpeg_pulse = true,
     .has_encoder_pool = false,
     .has_smartp_gop = false,
     .has_rc_options = false,
@@ -116,6 +117,7 @@ const rss_hal_caps_t g_hal_caps = {
     .has_gop_attr = false,
     .has_set_bitrate = false,
     .has_stream_buf_size = false,
+    .jpeg_pulse = true,
     .has_encoder_pool = false,
     .has_smartp_gop = false,
     .has_rc_options = false,
@@ -292,6 +294,7 @@ const rss_hal_caps_t g_hal_caps = {
     .has_gop_attr = false,
     .has_set_bitrate = false,
     .has_stream_buf_size = false,
+    .jpeg_pulse = true,
     .has_encoder_pool = false,
     .has_smartp_gop = false,
     .has_rc_options = false,
@@ -807,4 +810,3 @@ const rss_hal_caps_t g_hal_caps = {
 #else
 #error "No PLATFORM_* defined. Set one of: PLATFORM_T10 T20 T21 T23 T30 T31 T32 T33 T40 T41"
 #endif
-
