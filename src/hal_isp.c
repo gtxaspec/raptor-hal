@@ -342,8 +342,29 @@ int hal_isp_set_wb(void *ctx, const rss_wb_config_t *wb_cfg)
  *
  * Gen3 (T32/T40/T41):
  *   - IMP_ISP_Tuning_GetAeExprInfo(IMPVI_NUM, IMPISPAeExprInfo*)
- *     which provides gain + exposure time + luma in one call
+ *     provides gain + exposure time
+ *   - IMP_ISP_Tuning_GetAeStatistics(IMPVI_NUM, IMPISPAEStatisInfo*)
+ *     provides the 256-bin histogram used to calculate luma
  * ================================================================ */
+
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+static uint32_t ae_luma_from_statistics(const IMPISPAEStatisInfo *statistics)
+{
+    uint64_t pixel_count = 0;
+    uint64_t weighted_sum = 0;
+
+    for (uint32_t i = 0; i < 256; i++) {
+        uint32_t bin = statistics->ae_hist_256bin[i];
+        pixel_count += bin;
+        weighted_sum += (uint64_t)bin * i;
+    }
+
+    if (pixel_count == 0)
+        return 0;
+
+    return (uint32_t)((weighted_sum + pixel_count / 2) / pixel_count);
+}
+#endif
 
 int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
 {
@@ -357,10 +378,10 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
 #if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
     /*
      * Gen3: single call to GetAeExprInfo.
-     * The struct layout is SoC-specific but includes at minimum:
+     * The struct layout is SoC-specific but includes:
      *   - total gain (analog * digital * isp_dgain)
      *   - exposure time in microseconds
-     *   - AE luma
+     * AE luma is calculated separately from the 256-bin histogram below.
      */
     IMPISPAeExprInfo expr_info;
     memset(&expr_info, 0, sizeof(expr_info));
@@ -376,8 +397,12 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
     /* T32 AEExprInfo lacks TotalGainDb; approximate from analog gain */
     exposure->total_gain = expr_info.AeAGain;
 #endif
-    /* AE luma is not available in AEExprInfo; leave as 0 */
-    exposure->ae_luma = 0;
+    /* AEExprInfo has no luma, so calculate the mean from the AE histogram. */
+    IMPISPAEStatisInfo ae_statis;
+    memset(&ae_statis, 0, sizeof(ae_statis));
+    ret = IMP_ISP_Tuning_GetAeStatistics(IMPVI_MAIN, &ae_statis);
+    if (ret == 0)
+        exposure->ae_luma = ae_luma_from_statistics(&ae_statis);
 
 #if defined(PLATFORM_T40) || defined(PLATFORM_T41)
     exposure->ev = (uint32_t)expr_info.ExposureValue;
