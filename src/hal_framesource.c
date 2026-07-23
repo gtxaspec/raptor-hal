@@ -24,6 +24,8 @@ static IMPPixelFormat hal_translate_pixfmt(rss_pixfmt_t fmt)
         return PIX_FMT_NV12;
     case RSS_PIXFMT_YUYV422:
         return PIX_FMT_YUYV422;
+    case RSS_PIXFMT_RAW:
+        return PIX_FMT_RAW;
     default:
         return PIX_FMT_NV12;
     }
@@ -249,7 +251,8 @@ int hal_fs_set_rotation(void *ctx, int chn, int degrees)
         return 0;
     }
 
-#elif defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#elif defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) ||                   \
+    defined(PLATFORM_T41)
     {
         IMPFSI2DAttr i2d;
         int ret;
