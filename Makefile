@@ -1,17 +1,22 @@
-# Raptor HAL - Hardware Abstraction Layer for Ingenic SoCs
+# Raptor HAL - Hardware Abstraction Layer for Ingenic and SigmaStar SoCs
 #
 # Usage:
 #   make PLATFORM=T31 CROSS_COMPILE=mipsel-linux-
 #   make PLATFORM=T40 CROSS_COMPILE=mipsel-linux- INGENIC_HEADERS=/path/to/headers
+#   make PLATFORM=INFINITY6E CROSS_COMPILE=arm-linux-gnueabihf-
 #   make PLATFORM=T31 clean
 #
 # Required variables:
-#   PLATFORM        - Target SoC: T10, T20, T21, T23, T30, T31, T32, T40, T41
+#   PLATFORM        - Target SoC:
+#                       Ingenic   - T10, T20, T21, T23, T30, T31, T32, T33, T40, T41
+#                       SigmaStar - INFINITY6E
 #   CROSS_COMPILE   - Cross-compiler prefix (e.g. mipsel-linux-)
 #
 # Optional variables:
 #   INGENIC_HEADERS - Path to ingenic-headers repo (default: ../ingenic-headers)
 #   INGENIC_LIB     - Path to ingenic-lib repo (default: ../ingenic-lib)
+#   SIGMASTAR_SDK   - Path to SigmaStar SDK staging dir (default: ../sigmastar-sdk),
+#                     laid out as <soc>/{include,lib}
 #   DEBUG           - Set to 1 for debug build
 #   V               - Set to 1 for verbose output
 
@@ -21,11 +26,22 @@ $(error PLATFORM not set. Use: make PLATFORM=T31)
 endif
 
 # Validate platform
-VALID_PLATFORMS := T10 T20 T21 T23 T30 T31 T32 T33 T40 T41
+VALID_PLATFORMS := T10 T20 T21 T23 T30 T31 T32 T33 T40 T41 INFINITY6E
 ifeq ($(filter $(PLATFORM),$(VALID_PLATFORMS)),)
 $(error Invalid PLATFORM=$(PLATFORM). Valid: $(VALID_PLATFORMS))
 endif
 endif # clean guard
+
+# Vendor selection — which SDK family this platform belongs to.
+# Ingenic parts use the single-library IMP SDK; SigmaStar parts use the
+# per-module MI SDK. Set unconditionally (not inside the clean guard) so
+# `make clean` still resolves the right object paths.
+SIGMASTAR_PLATFORMS := INFINITY6E
+ifneq ($(filter $(PLATFORM),$(SIGMASTAR_PLATFORMS)),)
+VENDOR := sigmastar
+else
+VENDOR := ingenic
+endif
 
 # SDK version mapping
 HEADER_VER_T10 := 3.12.0
@@ -57,7 +73,16 @@ HEADER_LANG := $(HEADER_LANG_$(PLATFORM))
 # Paths
 INGENIC_HEADERS ?= ingenic-headers
 INGENIC_LIB     ?= ../ingenic-lib
+
+# SigmaStar SDK staging dir: $(SIGMASTAR_SDK)/<soc>/{include,lib}
+SIGMASTAR_SDK   ?= ../sigmastar-sdk
+SDK_DIR_INFINITY6E := infinity6e
+
+ifeq ($(VENDOR),sigmastar)
+SDK_INCLUDE     := $(SIGMASTAR_SDK)/$(SDK_DIR_$(PLATFORM))/include
+else
 SDK_INCLUDE     := $(INGENIC_HEADERS)/$(PLATFORM)/$(HEADER_VER)/$(HEADER_LANG)
+endif
 
 # Toolchain
 CC      := $(CROSS_COMPILE)gcc
@@ -75,7 +100,11 @@ CFLAGS  += -ffunction-sections -fdata-sections -flto
 CFLAGS  += -fno-asynchronous-unwind-tables -fmerge-all-constants -fno-ident
 CFLAGS  += -DPLATFORM_$(PLATFORM)
 CFLAGS  += -I$(SDK_INCLUDE)
+ifneq ($(VENDOR),sigmastar)
+# IMP headers live in an imp/ subdir and are included as <imp/imp_system.h>;
+# the MI SDK has no such nesting.
 CFLAGS  += -I$(SDK_INCLUDE)/imp
+endif
 CFLAGS  += -Iinclude
 CFLAGS  += -Isrc
 
@@ -96,8 +125,25 @@ else
 Q := @
 endif
 
-# Sources — shared across both archives
+# Sources — shared across both archives.
+# hal_caps.c is pure per-SoC capability data and hal_gpio.c is plain sysfs
+# GPIO with no SDK dependency, so both are vendor-neutral.
 CORE_SRCS := src/hal_caps.c
+
+ifeq ($(VENDOR),sigmastar)
+
+# SigmaStar MI backend. Subsystems not yet ported simply omit their ops from
+# the vtable — RSS_HAL_CALL NULL-guards every entry and returns RSS_ERR_NOTSUP,
+# so there is no need for stub translation units per unimplemented subsystem.
+HAL_COMMON_SRC := src/star/hal_common.c
+
+VIDEO_SRCS := src/hal_gpio.c
+
+AUDIO_SRCS :=
+
+else
+
+HAL_COMMON_SRC := src/hal_common.c
 
 VIDEO_SRCS := src/hal_encoder.c \
               src/hal_framesource.c \
@@ -109,6 +155,8 @@ VIDEO_SRCS := src/hal_encoder.c \
 
 AUDIO_SRCS := src/hal_audio.c \
               src/hal_dmic.c
+
+endif
 
 CXX_SRCS :=
 ifneq ($(JZDL_INCLUDE),)
@@ -133,11 +181,11 @@ LIB_AUDIO := libraptor_hal_audio.a
 all: $(LIB_VIDEO) $(LIB_AUDIO)
 
 # Compile hal_common.c twice with different module defines
-src/hal_common_video.o: src/hal_common.c
+src/hal_common_video.o: $(HAL_COMMON_SRC)
 	@echo "  CC      $< (video)"
 	$(Q)$(CC) $(CFLAGS) -DHAL_MODULE_VIDEO -MMD -MP -c $< -o $@
 
-src/hal_common_audio.o: src/hal_common.c
+src/hal_common_audio.o: $(HAL_COMMON_SRC)
 	@echo "  CC      $< (audio)"
 	$(Q)$(CC) $(CFLAGS) -DHAL_MODULE_AUDIO -MMD -MP -c $< -o $@
 
@@ -162,9 +210,14 @@ $(LIB_AUDIO): src/hal_common_audio.o $(CORE_OBJS) $(AUDIO_OBJS)
 clean:
 	@echo "  CLEAN"
 	$(Q)rm -f $(ALL_OBJS) $(DEPS) $(LIB_VIDEO) $(LIB_AUDIO)
+	# `make clean` runs without PLATFORM, so VENDOR defaults to ingenic and
+	# $(ALL_OBJS) names only that backend's objects. Sweep the other
+	# vendors' subdirs explicitly so a clean is vendor-independent.
+	$(Q)rm -f src/*/*.o src/*/*.d
 
 info:
 	@echo "Platform:        $(PLATFORM)"
+	@echo "Vendor:          $(VENDOR)"
 	@echo "SDK version:     $(HEADER_VER)"
 	@echo "SDK language:    $(HEADER_LANG)"
 	@echo "SDK include:     $(SDK_INCLUDE)"

@@ -807,6 +807,59 @@ const rss_hal_caps_t g_hal_caps = {
     .max_isp_osd_regions = 8,
 };
 
+/* ═══════════════════════════════════════════════════════════════════════
+ * INFINITY6E (SigmaStar SSC30KQ / SSC338Q)
+ *
+ * Two kinds of false appear below, and the distinction matters:
+ *
+ *   1. Hardware/SDK facts — the MI SDK genuinely has no equivalent.
+ *      These stay false permanently and are commented individually.
+ *   2. Not-yet-implemented — the capability may well exist, but the
+ *      corresponding hal_* op is not wired up yet. Consumers check these
+ *      flags before calling optional ops, so declaring false keeps
+ *      rvd/rsd from invoking a NULL vtable entry. Each later phase flips
+ *      on the flags it implements (ISP -> phase 3, audio -> 4, OSD -> 5).
+ *
+ * Since the backend currently populates no video/audio ops at all,
+ * everything in category 2 is false. Only fields with a positive value
+ * or a permanent-false explanation are listed; the rest default to
+ * false/0 via designated initialization.
+ * ═══════════════════════════════════════════════════════════════════════ */
+#elif defined(PLATFORM_INFINITY6E)
+const rss_hal_caps_t g_hal_caps = {
+    /* System info */
+    .soc_name = "INFINITY6E",
+    /* Real value comes from MI_SYS_GetVersion() at runtime (phase 2);
+     * this is only the compile-time fallback string. */
+    .sdk_version = "MI",
+
+    /* Encoder — H.264/H.265/MJPEG are all present in hardware
+     * (i6_venc_codec: I6_VENC_CODEC_H264/H265/MJPG). */
+    .has_h265 = true,
+    /* Permanent false: MI rate control offers CBR/VBR/ABR/FIXQP/AVBR
+     * (i6_venc_ratemode) with no equivalent of Ingenic's SMART mode. */
+    .has_smart_rc = false,
+
+    /* ISP — single sensor for now; MI supports multi-sensor on some parts
+     * but raptor's multi-sensor path is Ingenic IMPVI-specific. */
+    .has_multi_sensor = false,
+    .max_sensors = 1,
+    /* Permanent false: T23-specific IMP_ISP_MultiCamera_* API. */
+    .has_t23_multicam_api = false,
+
+    /* System — all three describe Ingenic internals (xburst2 core, IMP SDK
+     * generation, IMPVI multi-sensor calling convention) and are
+     * permanently false for any non-Ingenic vendor. */
+    .uses_xburst2 = false,
+    .uses_new_sdk = false,
+    .uses_impvi = false,
+
+    /* Limits — MI_VENC_MAX_CHN_NUM_PER_DC = 3 caps encoder channels.
+     * OSD limits stay 0 until the region backend lands in phase 5;
+     * max_fs_channels is confirmed against MI_VPE in phase 2. */
+    .max_enc_channels = 3,
+};
+
 #else
-#error "No PLATFORM_* defined. Set one of: PLATFORM_T10 T20 T21 T23 T30 T31 T32 T33 T40 T41"
+#error "No PLATFORM_* defined. Set one of: PLATFORM_T10 T20 T21 T23 T30 T31 T32 T33 T40 T41 INFINITY6E"
 #endif
