@@ -31,6 +31,10 @@
 
 #include <stdarg.h>
 
+/* Sanity bounds on counts MI reports back — see probe_sensor(). */
+#define PROBE_MAX_RES 32
+#define PROBE_MAX_PLANES 4
+
 /*
  * The i6_*.h loaders log through rss_hal_log_fn, which the HAL archives
  * define in star/hal_common.c. Defining it here instead keeps the probe a
@@ -132,6 +136,18 @@ static int probe_sensor(i6_snr_impl *snr, unsigned int index)
     }
     printf("sensor %u: %u resolution(s)\n", index, count);
 
+    /*
+     * Clamp before looping. A struct-layout error is precisely the condition
+     * this tool exists to detect, and it can make a count come back as
+     * garbage -- so the loop bound must not be trusted, or the probe floods
+     * the console instead of reporting the problem.
+     */
+    if (count > PROBE_MAX_RES) {
+        printf("  !! count implausible, clamping to %u -- suspect a layout error\n",
+               PROBE_MAX_RES);
+        count = PROBE_MAX_RES;
+    }
+
     for (i = 0; i < count; i++) {
         memset(&res, 0, sizeof(res));
         ret = snr->fnGetResolution(index, (unsigned char)i, &res);
@@ -164,6 +180,12 @@ static int probe_sensor(i6_snr_impl *snr, unsigned int index)
         printf("     mipi: lanes %u  rgbFmt %u  input %d  hsyncMode %u  hwHdr %d  virtChn %u\n",
                pad.intfAttr.mipi.laneCnt, pad.intfAttr.mipi.rgbFmtOn, pad.intfAttr.mipi.input,
                pad.intfAttr.mipi.hsyncMode, pad.intfAttr.mipi.hwHdr, pad.intfAttr.mipi.virtChn);
+
+    if (pad.planeCnt > PROBE_MAX_PLANES) {
+        printf("  !! planeCnt implausible, clamping to %u -- suspect a layout error\n",
+               PROBE_MAX_PLANES);
+        pad.planeCnt = PROBE_MAX_PLANES;
+    }
 
     for (i = 0; i < pad.planeCnt; i++) {
         memset(&plane, 0, sizeof(plane));
