@@ -854,10 +854,17 @@ const rss_hal_caps_t g_hal_caps = {
     .uses_new_sdk = false,
     .uses_impvi = false,
 
-    /* Limits — MI_VENC_MAX_CHN_NUM_PER_DC = 3 caps encoder channels.
+    /* Limits — Infinity6E exposes 9 addressable VENC channels
+     * (I6_VENC_CHN_NUM in both divinus's i6_venc.h and waybeam's
+     * sigmastar_types.h; divinus allocates channel state for all 9 and
+     * iterates them). An earlier 3 here came from misreading
+     * MI_VENC_MAX_CHN_NUM_PER_DC, which is the per-device-group limit and
+     * not the total. Capped at RSS_MAX_ENC_CHANNELS (8) since that is
+     * raptor's array bound, so 8 is the most this field can honestly
+     * advertise.
      * OSD limits stay 0 until the region backend lands in phase 5;
      * max_fs_channels is confirmed against MI_VPE in phase 2. */
-    .max_enc_channels = 3,
+    .max_enc_channels = 8,
 };
 
 #else
