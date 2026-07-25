@@ -11,15 +11,25 @@
  * to spot and cheap to fix -- rather than as memory corruption several tasks
  * into the port, which is the failure mode this port most needs to avoid.
  *
- * Never touches VIF/VPE/VENC -- those are 2b through 2d. By default it only
- * queries, writing no state but MI_SNR_SetPlaneMode, as divinus does before
- * querying (i6_hal.c:228).
+ * Never touches VPE/VENC -- those are 2c and 2d. By default it only queries,
+ * writing no state but MI_SNR_SetPlaneMode, as divinus does before querying
+ * (i6_hal.c:228).
  *
  * With -e it additionally runs SetRes/SetFps/SetOrien/Enable first, because
  * the pad's intfAttr and the plane geometry stay zero until the sensor
  * driver's pCus_sensor_init has run, and MI_SNR_Enable is what triggers it --
  * which is why waybeam queries the pad after Enable (sensor_select.c:485).
  * Enable is always paired with Disable, so even -e leaves nothing streaming.
+ *
+ * With -f it goes one step further and brings up VIF on top of the sensor,
+ * then checks that frames actually arrive: first from /proc/mi_modules, which
+ * costs nothing and cannot be wrong about ABI, and then by draining the VIF
+ * output port through MI_SYS_ChnOutputPortGetBuf. The second check is the one
+ * that exercises i6_sys_bufinfo, and it is allowed to fail without failing the
+ * run -- reading VIF output from the CPU is not a configuration the pipeline
+ * itself uses (VIF is bound to VPE in hardware), so a refusal here says
+ * something about the binding, not about the struct. The proc counters are the
+ * authoritative answer to "are frames arriving". -f implies -e.
  *
  * On SSC30KQ + GC4653 expect: 2560x1440, 10bpp precision, Bayer GR, MIPI
  * interface, 2 lanes, 5-30 fps, and a single plane (pad.planeCnt reads 0 --
@@ -39,11 +49,21 @@
 #include "star/i6_vpe.h"
 
 #include <stdarg.h>
+#include <sys/select.h>
 #include <time.h>
 
 /* Sanity bounds on counts MI reports back — see probe_sensor(). */
 #define PROBE_MAX_RES 32
 #define PROBE_MAX_PLANES 4
+
+/* VIF topology, matching src/star/hal_common.c's STAR_VIF_* constants. */
+#define PROBE_VIF_DEV 0
+#define PROBE_VIF_CHN 0
+#define PROBE_VIF_PORT 0
+
+/* How long to wait for a frame. At the GC4653's 5 fps floor a frame is 200 ms,
+ * so a second is generous without hanging a failed run for long. */
+#define PROBE_FRAME_TIMEOUT_MS 1000
 
 /*
  * The i6_*.h loaders log through rss_hal_log_fn, which the HAL archives
@@ -270,13 +290,283 @@ static int probe_sensor(i6_snr_impl *snr, unsigned int index, int do_enable)
     return 0;
 }
 
+/*
+ * Print a line from a /proc/mi_modules file and the `after` lines that follow
+ * it -- the vendor's proc tables put column headers on one line and values on
+ * the next, which is why the SigmaStar debugging notes always reach for
+ * `grep -A1` (waybeam documentation/PROC_MI_MODULES_REFERENCE.md).
+ */
+static int probe_proc_grep(const char *path, const char *needle, int after)
+{
+    char line[512];
+    int remaining = 0;
+    int hits = 0;
+    FILE *f = fopen(path, "r");
+
+    if (!f) {
+        printf("  %s: unavailable\n", path);
+        return 0;
+    }
+
+    while (fgets(line, sizeof(line), f)) {
+        if (strstr(line, needle)) {
+            remaining = after;
+            hits++;
+            printf("  | %s", line);
+        } else if (remaining > 0) {
+            remaining--;
+            printf("  | %s", line);
+        }
+    }
+
+    fclose(f);
+    if (!hits)
+        printf("  %s: no line matching \"%s\"\n", path, needle);
+    return hits;
+}
+
+/*
+ * VIF pixel format. Duplicated from star_vif_pixfmt() in
+ * src/star/hal_common.c, which is the source of truth -- the probe is a single
+ * translation unit on purpose (see probe_log) so it cannot call into the
+ * archive.
+ *
+ * The sensor's own pixFmt is preferred over the derived value because the two
+ * disagree on this board: the GC4653 driver reports 41 where both references
+ * compute 20 + precision * I6_BAYER_END + bayer == 33. 41 is what 20 + 1 * 20
+ * + 1 gives, i.e. the firmware's bayer-id stride is 20 where our vendored enum
+ * has 12 -- newer SDKs add RGB-IR patterns to that enum. Trusting the driver
+ * costs nothing when the two agree.
+ */
+static i6_common_pixfmt probe_vif_pixfmt(const i6_snr_plane *plane)
+{
+    if (plane->pixFmt)
+        return plane->pixFmt;
+
+    return (i6_common_pixfmt)(I6_PIXFMT_RGB_BAYER + plane->precision * I6_BAYER_END + plane->bayer);
+}
+
+/*
+ * Bring VIF up on an already-enabled sensor and confirm frames arrive. Mirrors
+ * star_vif_bringup() in src/star/hal_common.c; if the two ever disagree,
+ * hal_common.c is right and this is stale.
+ */
+static int probe_vif(i6_sys_impl *sys, i6_snr_impl *snr, i6_vif_impl *vif, unsigned int index,
+                     int frames)
+{
+    i6_snr_pad pad;
+    i6_snr_plane plane;
+    i6_vif_dev device;
+    i6_vif_port port;
+    i6_sys_bind bind;
+    int dev_enabled = 0;
+    int port_enabled = 0;
+    int fd = -1;
+    int captured = 0;
+    int ret;
+
+    memset(&pad, 0, sizeof(pad));
+    memset(&plane, 0, sizeof(plane));
+
+    /* Both descriptors are read after MI_SNR_Enable, since the sensor driver's
+     * init is what populates them -- see probe_sensor's comment. */
+    ret = snr->fnGetPadInfo(index, &pad);
+    if (ret) {
+        printf("MI_SNR_GetPadInfo: %d\n", ret);
+        return ret;
+    }
+    ret = snr->fnGetPlaneInfo(index, 0, &plane);
+    if (ret) {
+        printf("MI_SNR_GetPlaneInfo: %d\n", ret);
+        return ret;
+    }
+
+    memset(&device, 0, sizeof(device));
+    device.intf = pad.intf;
+    device.work = device.intf == I6_INTF_BT656 ? I6_VIF_WORK_1MULTIPLEX : I6_VIF_WORK_RGB_REALTIME;
+    device.hdr = I6_HDR_OFF;
+    if (device.intf == I6_INTF_MIPI) {
+        device.edge = I6_EDGE_DOUBLE;
+        device.input = pad.intfAttr.mipi.input;
+    } else if (device.intf == I6_INTF_BT656) {
+        device.edge = pad.intfAttr.bt656.edge;
+        device.sync = pad.intfAttr.bt656.sync;
+        device.bitswap = (char)pad.intfAttr.bt656.bitswap;
+    }
+
+    printf("\nVIF: intf %s(%d) work %d edge %d input %d\n", intf_name(device.intf), device.intf,
+           device.work, device.edge, device.input);
+
+    ret = vif->fnSetDeviceConfig(PROBE_VIF_DEV, &device);
+    if (ret) {
+        printf("MI_VIF_SetDevAttr: %d\n", ret);
+        return ret;
+    }
+    ret = vif->fnEnableDevice(PROBE_VIF_DEV);
+    if (ret) {
+        printf("MI_VIF_EnableDev: %d\n", ret);
+        return ret;
+    }
+    dev_enabled = 1;
+
+    memset(&port, 0, sizeof(port));
+    port.capt = plane.capt;
+    port.dest.width = plane.capt.width;
+    port.dest.height = plane.capt.height;
+    port.pixFmt = probe_vif_pixfmt(&plane);
+    port.frate = I6_VIF_FRATE_FULL;
+
+    printf("     port %ux%u+%u+%u -> %ux%u  pixFmt %d (sensor reported %d)\n", port.capt.width,
+           port.capt.height, port.capt.x, port.capt.y, port.dest.width, port.dest.height,
+           port.pixFmt, plane.pixFmt);
+
+    ret = vif->fnSetPortConfig(PROBE_VIF_CHN, PROBE_VIF_PORT, &port);
+    if (ret) {
+        printf("MI_VIF_SetChnPortAttr: %d (pixFmt %d)\n", ret, port.pixFmt);
+        goto out;
+    }
+    ret = vif->fnEnablePort(PROBE_VIF_CHN, PROBE_VIF_PORT);
+    if (ret) {
+        printf("MI_VIF_EnableChnPort: %d\n", ret);
+        goto out;
+    }
+    port_enabled = 1;
+    printf("     up\n");
+
+    /*
+     * Give the sensor and VIF a moment to produce frames before reading the
+     * counters -- at 30 fps a few hundred ms is many frames, and reading
+     * immediately would report zero for reasons that have nothing to do with
+     * whether the bring-up worked.
+     */
+    {
+        struct timespec nap = {0, 500 * 1000 * 1000};
+
+        nanosleep(&nap, NULL);
+    }
+
+    printf("\nVIF counters (/proc/mi_modules -- authoritative, no ABI involved):\n");
+    probe_proc_grep("/proc/mi_modules/mi_vif/mi_vif0", "GetTotalCnt", 1);
+    probe_proc_grep("/proc/mi_modules/mi_vif/mi_vif0", "OutCount", 1);
+    printf("\nsensor counters:\n");
+    probe_proc_grep("/proc/mi_modules/mi_sensor/mi_sensor0", "fps", 1);
+
+    /*
+     * Now the ABI-exercising part. A non-zero counter above already proves the
+     * bring-up works; this additionally proves i6_sys_bufinfo, and only this
+     * can answer what pixel format VIF is really emitting.
+     */
+    if (!frames)
+        goto out;
+
+    if (!sys->fnGetOutputBuf || !sys->fnPutOutputBuf) {
+        printf("\nMI_SYS_ChnOutputPortGetBuf/PutBuf not exported -- skipping frame reads\n");
+        goto out;
+    }
+
+    memset(&bind, 0, sizeof(bind));
+    bind.module = I6_SYS_MOD_VIF;
+    bind.device = PROBE_VIF_DEV;
+    bind.channel = PROBE_VIF_CHN;
+    bind.port = PROBE_VIF_PORT;
+
+    /* usrDepth 2 / bufDepth 4 is divinus's own choice for a port userspace
+     * drains (i6_hal.c:109). Without a user depth the port queues nothing for
+     * the CPU and GetBuf always returns empty. */
+    ret = sys->fnSetOutputDepth(&bind, 2, 4);
+    if (ret) {
+        printf("\nMI_SYS_SetChnOutputPortDepth: %d -- VIF output is not CPU-readable in this\n"
+               "  configuration; the counters above are the verification that matters\n", ret);
+        ret = 0;
+        goto out;
+    }
+
+    if (sys->fnGetFd) {
+        ret = sys->fnGetFd(&bind, &fd);
+        if (ret) {
+            printf("MI_SYS_GetFd: %d (falling back to polling)\n", ret);
+            fd = -1;
+        }
+    }
+
+    printf("\nframe reads from VIF chn %d port %d:\n", PROBE_VIF_CHN, PROBE_VIF_PORT);
+
+    while (captured < frames) {
+        i6_sys_bufinfo buf;
+        int handle = -1;
+
+        if (fd >= 0) {
+            fd_set rfds;
+            struct timeval tv = {PROBE_FRAME_TIMEOUT_MS / 1000,
+                                 (PROBE_FRAME_TIMEOUT_MS % 1000) * 1000};
+
+            FD_ZERO(&rfds);
+            FD_SET(fd, &rfds);
+            ret = select(fd + 1, &rfds, NULL, NULL, &tv);
+            if (ret < 0) {
+                printf("  select: %s\n", strerror(errno));
+                break;
+            }
+            if (!ret) {
+                printf("  timeout after %d ms with no frame\n", PROBE_FRAME_TIMEOUT_MS);
+                break;
+            }
+        }
+
+        memset(&buf, 0, sizeof(buf));
+        ret = sys->fnGetOutputBuf(&bind, &buf, &handle);
+        if (ret) {
+            printf("  MI_SYS_ChnOutputPortGetBuf: %d\n", ret);
+            if (fd < 0) {
+                struct timespec nap = {0, 50 * 1000 * 1000};
+
+                nanosleep(&nap, NULL);
+                continue;
+            }
+            break;
+        }
+
+        printf("  [%d] pts %llu  type %d  seq %u  %ux%u  pixFmt %d  stride %u/%u  "
+               "size %u  eos %d drop %d\n",
+               captured, buf.pts, buf.bufType, buf.seqNum, buf.frame.width, buf.frame.height,
+               buf.frame.pixFmt, buf.frame.stride[0], buf.frame.stride[1], buf.frame.bufSize,
+               buf.endOfStream, buf.drop);
+        printf("       va %p/%p  pa 0x%llx  crop %ux%u+%u+%u\n", buf.frame.virAddr[0],
+               buf.frame.virAddr[1], buf.frame.phyAddr[0], buf.frame.crop.width,
+               buf.frame.crop.height, buf.frame.crop.x, buf.frame.crop.y);
+
+        sys->fnPutOutputBuf(handle);
+        captured++;
+    }
+
+    printf("captured %d of %d frame(s)\n", captured, frames);
+    if (!captured)
+        printf("  (no frames read -- see the counters above for whether VIF is producing at\n"
+               "   all. This path is not the one the pipeline uses, so a failure here does\n"
+               "   not fail the run; it does leave i6_sys_bufinfo unexercised.)\n");
+    ret = 0;
+
+out:
+    if (fd >= 0 && sys->fnCloseFd)
+        sys->fnCloseFd(fd);
+    if (port_enabled)
+        vif->fnDisablePort(PROBE_VIF_CHN, PROBE_VIF_PORT);
+    if (dev_enabled)
+        vif->fnDisableDevice(PROBE_VIF_DEV);
+
+    return ret;
+}
+
 int main(int argc, char **argv)
 {
     i6_sys_impl sys;
     i6_snr_impl snr;
+    i6_vif_impl vif;
     i6_sys_ver ver;
     unsigned int index = 0;
     int do_enable = 0;
+    int do_vif = 0;
+    int frames = 3;
     int i;
 
     int ret;
@@ -284,24 +574,37 @@ int main(int argc, char **argv)
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-e"))
             do_enable = 1;
-        else if (!strcmp(argv[i], "-h")) {
-            printf("usage: star_probe [-e] [sensor-index]\n"
+        else if (!strcmp(argv[i], "-f")) {
+            do_vif = 1;
+            do_enable = 1;
+        } else if (!strcmp(argv[i], "-n") && i + 1 < argc) {
+            frames = (int)strtol(argv[++i], NULL, 0);
+            if (frames < 0)
+                frames = 0;
+        } else if (!strcmp(argv[i], "-h")) {
+            printf("usage: star_probe [-e] [-f] [-n count] [sensor-index]\n"
                    "  -e  run the sensor bring-up sequence (SetRes/SetFps/SetOrien/Enable)\n"
                    "      before querying, then Disable. Needed to see pad intfAttr and\n"
                    "      plane geometry, since those are only populated once the sensor\n"
                    "      driver's init has run. Starts the sensor -- stop any streamer\n"
-                   "      first.\n");
+                   "      first.\n"
+                   "  -f  additionally bring up VIF and check that frames arrive, via\n"
+                   "      /proc/mi_modules counters and then by draining the VIF output\n"
+                   "      port. Implies -e. Everything is torn down again before exit.\n"
+                   "  -n  how many frames -f should try to read (default %d)\n",
+                   frames);
             return 0;
         } else
             index = (unsigned int)strtoul(argv[i], NULL, 0);
     }
 
-    printf("star_probe -- %s, sensor index %u%s\n\n", HAL_PLATFORM_NAME, index,
-           do_enable ? ", with bring-up" : "");
+    printf("star_probe -- %s, sensor index %u%s%s\n\n", HAL_PLATFORM_NAME, index,
+           do_enable ? ", with bring-up" : "", do_vif ? " + VIF" : "");
     print_sizes();
 
     memset(&sys, 0, sizeof(sys));
     memset(&snr, 0, sizeof(snr));
+    memset(&vif, 0, sizeof(vif));
 
     ret = i6_sys_load(&sys);
     if (ret) {
@@ -356,7 +659,30 @@ int main(int argc, char **argv)
     } else
         printf("MI_SYS_GetCurPts not exported -- SEI timecodes unavailable\n\n");
 
+    /*
+     * The frame-buffer symbols are resolved optionally (see i6_sys_load), so
+     * report what actually resolved before anything depends on it -- "not
+     * exported" and "exported but misused" look identical from a failed call.
+     */
+    if (do_vif)
+        printf("frame symbols: GetBuf %c PutBuf %c GetFd %c CloseFd %c Flush %c Va2Pa %c\n\n",
+               sys.fnGetOutputBuf ? 'y' : 'n', sys.fnPutOutputBuf ? 'y' : 'n',
+               sys.fnGetFd ? 'y' : 'n', sys.fnCloseFd ? 'y' : 'n',
+               sys.fnFlushInvCache ? 'y' : 'n', sys.fnVa2Pa ? 'y' : 'n');
+
     ret = probe_sensor(&snr, index, do_enable);
+
+    if (!ret && do_vif) {
+        int vret = i6_vif_load(&vif);
+
+        if (vret)
+            printf("i6_vif_load: %d\n", vret);
+        else
+            vret = probe_vif(&sys, &snr, &vif, index, frames);
+        i6_vif_unload(&vif);
+        if (vret)
+            ret = vret;
+    }
 
     /*
      * Always pair Enable with Disable, including on the failure paths above --
