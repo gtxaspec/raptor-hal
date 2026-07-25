@@ -187,9 +187,15 @@ all: $(LIB_VIDEO) $(LIB_AUDIO)
 ifeq ($(VENDOR),sigmastar)
 star_probe: tools/star_probe
 
+# -MMD generates tools/star_probe.d so edits to the src/star/i6_*.h headers
+# rebuild the probe. Without it make sees only the .c, and a header-only fix
+# silently leaves the previous binary in place — which is exactly the kind of
+# stale artefact this tool exists to rule out.
 tools/star_probe: tools/star_probe.c
 	@echo "  CCLD    $@"
-	$(Q)$(CC) $(CFLAGS) $< -o $@ -ldl
+	$(Q)$(CC) $(CFLAGS) -MMD -MP $< -o $@ -ldl
+
+-include tools/star_probe.d
 else
 star_probe:
 	$(error star_probe is SigmaStar-only — build with PLATFORM=INFINITY6E)
@@ -224,7 +230,7 @@ $(LIB_AUDIO): src/hal_common_audio.o $(CORE_OBJS) $(AUDIO_OBJS)
 
 clean:
 	@echo "  CLEAN"
-	$(Q)rm -f $(ALL_OBJS) $(DEPS) $(LIB_VIDEO) $(LIB_AUDIO) tools/star_probe
+	$(Q)rm -f $(ALL_OBJS) $(DEPS) $(LIB_VIDEO) $(LIB_AUDIO) tools/star_probe tools/star_probe.d
 	# `make clean` runs without PLATFORM, so VENDOR defaults to ingenic and
 	# $(ALL_OBJS) names only that backend's objects. Sweep the other
 	# vendors' subdirs explicitly so a clean is vendor-independent.

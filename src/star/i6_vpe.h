@@ -15,6 +15,13 @@
  * function-pointer signatures name them and because keeping the file diffable
  * against upstream is worth more than trimming two structs.
  *
+ * One divergence from divinus beyond the four common adaptations: the
+ * loader below also opens libispalgo.so, libcus3a.so and libmi_isp.so.
+ * divinus opens those in its i6_isp.h loader, which it happens to run
+ * before its VPE loader; this backend has no MI_ISP binding until phase 3,
+ * so the dependency lives with the module that has it. The reason it is
+ * mandatory rather than tidy is in i6_vpe_load.
+ *
  * Copyright (c) 2024 OpenIPC
  * SPDX-License-Identifier: MIT
  */
@@ -164,6 +171,15 @@ typedef struct {
 typedef struct {
     void *handle;
 
+    /*
+     * ISP-side libraries VPE needs resolved before it can run. Not used
+     * directly -- held only so they stay mapped and can be closed. See
+     * i6_vpe_load for why they must be opened here.
+     */
+    void *handleIspAlgo;
+    void *handleCus3a;
+    void *handleIsp;
+
     int (*fnCreateChannel)(int channel, i6_vpe_chn *config);
     int (*fnDestroyChannel)(int channel);
     int (*fnSetChannelConfig)(int channel, i6_vpe_chn *config);
@@ -178,6 +194,56 @@ typedef struct {
 
 static inline int i6_vpe_load(i6_vpe_impl *vpe_lib)
 {
+    /*
+     * Load the ISP side first, or MI_VPE_CreateChannel kills the process.
+     *
+     * libmi_vpe.so leaves MI_ISP_EnableUserspace3A and
+     * MI_ISP_DisableUserspace3A undefined, and its DT_NEEDED lists only
+     * libc -- so the dynamic loader chains nothing, and with RTLD_LAZY the
+     * miss surfaces at first call as a fatal "symbol lookup error" rather
+     * than as a dlopen failure we could report. The first board run of
+     * star_probe -v died exactly there, immediately after MI_VPE_CreateChannel
+     * was entered.
+     *
+     * One level deeper, libmi_isp.so itself needs libcus3a.so (7 symbols)
+     * and libispalgo.so (14) and likewise names neither in DT_NEEDED, which
+     * is why divinus opens all three in that order before ever touching VPE
+     * (i6_isp.h:32-36, loaded at i6_hal.c:53, ten lines ahead of its VPE
+     * load). RTLD_GLOBAL is what makes them satisfy the next library's
+     * undefined symbols; dlopen refcounts, so phase 3's real MI_ISP binding
+     * can open libmi_isp.so again without conflict.
+     *
+     * The algorithm libraries are best-effort: their symbols are reached
+     * through libmi_isp, not from here, and a board missing them is a
+     * broken ISP rather than a broken VPE. libmi_isp.so is not optional --
+     * without it the next VPE call provably aborts.
+     */
+    vpe_lib->handleIspAlgo = dlopen("libispalgo.so", RTLD_LAZY | RTLD_GLOBAL);
+    if (!vpe_lib->handleIspAlgo)
+        HAL_LOG_WARN("i6_vpe: libispalgo.so not loaded (%s) -- ISP algorithms may fail",
+                     dlerror());
+
+    vpe_lib->handleCus3a = dlopen("libcus3a.so", RTLD_LAZY | RTLD_GLOBAL);
+    if (!vpe_lib->handleCus3a)
+        HAL_LOG_WARN("i6_vpe: libcus3a.so not loaded (%s) -- ISP algorithms may fail", dlerror());
+
+    if (!(vpe_lib->handleIsp = dlopen("libmi_isp.so", RTLD_LAZY | RTLD_GLOBAL))) {
+        HAL_LOG_ERR("i6_vpe: failed to load libmi_isp.so: %s", dlerror());
+        return RSS_ERR_NOENT;
+    }
+
+    /*
+     * Confirm the two symbols VPE actually reaches for. They are resolved
+     * lazily inside libmi_vpe.so, so without this check a missing one is a
+     * process abort mid-call instead of an error return -- and this loader
+     * exists to make missing-SDK cases reportable.
+     */
+    if (!dlsym(vpe_lib->handleIsp, "MI_ISP_EnableUserspace3A")) {
+        HAL_LOG_ERR("i6_vpe: libmi_isp.so lacks MI_ISP_EnableUserspace3A, which "
+                    "libmi_vpe.so needs -- mismatched MI libraries?");
+        return RSS_ERR_NOTSUP;
+    }
+
     if (!(vpe_lib->handle = dlopen("libmi_vpe.so", RTLD_LAZY | RTLD_GLOBAL))) {
         HAL_LOG_ERR("i6_vpe: failed to load library: %s", dlerror());
         return RSS_ERR_NOENT;
@@ -224,9 +290,19 @@ static inline int i6_vpe_load(i6_vpe_impl *vpe_lib)
 
 static inline void i6_vpe_unload(i6_vpe_impl *vpe_lib)
 {
+    /* Reverse of the load order: VPE first, then what it depended on. */
     if (vpe_lib->handle)
         dlclose(vpe_lib->handle);
     vpe_lib->handle = NULL;
+    if (vpe_lib->handleIsp)
+        dlclose(vpe_lib->handleIsp);
+    vpe_lib->handleIsp = NULL;
+    if (vpe_lib->handleCus3a)
+        dlclose(vpe_lib->handleCus3a);
+    vpe_lib->handleCus3a = NULL;
+    if (vpe_lib->handleIspAlgo)
+        dlclose(vpe_lib->handleIspAlgo);
+    vpe_lib->handleIspAlgo = NULL;
     memset(vpe_lib, 0, sizeof(*vpe_lib));
 }
 
