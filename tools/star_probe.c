@@ -11,9 +11,8 @@
  * to spot and cheap to fix -- rather than as memory corruption several tasks
  * into the port, which is the failure mode this port most needs to avoid.
  *
- * Never touches VENC -- that is 2d. By default it only queries, writing no
- * state but MI_SNR_SetPlaneMode, as divinus does before querying
- * (i6_hal.c:228).
+ * By default it only queries, writing no state but MI_SNR_SetPlaneMode, as
+ * divinus does before querying (i6_hal.c:228).
  *
  * With -e it additionally runs SetRes/SetFps/SetOrien/Enable first, because
  * the pad's intfAttr and the plane geometry stay zero until the sensor
@@ -44,6 +43,11 @@
  * where frames finally become CPU-readable -- VPE output ports are framebase,
  * unlike the realtime link feeding them -- so -v is the run that either
  * produces a viewable image or does not. -v implies -f.
+ *
+ * With -c it builds the 2d stage: an H.264 VENC channel bound to VPE port 0,
+ * dumped as a playable .h264 with the pack and packetInfo layout of the first
+ * frames printed against hexdumps. See probe_venc for the two questions that
+ * run exists to answer. -c implies -v.
  *
  * On SSC30KQ + GC4653 expect: 2560x1440, 10bpp precision, Bayer GR, MIPI
  * interface, 2 lanes, 5-30 fps, and a single plane (pad.planeCnt reads 0 --
@@ -78,8 +82,10 @@
 #define PROBE_VIF_PORT 0
 #define PROBE_VPE_DEV 0
 #define PROBE_VPE_CHN 0
+#define PROBE_VENC_CHN 0
+#define PROBE_VENC_PORT 0
 
-/* Where -v writes the NV12 dumps. Board-side path, so /tmp. */
+/* Where -v and -c write their dumps. Board-side path, so /tmp. */
 #define PROBE_DUMP_DIR "/tmp"
 
 /* How long to wait for a frame. At the GC4653's 5 fps floor a frame is 200 ms,
@@ -540,14 +546,285 @@ out:
 }
 
 /*
+ * probe_venc -- 2d's verification: encode a VPE port to H.264 and dump it.
+ *
+ * Mirrors hal_enc_create_channel + star_enc_bind_port + hal_enc_get_frame in
+ * src/star/hal_encoder.c. Two things it is here to settle, neither of which
+ * can be answered from the vendor documentation alone:
+ *
+ *  1. Does the .h264 file play? That is the end-to-end proof that the venc
+ *     attribute and rate structs are laid out correctly -- a wrong field
+ *     offset gives a channel that creates fine and emits garbage.
+ *
+ *  2. What is i6_venc_packinfo's offset relative to? The vendor reference
+ *     defines u32PackOffset only as "the offset of other stream packet data"
+ *     and its own sample writes payload as pu8Addr + u32Offset, while divinus
+ *     reads packetInfo offsets against pu8Addr with no u32Offset at all. The
+ *     hexdumps below answer it: an Annex-B NAL starts with 00 00 00 01 (or
+ *     00 00 01), so whichever base puts a start code at every packetInfo
+ *     offset is the right one.
+ *
+ * hal_encoder.c deliberately does not depend on the answer -- it treats a pack
+ * as one rss_nal_unit_t -- but a later phase wanting per-NAL addresses will,
+ * and this is far cheaper than discovering it from a corrupt stream.
+ */
+static void probe_hexdump(const char *label, const unsigned char *p, unsigned int len)
+{
+    unsigned int i;
+
+    if (!p) {
+        printf("       %s: (null)\n", label);
+        return;
+    }
+
+    printf("       %s:", label);
+    for (i = 0; i < len; i++)
+        printf(" %02x", p[i]);
+    printf("%s\n", (len >= 4 && p[0] == 0 && p[1] == 0 && (p[2] == 1 || (p[2] == 0 && p[3] == 1)))
+                       ? "   <- start code" : "");
+}
+
+static void probe_venc_report(const i6_venc_strm *strm, int codec_h265)
+{
+    unsigned int i, k;
+
+    printf("  seq %u, %u pack(s)\n", strm->sequence, strm->count);
+
+    for (i = 0; i < strm->count; i++) {
+        const i6_venc_pack *pack = &strm->packet[i];
+
+        printf("   pack[%u] len %u  offset %u  endFrame %d  naluType %d  packNum %u  pts %llu\n", i,
+               pack->length, pack->offset, pack->endFrame,
+               codec_h265 ? (int)pack->naluType.h265Nalu : (int)pack->naluType.h264Nalu,
+               pack->packNum, pack->timestamp);
+        printf("       data %p  phys 0x%llx\n", (void *)pack->data, pack->addr);
+
+        probe_hexdump("at data      ", pack->data, 8);
+        if (pack->offset)
+            probe_hexdump("at data+off  ", pack->data + pack->offset, 8);
+
+        for (k = 0; k < pack->packNum && k < 8; k++) {
+            const i6_venc_packinfo *pi = &pack->packetInfo[k];
+
+            printf("       packetInfo[%u] type %d  offset %u  length %u  sliceId %u\n", k,
+                   codec_h265 ? (int)pi->packType.h265Nalu : (int)pi->packType.h264Nalu,
+                   pi->offset, pi->length, pi->sliceId);
+            if (pi->offset < pack->length)
+                probe_hexdump("  at data+pi.off", pack->data + pi->offset, 8);
+        }
+    }
+}
+
+static int probe_venc(i6_sys_impl *sys, i6_vpe_impl *vpe, i6_venc_impl *venc, int port_id,
+                      unsigned short width, unsigned short height, unsigned int fps, int count,
+                      const char *dir)
+{
+    i6_vpe_port attr;
+    i6_venc_chn channel;
+    i6_sys_bind source, dest;
+    char path[256];
+    unsigned int device = 0;
+    int port_enabled = 0, created = 0, bound = 0, receiving = 0;
+    int fd = -1;
+    int captured = 0;
+    long long bytes = 0;
+    FILE *fout = NULL;
+    int ret;
+
+    printf("\nVENC chn %d <- VPE port %d, H.264 %ux%u CBR @ %u fps\n", PROBE_VENC_CHN, port_id,
+           width, height, fps);
+
+    memset(&attr, 0, sizeof(attr));
+    attr.output.width = width;
+    attr.output.height = height;
+    attr.compress = I6_COMPR_NONE;
+    attr.pixFmt = I6_PIXFMT_YUV420SP;
+
+    ret = vpe->fnSetPortConfig(PROBE_VPE_CHN, port_id, &attr);
+    if (ret) {
+        printf("MI_VPE_SetPortMode(%d, %d): %d\n", PROBE_VPE_CHN, port_id, ret);
+        return ret;
+    }
+    ret = vpe->fnEnablePort(PROBE_VPE_CHN, port_id);
+    if (ret) {
+        printf("MI_VPE_EnablePort(%d, %d): %d\n", PROBE_VPE_CHN, port_id, ret);
+        return ret;
+    }
+    port_enabled = 1;
+
+    /*
+     * Same shape as hal_enc_create_channel: H.264 high profile, no B-frames,
+     * one reference, bufSize = w*h, CBR at 4 Mbps with a 2-second GOP.
+     */
+    memset(&channel, 0, sizeof(channel));
+    channel.attrib.codec = I6_VENC_CODEC_H264;
+    channel.attrib.h264.maxWidth = width;
+    channel.attrib.h264.maxHeight = height;
+    channel.attrib.h264.bufSize = (unsigned int)width * height;
+    channel.attrib.h264.profile = 2;
+    channel.attrib.h264.byFrame = 1;
+    channel.attrib.h264.width = width;
+    channel.attrib.h264.height = height;
+    channel.attrib.h264.bFrameNum = 0;
+    channel.attrib.h264.refNum = 1;
+
+    channel.rate.mode = I6_VENC_RATEMODE_H264CBR;
+    channel.rate.h264Cbr.gop = fps * 2;
+    channel.rate.h264Cbr.statTime = 1;
+    channel.rate.h264Cbr.fpsNum = fps;
+    channel.rate.h264Cbr.fpsDen = 1;
+    channel.rate.h264Cbr.bitrate = 4000000;
+    channel.rate.h264Cbr.avgLvl = 1;
+
+    ret = venc->fnCreateChannel(PROBE_VENC_CHN, &channel);
+    if (ret) {
+        printf("MI_VENC_CreateChn(%d): %d\n", PROBE_VENC_CHN, ret);
+        goto out;
+    }
+    created = 1;
+
+    ret = venc->fnGetChannelDeviceId(PROBE_VENC_CHN, &device);
+    if (ret) {
+        printf("MI_VENC_GetChnDevid(%d): %d -- assuming device 0\n", PROBE_VENC_CHN, ret);
+        device = 0;
+        ret = 0;
+    }
+
+    memset(&source, 0, sizeof(source));
+    source.module = I6_SYS_MOD_VPE;
+    source.device = PROBE_VPE_DEV;
+    source.channel = PROBE_VPE_CHN;
+    source.port = port_id;
+
+    memset(&dest, 0, sizeof(dest));
+    dest.module = I6_SYS_MOD_VENC;
+    dest.device = device;
+    dest.channel = PROBE_VENC_CHN;
+    dest.port = PROBE_VENC_PORT;
+
+    /* FRAMEBASE, not REALTIME: VENC reads whole frames out of DRAM. */
+    ret = sys->fnBindExt(&source, &dest, fps, fps, I6_SYS_LINK_FRAMEBASE, 0);
+    if (ret) {
+        printf("MI_SYS_BindChnPort2 VPE port %d -> VENC %d (framebase, %u fps): %d\n", port_id,
+               PROBE_VENC_CHN, fps, ret);
+        goto out;
+    }
+    bound = 1;
+    printf("     bound, VENC device %u\n", device);
+
+    ret = venc->fnStartReceiving(PROBE_VENC_CHN);
+    if (ret) {
+        printf("MI_VENC_StartRecvPic(%d): %d\n", PROBE_VENC_CHN, ret);
+        goto out;
+    }
+    receiving = 1;
+
+    fd = venc->fnGetDescriptor(PROBE_VENC_CHN);
+    if (fd < 0) {
+        printf("MI_VENC_GetFd(%d): %d\n", PROBE_VENC_CHN, fd);
+        ret = fd;
+        goto out;
+    }
+
+    snprintf(path, sizeof(path), "%s/venc_chn%d_%ux%u.h264", dir, PROBE_VENC_CHN, width, height);
+    fout = fopen(path, "wb");
+    if (!fout)
+        printf("  cannot open %s -- reporting packs without writing\n", path);
+
+    while (captured < count) {
+        i6_venc_stat stat;
+        i6_venc_strm strm;
+        i6_venc_pack packs[8];
+        struct timeval tv = {PROBE_FRAME_TIMEOUT_MS / 1000,
+                             (PROBE_FRAME_TIMEOUT_MS % 1000) * 1000};
+        fd_set fds;
+        unsigned int i;
+
+        FD_ZERO(&fds);
+        FD_SET(fd, &fds);
+        ret = select(fd + 1, &fds, NULL, NULL, &tv);
+        if (ret < 0) {
+            printf("  select: %d\n", ret);
+            break;
+        }
+        if (!ret) {
+            printf("  timeout after %d ms with no frame (captured %d)\n", PROBE_FRAME_TIMEOUT_MS,
+                   captured);
+            break;
+        }
+
+        memset(&stat, 0, sizeof(stat));
+        ret = venc->fnQuery(PROBE_VENC_CHN, &stat);
+        if (ret) {
+            printf("  MI_VENC_Query: %d\n", ret);
+            break;
+        }
+        if (!stat.curPacks)
+            continue;
+
+        memset(&strm, 0, sizeof(strm));
+        memset(packs, 0, sizeof(packs));
+        strm.packet = packs;
+        strm.count = stat.curPacks > 8 ? 8 : stat.curPacks;
+
+        ret = venc->fnGetStream(PROBE_VENC_CHN, &strm, 0);
+        if (ret) {
+            printf("  MI_VENC_GetStream: %d\n", ret);
+            break;
+        }
+
+        /* Only the first few frames are worth dumping in detail -- the first
+         * carries the parameter sets, and after that they repeat. */
+        if (captured < 3)
+            probe_venc_report(&strm, 0);
+
+        for (i = 0; i < strm.count; i++) {
+            i6_venc_pack *pack = &strm.packet[i];
+            unsigned int off = pack->offset > pack->length ? 0 : pack->offset;
+
+            if (fout && pack->data)
+                bytes += (long long)fwrite(pack->data + off, 1, pack->length - off, fout);
+        }
+
+        venc->fnFreeStream(PROBE_VENC_CHN, &strm);
+        captured++;
+    }
+
+    if (fout) {
+        fclose(fout);
+        fout = NULL;
+        printf("  wrote %s (%lld bytes, %d frame(s)) -- ffplay %s\n", path, bytes, captured, path);
+    }
+    printf("  captured %d of %d frame(s)\n", captured, count);
+    ret = captured ? 0 : (ret ? ret : -1);
+
+out:
+    if (fout)
+        fclose(fout);
+    if (fd >= 0)
+        venc->fnFreeDescriptor(PROBE_VENC_CHN);
+    if (receiving)
+        venc->fnStopReceiving(PROBE_VENC_CHN);
+    if (bound)
+        sys->fnUnbind(&source, &dest);
+    if (created)
+        venc->fnDestroyChannel(PROBE_VENC_CHN);
+    if (port_enabled)
+        vpe->fnDisablePort(PROBE_VPE_CHN, port_id);
+
+    return ret;
+}
+
+/*
  * probe_vpe -- create the VPE channel, bind VIF to it, dump both ports.
  *
  * Mirrors star_vpe_bringup() in src/star/hal_common.c plus what
  * hal_framesource.c does per port; if they ever disagree, those are right and
  * this is stale.
  */
-static int probe_vpe(i6_sys_impl *sys, i6_vpe_impl *vpe, const i6_snr_plane *plane,
-                     unsigned int index, unsigned int fps, int frames, const char *dir)
+static int probe_vpe(i6_sys_impl *sys, i6_vpe_impl *vpe, i6_venc_impl *venc,
+                     const i6_snr_plane *plane, unsigned int index, unsigned int fps, int frames,
+                     int enc_frames, const char *dir)
 {
     i6e_vpe_chn channel;
     i6e_vpe_para param;
@@ -634,6 +911,18 @@ static int probe_vpe(i6_sys_impl *sys, i6_vpe_impl *vpe, const i6_snr_plane *pla
     if (!ret)
         ret = dret;
 
+    /*
+     * Encode from port 0 at sensor resolution -- the main stream, and the
+     * shape 2d has to get right before anything smaller matters. Runs after
+     * the raw dumps so a failure here still leaves the NV12 evidence behind.
+     */
+    if (venc) {
+        dret = probe_venc(sys, vpe, venc, 0, plane->capt.width, plane->capt.height, fps,
+                          enc_frames, dir);
+        if (!ret)
+            ret = dret;
+    }
+
 out:
     if (bound)
         sys->fnUnbind(&source, &dest);
@@ -654,7 +943,8 @@ out:
  * anything down, since VPE only means anything with VIF live underneath it.
  */
 static int probe_vif(i6_sys_impl *sys, i6_snr_impl *snr, i6_vif_impl *vif, i6_vpe_impl *vpe,
-                     unsigned int index, int frames, const char *dir)
+                     i6_venc_impl *venc, unsigned int index, int frames, int enc_frames,
+                     const char *dir)
 {
     i6_snr_pad pad;
     i6_snr_plane plane;
@@ -786,7 +1076,7 @@ static int probe_vif(i6_sys_impl *sys, i6_snr_impl *snr, i6_vif_impl *vif, i6_vp
         if (!snr->fnGetResolution(index, 0, &res) && res.maxFps)
             fps = res.maxFps;
 
-        ret = probe_vpe(sys, vpe, &plane, index, fps, frames, dir);
+        ret = probe_vpe(sys, vpe, venc, &plane, index, fps, frames, enc_frames, dir);
         goto out;
     }
 
@@ -903,13 +1193,19 @@ int main(int argc, char **argv)
     i6_snr_impl snr;
     i6_vif_impl vif;
     i6_vpe_impl vpe;
+    i6_venc_impl venc;
     i6_sys_ver ver;
     const char *dir = PROBE_DUMP_DIR;
     unsigned int index = 0;
     int do_enable = 0;
     int do_vif = 0;
     int do_vpe = 0;
+    int do_venc = 0;
     int frames = 3;
+    /* Three raw frames prove the port works; an encoded clip has to be long
+     * enough to actually watch, and long enough for rate control to settle.
+     * -n overrides both. */
+    int enc_frames = 60;
     int i;
 
     int ret;
@@ -924,14 +1220,20 @@ int main(int argc, char **argv)
             do_vpe = 1;
             do_vif = 1;
             do_enable = 1;
+        } else if (!strcmp(argv[i], "-c")) {
+            do_venc = 1;
+            do_vpe = 1;
+            do_vif = 1;
+            do_enable = 1;
         } else if (!strcmp(argv[i], "-o") && i + 1 < argc) {
             dir = argv[++i];
         } else if (!strcmp(argv[i], "-n") && i + 1 < argc) {
             frames = (int)strtol(argv[++i], NULL, 0);
             if (frames < 0)
                 frames = 0;
+            enc_frames = frames;
         } else if (!strcmp(argv[i], "-h")) {
-            printf("usage: star_probe [-e] [-f] [-v] [-n count] [-o dir] [sensor-index]\n"
+            printf("usage: star_probe [-e] [-f] [-v] [-c] [-n count] [-o dir] [sensor-index]\n"
                    "  -e  run the sensor bring-up sequence (SetRes/SetFps/SetOrien/Enable)\n"
                    "      before querying, then Disable. Needed to see pad intfAttr and\n"
                    "      plane geometry, since those are only populated once the sensor\n"
@@ -944,22 +1246,27 @@ int main(int argc, char **argv)
                    "      output ports MI accepts, and dump one NV12 frame from port 0 (full\n"
                    "      resolution) and port 1 (640x360). Implies -f, and replaces -f's\n"
                    "      VIF drain -- a realtime-bound VIF port has nothing to hand the CPU.\n"
-                   "  -n  how many frames to try to read per port (default %d)\n"
-                   "  -o  where -v writes its dumps (default %s)\n",
-                   frames, dir);
+                   "  -c  additionally encode VPE port 0 to H.264 and dump it as a playable\n"
+                   "      .h264, reporting the pack and packetInfo layout of the first few\n"
+                   "      frames. Implies -v. This is 2d's verification.\n"
+                   "  -n  how many frames to try to read per port (default %d raw, %d encoded)\n"
+                   "  -o  where -v and -c write their dumps (default %s)\n",
+                   frames, enc_frames, dir);
             return 0;
         } else
             index = (unsigned int)strtoul(argv[i], NULL, 0);
     }
 
-    printf("star_probe -- %s, sensor index %u%s%s%s\n\n", HAL_PLATFORM_NAME, index,
-           do_enable ? ", with bring-up" : "", do_vif ? " + VIF" : "", do_vpe ? " + VPE" : "");
+    printf("star_probe -- %s, sensor index %u%s%s%s%s\n\n", HAL_PLATFORM_NAME, index,
+           do_enable ? ", with bring-up" : "", do_vif ? " + VIF" : "", do_vpe ? " + VPE" : "",
+           do_venc ? " + VENC" : "");
     print_sizes();
 
     memset(&sys, 0, sizeof(sys));
     memset(&snr, 0, sizeof(snr));
     memset(&vif, 0, sizeof(vif));
     memset(&vpe, 0, sizeof(vpe));
+    memset(&venc, 0, sizeof(venc));
 
     ret = i6_sys_load(&sys);
     if (ret) {
@@ -1034,8 +1341,12 @@ int main(int argc, char **argv)
             printf("i6_vif_load: %d\n", vret);
         else if (do_vpe && (vret = i6_vpe_load(&vpe)))
             printf("i6_vpe_load: %d\n", vret);
+        else if (do_venc && (vret = i6_venc_load(&venc)))
+            printf("i6_venc_load: %d\n", vret);
         else
-            vret = probe_vif(&sys, &snr, &vif, do_vpe ? &vpe : NULL, index, frames, dir);
+            vret = probe_vif(&sys, &snr, &vif, do_vpe ? &vpe : NULL, do_venc ? &venc : NULL, index,
+                             frames, enc_frames, dir);
+        i6_venc_unload(&venc);
         i6_vpe_unload(&vpe);
         i6_vif_unload(&vif);
         if (vret)

@@ -466,6 +466,7 @@ static int hal_init(void *ctx, const rss_multi_sensor_config_t *cfg)
     rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
     star_state_t *st;
     int ret;
+    int i;
 
     if (!c || !cfg || cfg->sensor_count < 1 || cfg->sensor_count > RSS_MAX_SENSORS)
         return RSS_ERR_INVAL;
@@ -494,6 +495,15 @@ static int hal_init(void *ctx, const rss_multi_sensor_config_t *cfg)
         return RSS_ERR_NOMEM;
     c->platform = st;
 
+    /* -1, not the 0 calloc left behind: 0 is a legitimate file
+     * descriptor, so "never opened" has to be distinguishable from
+     * "opened as fd 0" before anything closes one. The VPE ports get
+     * the same treatment in star_vpe_bringup. */
+    for (i = 0; i < I6_VENC_CHN_NUM; i++) {
+        st->enc[i].fd = -1;
+        st->enc[i].src_port = -1;
+    }
+
     /*
      * Load order matters: libcam_os_wrapper (pulled in by i6_sys_load) must
      * be RTLD_GLOBAL-resident before any other libmi_*, because each of them
@@ -512,6 +522,13 @@ static int hal_init(void *ctx, const rss_multi_sensor_config_t *cfg)
     ret = i6_vpe_load(&st->vpe);
     if (ret)
         goto err_unload;
+    /* libmi_venc is a video-module dependency: the audio archive has no
+     * encoder ops, so it has no reason to pull the library in. */
+#ifdef HAL_MODULE_VIDEO
+    ret = i6_venc_load(&st->venc);
+    if (ret)
+        goto err_unload;
+#endif
 
     ret = st->sys.fnInit();
     if (ret) {
@@ -540,6 +557,9 @@ static int hal_init(void *ctx, const rss_multi_sensor_config_t *cfg)
 err_teardown:
     star_teardown(st);
 err_unload:
+#ifdef HAL_MODULE_VIDEO
+    i6_venc_unload(&st->venc);
+#endif
     i6_vpe_unload(&st->vpe);
     i6_vif_unload(&st->vif);
     i6_snr_unload(&st->snr);
@@ -572,9 +592,13 @@ static int star_teardown(star_state_t *st)
      * (i6_hal.c:363-377); a port left enabled with its VENC bind gone
      * is what leaves MI's kernel side holding buffers.
      */
-    /* hal_framesource.c is a video-module source, so the audio archive
-     * has no fs ops to have checked a frame out in the first place. */
+    /* hal_framesource.c and hal_encoder.c are video-module sources, so
+     * the audio archive has no fs or enc ops to have checked a frame out
+     * in the first place. Encoders go first: they are downstream of the
+     * ports, and a VENC channel left bound to a port that is about to be
+     * disabled is exactly the state divinus's teardown avoids. */
 #ifdef HAL_MODULE_VIDEO
+    star_enc_release_all(st);
     star_fs_release_all(st);
 #endif
     for (i = 0; i < STAR_VPE_PORT_NUM; i++) {
@@ -666,6 +690,9 @@ static int hal_deinit(void *ctx)
 
     star_teardown(st);
 
+#ifdef HAL_MODULE_VIDEO
+    i6_venc_unload(&st->venc);
+#endif
     i6_vpe_unload(&st->vpe);
     i6_vif_unload(&st->vif);
     i6_snr_unload(&st->snr);
@@ -748,6 +775,67 @@ static int hal_sys_rebase_timestamp(void *ctx, int64_t base)
     return RSS_OK;
 }
 
+#ifdef HAL_MODULE_VIDEO
+
+/* ================================================================
+ * BIND
+ *
+ * rvd builds its pipeline as a chain of cells (rvd_pipeline.c:1156):
+ * FS [-> IVS] [-> OSD] -> ENC. On MI that chain is a single link,
+ * VPE output port -> VENC channel, because MI has no separate IVS or
+ * OSD stage in the data path -- MI_RGN overlays composite onto a VPE
+ * port in place rather than sitting between two modules.
+ *
+ * So the only supported pair is FS -> ENC. Anything else returns
+ * RSS_ERR_NOTSUP, which is honest: silently accepting an OSD stage
+ * that does not exist would leave rvd believing overlays are bound.
+ */
+static int star_bind_check(const rss_cell_t *src, const rss_cell_t *dst)
+{
+    if (!src || !dst)
+        return RSS_ERR_INVAL;
+
+    if (src->device != RSS_DEV_FS || dst->device != RSS_DEV_ENC) {
+        HAL_LOG_ERR("bind: only FS -> ENC is available on this backend (got %d -> %d)",
+                    src->device, dst->device);
+        return RSS_ERR_NOTSUP;
+    }
+
+    return RSS_OK;
+}
+
+static int hal_bind(void *ctx, const rss_cell_t *src, const rss_cell_t *dst)
+{
+    star_state_t *st = star_state(ctx);
+    int ret;
+
+    if (!st)
+        return RSS_ERR_INVAL;
+
+    ret = star_bind_check(src, dst);
+    if (ret)
+        return ret;
+
+    return star_enc_bind_port(st, src->group, dst->group);
+}
+
+static int hal_unbind(void *ctx, const rss_cell_t *src, const rss_cell_t *dst)
+{
+    star_state_t *st = star_state(ctx);
+    int ret;
+
+    if (!st)
+        return RSS_ERR_INVAL;
+
+    ret = star_bind_check(src, dst);
+    if (ret)
+        return ret;
+
+    return star_enc_unbind_port(st, src->group, dst->group);
+}
+
+#endif /* HAL_MODULE_VIDEO */
+
 /*
  * hal_get_caps -- return the per-SoC capability struct.
  *
@@ -796,10 +884,40 @@ static const rss_hal_ops_t g_ops = {
     .fs_get_frame_depth = hal_fs_get_frame_depth,
     .fs_get_frame = hal_fs_get_frame,
     .fs_release_frame = hal_fs_release_frame,
+
+    /* Pipeline binds -- FS -> ENC only, see hal_bind above */
+    .bind = hal_bind,
+    .unbind = hal_unbind,
+
+    /* Encoder -- MI VENC channels (src/star/hal_encoder.c). The ops MI
+     * has no equivalent for are listed in that file's header comment. */
+    .enc_create_group = hal_enc_create_group,
+    .enc_destroy_group = hal_enc_destroy_group,
+    .enc_create_channel = hal_enc_create_channel,
+    .enc_destroy_channel = hal_enc_destroy_channel,
+    .enc_register_channel = hal_enc_register_channel,
+    .enc_unregister_channel = hal_enc_unregister_channel,
+    .enc_start = hal_enc_start,
+    .enc_stop = hal_enc_stop,
+    .enc_poll = hal_enc_poll,
+    .enc_get_frame = hal_enc_get_frame,
+    .enc_release_frame = hal_enc_release_frame,
+    .enc_request_idr = hal_enc_request_idr,
+    .enc_set_rc_mode = hal_enc_set_rc_mode,
+    .enc_set_bitrate = hal_enc_set_bitrate,
+    .enc_set_gop = hal_enc_set_gop,
+    .enc_set_gop_attr = hal_enc_set_gop_attr,
+    .enc_set_fps = hal_enc_set_fps,
+    .enc_get_channel_attr = hal_enc_get_channel_attr,
+    .enc_get_fps = hal_enc_get_fps,
+    .enc_get_gop_attr = hal_enc_get_gop_attr,
+    .enc_get_avg_bitrate = hal_enc_get_avg_bitrate,
+    .enc_query = hal_enc_query,
+    .enc_get_fd = hal_enc_get_fd,
 #endif
 
-    /* Encoder, ISP, OSD and audio ops are added by the phases that
-     * implement them. */
+    /* ISP, OSD and audio ops are added by the phases that implement
+     * them. */
 
 #ifdef HAL_MODULE_VIDEO
     /* GPIO / IR-cut — vendor-neutral sysfs, works as-is */
