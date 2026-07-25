@@ -148,26 +148,31 @@ int hal_ircut_set(void *ctx, int state);
  * Both references ignore the plane's own pixFmt for bayer sensors and
  * recompute it as RGB_BAYER + precision * I6_BAYER_END + bayer (divinus
  * i6_hal.c:293, waybeam star6e_pipeline.c:475 -- the same expression in
- * both). On this board that yields 20 + 1*12 + 1 = 33, while the driver
- * itself reports 41 for the very same plane.
+ * both; waybeam uses it unconditionally, divinus falls back to the reported
+ * field only when the plane is not bayer at all). We do the same, because
+ * hardware settled which one is right.
  *
- * 41 is not a misread: star_probe showed every neighbouring field correct,
- * and 41 == 20 + 1*20 + 1, i.e. the vendor's real bayer-format stride is 20
- * where our i6_common_bayer implies 12. Under the references' formula, 41
- * would decode to precision 1 / bayer 9, contradicting the two dedicated
- * fields. So prefer what the driver reported -- it cannot be wrong about its
- * own sensor and mode -- and keep the derived value as a fallback for a
- * driver that leaves pixFmt unset.
+ * The GC4653 driver reports pixFmt 41 for a plane it simultaneously describes
+ * as bayer GR(1) at 10bpp, where the formula gives 20 + 1*12 + 1 = 33. The
+ * tempting reading -- that the vendor's bayer-id stride is 20 rather than the
+ * 12 our i6_common_bayer implies, since 41 == 20 + 1*20 + 1 -- is wrong. With
+ * 41 programmed, MI's own proc table decoded it back as "I0_10BPP", and I0 is
+ * index 9 in this enum: exactly what 41 means under the references' formula
+ * (41 - 20 = 21 -> precision 1, bayer 9). So the vendor's stride is 12, our
+ * enum's ordering is confirmed correct by MI's own decode, and 41 selects an
+ * IR pattern that contradicts the driver's own bayer field.
  *
- * If VIF ever rejects the reported value, the fallback is the thing to try:
- * both references demonstrably stream with it.
+ * The driver is simply unreliable in this field, which is presumably why
+ * neither reference trusts it. Derive whenever the plane describes a real
+ * bayer pattern, and fall back to the reported value only when it does not --
+ * there the formula is meaningless (a YUV sensor, say) and the reported field
+ * is all there is. (divinus tests `bayer > I6_BAYER_END`, which feeds the
+ * sentinel itself through the formula; the difference is unreachable for real
+ * values, but >= is what the sentence above actually means.)
  */
 static i6_common_pixfmt star_vif_pixfmt(const i6_snr_plane *plane)
 {
-    if (plane->pixFmt)
-        return plane->pixFmt;
-
-    if (plane->bayer > I6_BAYER_END)
+    if (plane->bayer >= I6_BAYER_END)
         return plane->pixFmt;
 
     return (i6_common_pixfmt)(I6_PIXFMT_RGB_BAYER + plane->precision * I6_BAYER_END +

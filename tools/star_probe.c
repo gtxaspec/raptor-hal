@@ -21,15 +21,22 @@
  * which is why waybeam queries the pad after Enable (sensor_select.c:485).
  * Enable is always paired with Disable, so even -e leaves nothing streaming.
  *
- * With -f it goes one step further and brings up VIF on top of the sensor,
- * then checks that frames actually arrive: first from /proc/mi_modules, which
- * costs nothing and cannot be wrong about ABI, and then by draining the VIF
- * output port through MI_SYS_ChnOutputPortGetBuf. The second check is the one
- * that exercises i6_sys_bufinfo, and it is allowed to fail without failing the
- * run -- reading VIF output from the CPU is not a configuration the pipeline
- * itself uses (VIF is bound to VPE in hardware), so a refusal here says
- * something about the binding, not about the struct. The proc counters are the
- * authoritative answer to "are frames arriving". -f implies -e.
+ * With -f it brings VIF up on top of the sensor and reports what MI made of
+ * the configuration, via /proc/mi_modules -- which costs nothing and cannot be
+ * wrong about ABI. It then tries to drain the VIF output port, which is the
+ * only thing here that exercises i6_sys_bufinfo.
+ *
+ * Do not expect frames from that drain, and do not read zero as a failure.
+ * Both references run VIF in RGB_REALTIME and bind it to VPE with
+ * I6_SYS_LINK_REALTIME (divinus i6_hal.c:269,355), which is a hardware
+ * streaming link: VIF hands pixels to the ISP without writing them to DRAM, so
+ * with no VPE bound there is nothing for the CPU to read and nothing to count.
+ * The first -f run confirmed exactly that -- every VIF call returned 0, the
+ * proc table showed the port programmed with our geometry, and GetTotalCnt
+ * stayed 0. Frame flow becomes observable in 2c, once VPE exists.
+ *
+ * So what -f actually verifies is that MI accepts the descriptors 2b derives
+ * from the sensor. -f implies -e.
  *
  * On SSC30KQ + GC4653 expect: 2560x1440, 10bpp precision, Bayer GR, MIPI
  * interface, 2 lanes, 5-30 fps, and a single plane (pad.planeCnt reads 0 --
@@ -331,16 +338,16 @@ static int probe_proc_grep(const char *path, const char *needle, int after)
  * translation unit on purpose (see probe_log) so it cannot call into the
  * archive.
  *
- * The sensor's own pixFmt is preferred over the derived value because the two
- * disagree on this board: the GC4653 driver reports 41 where both references
- * compute 20 + precision * I6_BAYER_END + bayer == 33. 41 is what 20 + 1 * 20
- * + 1 gives, i.e. the firmware's bayer-id stride is 20 where our vendored enum
- * has 12 -- newer SDKs add RGB-IR patterns to that enum. Trusting the driver
- * costs nothing when the two agree.
+ * The derived value wins for bayer sensors, as in both references. The first
+ * -f run settled why: with the driver's reported 41 programmed, MI's proc
+ * table decoded it back as "I0_10BPP" -- I0 being index 9, exactly what 41
+ * means under the formula -- so the driver's field selects an IR pattern that
+ * contradicts its own "bayer GR" report. See star_vif_pixfmt() in
+ * src/star/hal_common.c for the full reasoning.
  */
 static i6_common_pixfmt probe_vif_pixfmt(const i6_snr_plane *plane)
 {
-    if (plane->pixFmt)
+    if (plane->bayer >= I6_BAYER_END)
         return plane->pixFmt;
 
     return (i6_common_pixfmt)(I6_PIXFMT_RGB_BAYER + plane->precision * I6_BAYER_END + plane->bayer);
@@ -380,6 +387,26 @@ static int probe_vif(i6_sys_impl *sys, i6_snr_impl *snr, i6_vif_impl *vif, unsig
         printf("MI_SNR_GetPlaneInfo: %d\n", ret);
         return ret;
     }
+
+    /*
+     * Orientation timing check. probe_sensor calls MI_SNR_SetOrien(0, 0)
+     * before Enable, exactly as divinus does (i6_hal.c:254 precedes its
+     * fnEnable), yet the first -f run showed the sensor reporting bmirror 1
+     * bflip 1 afterwards. The likely explanation is the same one that made us
+     * move the descriptor reads after Enable: pCus_sensor_init runs on Enable
+     * and applies the driver's own defaults over anything set earlier.
+     *
+     * Mirror and flip matter beyond framing -- they change the effective bayer
+     * order, which is what the pixel format above encodes -- so re-apply after
+     * Enable and print the sensor's own view either side of it. Whichever way
+     * this reads, the answer belongs in the record before 2c programs a VPE
+     * channel from the same descriptors.
+     */
+    printf("\norientation, as the sensor reports it after Enable:\n");
+    probe_proc_grep("/proc/mi_modules/mi_sensor/mi_sensor0", "PadId", 1);
+    ret = snr->fnSetOrientation(index, 0, 0);
+    printf("re-applied MI_SNR_SetOrien(%u, 0, 0) after Enable: %d\n", index, ret);
+    probe_proc_grep("/proc/mi_modules/mi_sensor/mi_sensor0", "PadId", 1);
 
     memset(&device, 0, sizeof(device));
     device.intf = pad.intf;
@@ -445,16 +472,17 @@ static int probe_vif(i6_sys_impl *sys, i6_snr_impl *snr, i6_vif_impl *vif, unsig
         nanosleep(&nap, NULL);
     }
 
-    printf("\nVIF counters (/proc/mi_modules -- authoritative, no ABI involved):\n");
+    printf("\nVIF as MI sees it (/proc/mi_modules -- no ABI involved). The Cap_size,\n"
+           "Dest_size and Fmt columns are the descriptors above read back; the counters\n"
+           "stay 0 until VPE is bound, since RGB_REALTIME never lands frames in DRAM:\n");
     probe_proc_grep("/proc/mi_modules/mi_vif/mi_vif0", "GetTotalCnt", 1);
     probe_proc_grep("/proc/mi_modules/mi_vif/mi_vif0", "OutCount", 1);
-    printf("\nsensor counters:\n");
-    probe_proc_grep("/proc/mi_modules/mi_sensor/mi_sensor0", "fps", 1);
 
     /*
-     * Now the ABI-exercising part. A non-zero counter above already proves the
-     * bring-up works; this additionally proves i6_sys_bufinfo, and only this
-     * can answer what pixel format VIF is really emitting.
+     * The ABI-exercising part, kept because it costs one second and is the only
+     * thing that would exercise i6_sys_bufinfo. It is expected to time out
+     * here for the realtime-link reason in the file header; 2c is where this
+     * check becomes meaningful, against a VPE port.
      */
     if (!frames)
         goto out;
@@ -541,9 +569,9 @@ static int probe_vif(i6_sys_impl *sys, i6_snr_impl *snr, i6_vif_impl *vif, unsig
 
     printf("captured %d of %d frame(s)\n", captured, frames);
     if (!captured)
-        printf("  (no frames read -- see the counters above for whether VIF is producing at\n"
-               "   all. This path is not the one the pipeline uses, so a failure here does\n"
-               "   not fail the run; it does leave i6_sys_bufinfo unexercised.)\n");
+        printf("  (expected: VIF in RGB_REALTIME streams to the ISP without touching DRAM,\n"
+               "   so an unbound VIF has nothing to hand the CPU. Not a failure, but it does\n"
+               "   leave i6_sys_bufinfo unexercised until 2c reads a VPE port.)\n");
     ret = 0;
 
 out:
