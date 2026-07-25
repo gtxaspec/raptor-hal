@@ -107,6 +107,38 @@ typedef struct {
         unsigned int dstFps, i6_sys_link link, unsigned int linkParam);
     int (*fnSetOutputDepth)(i6_sys_bind *bind, unsigned int usrDepth, unsigned int bufDepth);
     int (*fnUnbind)(i6_sys_bind *source, i6_sys_bind *dest);
+
+    /*
+     * Media-clock access. Not from divinus -- it binds neither -- but needed
+     * by rss_hal_ops_t's sys_get_timestamp/sys_rebase_timestamp, which
+     * rvd_frame_loop.c uses to publish the media-clock-to-UTC mapping for SEI
+     * timecodes.
+     *
+     * The signatures are read off libmi_sys.so rather than guessed, because
+     * getting the arity wrong here writes through a bogus pointer instead of
+     * failing. Each of these userspace entry points is a thin ioctl wrapper
+     * that spills its arguments and then stores {payload size, user address}
+     * for the kernel, so the disassembly states both the argument count and
+     * the size of the pointee:
+     *
+     *   MI_SYS_Init         no spills at all               -> 0 args, and
+     *                       matches fnInit(void) above, which confirms the
+     *                       method reads true
+     *   MI_SYS_GetVersion   one spill, size field 128       -> 1 pointer to
+     *                       128 bytes == sizeof(i6_sys_ver), and this call is
+     *                       known-good on hardware
+     *   MI_SYS_GetCurPts    one spill, size field 8         -> 1 pointer to
+     *                       8 bytes, i.e. unsigned long long *
+     *   MI_SYS_InitPtsBase  strd r0,r1 -> a register pair   -> one u64 passed
+     *   MI_SYS_SyncPts      strd r0,r1 -> a register pair       by value
+     *
+     * Note this differs by SoC family: waybeam calls MI_SYS_GetCurPts with a
+     * leading device argument (maruko_framing_stab.c:626), which is Mercury6.
+     * On Infinity6E that form would pass 0 as the output pointer.
+     */
+    int (*fnGetCurrentPts)(unsigned long long *pts);
+    int (*fnInitPtsBase)(unsigned long long ptsBase);
+    int (*fnSyncPts)(unsigned long long pts);
 } i6_sys_impl;
 
 static inline int i6_sys_load(i6_sys_impl *sys_lib)
@@ -148,6 +180,19 @@ static inline int i6_sys_load(i6_sys_impl *sys_lib)
     if (!(sys_lib->fnUnbind = (int(*)(i6_sys_bind *source, i6_sys_bind *dest))
         hal_symbol_load("i6_sys", sys_lib->handle, "MI_SYS_UnBindChnPort")))
         return RSS_ERR_NOTSUP;
+
+    /*
+     * Optional: missing media-clock entry points cost SEI timecodes, not
+     * streaming, so resolve them with a bare dlsym and let the callers
+     * null-check. Failing the whole load over them would trade a cosmetic
+     * loss for a dead pipeline.
+     */
+    sys_lib->fnGetCurrentPts = (int(*)(unsigned long long *pts))
+        dlsym(sys_lib->handle, "MI_SYS_GetCurPts");
+    sys_lib->fnInitPtsBase = (int(*)(unsigned long long ptsBase))
+        dlsym(sys_lib->handle, "MI_SYS_InitPtsBase");
+    sys_lib->fnSyncPts = (int(*)(unsigned long long pts))
+        dlsym(sys_lib->handle, "MI_SYS_SyncPts");
 
     return RSS_OK;
 }

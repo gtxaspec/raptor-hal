@@ -29,6 +29,9 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+/* nanosleep() -- the HAL builds -std=c11, which hides the POSIX prototypes. */
+#define _POSIX_C_SOURCE 200809L
+
 #include "star/i6_snr.h"
 #include "star/i6_sys.h"
 #include "star/i6_venc.h"
@@ -36,6 +39,7 @@
 #include "star/i6_vpe.h"
 
 #include <stdarg.h>
+#include <time.h>
 
 /* Sanity bounds on counts MI reports back — see probe_sensor(). */
 #define PROBE_MAX_RES 32
@@ -328,6 +332,29 @@ int main(int argc, char **argv)
         printf("MI_SYS_GetVersion: %d\n", ret);
     else
         printf("MI version: \"%.127s\"\n\n", (char *)ver.version);
+
+    /*
+     * Media clock. The MI_SYS_GetCurPts signature was read off libmi_sys.so's
+     * disassembly rather than guessed (see i6_sys.h), and the arity differs by
+     * SoC family -- so confirm it here before rvd's frame loop depends on it.
+     * Two reads a moment apart: a single value could be anything, whereas a
+     * value that advances by roughly the elapsed time is a real clock reached
+     * through a correctly-shaped call.
+     */
+    if (sys.fnGetCurrentPts) {
+        unsigned long long a = 0, b = 0;
+        int r1 = sys.fnGetCurrentPts(&a);
+        struct timespec nap = {0, 100 * 1000 * 1000};
+
+        nanosleep(&nap, NULL);
+        int r2 = sys.fnGetCurrentPts(&b);
+
+        if (r1 || r2)
+            printf("MI_SYS_GetCurPts: %d/%d\n", r1, r2);
+        else
+            printf("pts: %llu -> %llu (delta %llu us over ~100000 us)\n\n", a, b, b - a);
+    } else
+        printf("MI_SYS_GetCurPts not exported -- SEI timecodes unavailable\n\n");
 
     ret = probe_sensor(&snr, index, do_enable);
 
