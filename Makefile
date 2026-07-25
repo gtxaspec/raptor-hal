@@ -5,6 +5,7 @@
 #   make PLATFORM=T40 CROSS_COMPILE=mipsel-linux- INGENIC_HEADERS=/path/to/headers
 #   make PLATFORM=INFINITY6E CROSS_COMPILE=arm-linux-gnueabihf-
 #   make PLATFORM=T31 clean
+#   make PLATFORM=INFINITY6E CROSS_COMPILE=arm-linux-gnueabihf- star_probe
 #
 # Required variables:
 #   PLATFORM        - Target SoC:
@@ -15,8 +16,6 @@
 # Optional variables:
 #   INGENIC_HEADERS - Path to ingenic-headers repo (default: ../ingenic-headers)
 #   INGENIC_LIB     - Path to ingenic-lib repo (default: ../ingenic-lib)
-#   SIGMASTAR_SDK   - Path to SigmaStar SDK staging dir (default: ../sigmastar-sdk),
-#                     laid out as <soc>/{include,lib}
 #   DEBUG           - Set to 1 for debug build
 #   V               - Set to 1 for verbose output
 
@@ -74,12 +73,11 @@ HEADER_LANG := $(HEADER_LANG_$(PLATFORM))
 INGENIC_HEADERS ?= ingenic-headers
 INGENIC_LIB     ?= ../ingenic-lib
 
-# SigmaStar SDK staging dir: $(SIGMASTAR_SDK)/<soc>/{include,lib}
-SIGMASTAR_SDK   ?= ../sigmastar-sdk
-SDK_DIR_INFINITY6E := infinity6e
-
+# SigmaStar needs no SDK path: the MI ABI declarations and their dlopen
+# loaders live in src/star/i6_*.h, so there are no vendor headers to point at
+# and no MI libraries to link. SDK_INCLUDE stays empty for that vendor.
 ifeq ($(VENDOR),sigmastar)
-SDK_INCLUDE     := $(SIGMASTAR_SDK)/$(SDK_DIR_$(PLATFORM))/include
+SDK_INCLUDE     :=
 else
 SDK_INCLUDE     := $(INGENIC_HEADERS)/$(PLATFORM)/$(HEADER_VER)/$(HEADER_LANG)
 endif
@@ -99,10 +97,11 @@ CFLAGS  += -std=c11
 CFLAGS  += -ffunction-sections -fdata-sections -flto
 CFLAGS  += -fno-asynchronous-unwind-tables -fmerge-all-constants -fno-ident
 CFLAGS  += -DPLATFORM_$(PLATFORM)
+ifneq ($(SDK_INCLUDE),)
 CFLAGS  += -I$(SDK_INCLUDE)
-ifneq ($(VENDOR),sigmastar)
-# IMP headers live in an imp/ subdir and are included as <imp/imp_system.h>;
-# the MI SDK has no such nesting.
+# IMP headers live in an imp/ subdir and are included as <imp/imp_system.h>.
+# Guarded on SDK_INCLUDE being non-empty rather than on the vendor: a bare
+# -I would swallow the following flag as its argument.
 CFLAGS  += -I$(SDK_INCLUDE)/imp
 endif
 CFLAGS  += -Iinclude
@@ -176,9 +175,24 @@ DEPS := $(ALL_OBJS:.o=.d)
 LIB_VIDEO := libraptor_hal_video.a
 LIB_AUDIO := libraptor_hal_audio.a
 
-.PHONY: all clean info
+.PHONY: all clean info star_probe
 
 all: $(LIB_VIDEO) $(LIB_AUDIO)
+
+# Throwaway ABI probe — validates the vendored src/star/i6_*.h layouts against
+# the real vendor .so files on a board. Never part of `all`, never installed;
+# see tools/star_probe.c. Self-contained apart from libdl, so it still builds
+# when the archives do not.
+ifeq ($(VENDOR),sigmastar)
+star_probe: tools/star_probe
+
+tools/star_probe: tools/star_probe.c
+	@echo "  CCLD    $@"
+	$(Q)$(CC) $(CFLAGS) $< -o $@ -ldl
+else
+star_probe:
+	$(error star_probe is SigmaStar-only — build with PLATFORM=INFINITY6E)
+endif
 
 # Compile hal_common.c twice with different module defines
 src/hal_common_video.o: $(HAL_COMMON_SRC)
@@ -209,7 +223,7 @@ $(LIB_AUDIO): src/hal_common_audio.o $(CORE_OBJS) $(AUDIO_OBJS)
 
 clean:
 	@echo "  CLEAN"
-	$(Q)rm -f $(ALL_OBJS) $(DEPS) $(LIB_VIDEO) $(LIB_AUDIO)
+	$(Q)rm -f $(ALL_OBJS) $(DEPS) $(LIB_VIDEO) $(LIB_AUDIO) tools/star_probe
 	# `make clean` runs without PLATFORM, so VENDOR defaults to ingenic and
 	# $(ALL_OBJS) names only that backend's objects. Sweep the other
 	# vendors' subdirs explicitly so a clean is vendor-independent.

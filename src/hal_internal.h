@@ -245,28 +245,17 @@ int IMP_Encoder_SetChnAttrRcMode(int encChn, const IMPEncoderAttrRcMode *pstRcMo
 /* ═══════════════════════════════════════════════════════════════════════
  * 3b. Vendor SDK Includes -- SigmaStar MI
  *
- * SigmaStar's MI SDK is split per module (libmi_sys, libmi_venc, ...) with
- * one header each, rather than IMP's single libimp/imp_*.h layout. There is
- * no sysutils equivalent.
+ * There are none, by design. SigmaStar's MI SDK is split per module
+ * (libmi_sys, libmi_venc, ...) and SigmaStar publishes no redistributable
+ * headers for it, so the backend does not include vendor headers or link
+ * -lmi_* at all: src/star/i6_*.h carry the ABI declarations (vendored from
+ * OpenIPC/divinus, MIT) together with dlopen-based loaders, and the backend
+ * includes those directly.
  *
- * NOTE: SigmaStar does not publish these headers under a redistributable
- * license, and no OpenIPC reference project ships them -- waybeam_venc's
- * sdk/ssc338q/ is an empty placeholder. The declarations under
- * $(SIGMASTAR_SDK)/infinity6e/include are derived from OpenIPC/divinus's
- * MIT-licensed src/hal/star/i6_*.h ABI declarations. Populated in phase 2;
- * a stub-only build (no backend .c calling MI) needs none of them.
+ * Two consequences worth stating: the build needs no MI libraries present,
+ * and the binary binds to whatever MI stack the device itself carries --
+ * which matters because that stack is coupled to the running 4.9.84 kernel.
  * ═══════════════════════════════════════════════════════════════════════ */
-
-#ifdef HAL_SIGMASTAR_SDK
-#if __has_include(<mi_sys.h>)
-#include <mi_common.h>
-#include <mi_sys.h>
-#include <mi_venc.h>
-#include <mi_vif.h>
-#include <mi_isp.h>
-#define HAL_HAS_STAR_HEADERS
-#endif
-#endif /* HAL_SIGMASTAR_SDK */
 
 /* ═══════════════════════════════════════════════════════════════════════
  * 6. Logging
