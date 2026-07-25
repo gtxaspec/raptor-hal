@@ -862,9 +862,15 @@ const rss_hal_caps_t g_hal_caps = {
      * not the total. Capped at RSS_MAX_ENC_CHANNELS (8) since that is
      * raptor's array bound, so 8 is the most this field can honestly
      * advertise.
-     * OSD limits stay 0 until the region backend lands in phase 5;
-     * max_fs_channels is confirmed against MI_VPE in phase 2. */
+     * OSD limits stay 0 until the region backend lands in phase 5.
+     *
+     * max_fs_channels is 4 because a raptor framesource channel is a VPE
+     * output port (src/star/hal_framesource.c) and a VPE channel has four
+     * of them: divinus's teardown disables ports 0..3 (i6_hal.c:365) and
+     * waybeam uses 0 and 1. star_probe -v reports which ports actually
+     * accept MI_VPE_SetPortMode on this silicon. */
     .max_enc_channels = 8,
+    .max_fs_channels = 4,
 };
 
 #else

@@ -26,11 +26,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-#include "hal_internal.h"
-
-#include "i6_snr.h"
-#include "i6_sys.h"
-#include "i6_vif.h"
+#include "star_state.h"
 
 #include <stdarg.h>
 #include <syslog.h>
@@ -76,43 +72,14 @@ extern const rss_hal_caps_t g_hal_caps;
 /* ================================================================
  * MI BACKEND STATE
  *
- * Hung off rss_hal_ctx.platform rather than added to the context
+ * star_state_t, the fixed topology constants and the framesource op
+ * declarations live in star/star_state.h, because hal_framesource.c
+ * needs the same library handles and sensor descriptors. The state is
+ * hung off rss_hal_ctx.platform rather than added to the context
  * struct: hal_internal.h cannot include the i6_*.h headers, because
  * those include hal_internal.h themselves for HAL_LOG_ERR and
  * RSS_ERR_*. `platform` exists for exactly this.
- *
- * Fixed topology. One sensor on VIF device 0, channel 0, port 0 --
- * the SSC30KQ target has a single MIPI sensor, and MI's device and
- * channel numbering only becomes interesting with several. Task 2e
- * generalizes sensor selection; hardcoding the topology (not the
- * geometry -- see hal_init) keeps this task about MI bring-up.
  * ================================================================ */
-
-#define STAR_SNR_INDEX 0
-#define STAR_VIF_DEV 0
-#define STAR_VIF_CHN 0
-#define STAR_VIF_PORT 0
-
-typedef struct {
-    i6_sys_impl sys;
-    i6_snr_impl snr;
-    i6_vif_impl vif;
-
-    /* Sensor descriptors, read back after MI_SNR_Enable (see hal_init) */
-    i6_snr_pad pad;
-    i6_snr_plane plane;
-
-    /* Selected sensor mode -- 2c reads the geometry from here */
-    i6_snr_res res;
-    unsigned char res_index;
-
-    /* Unwind flags -- each set only once its step has succeeded, so
-     * teardown undoes exactly what was done and no more. */
-    bool sys_inited;
-    bool snr_enabled;
-    bool vif_dev_enabled;
-    bool vif_port_enabled;
-} star_state_t;
 
 /*
  * The daemons call rss_hal_get_imp_version() and friends with no
@@ -122,13 +89,6 @@ typedef struct {
  * already assumed throughout raptor.
  */
 static star_state_t *g_star;
-
-static star_state_t *star_state(void *ctx)
-{
-    rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
-
-    return c ? (star_state_t *)c->platform : NULL;
-}
 
 /* ── GPIO / IR-cut (src/hal_gpio.c — plain sysfs, no SDK dependency) ── */
 
@@ -143,7 +103,12 @@ int hal_ircut_set(void *ctx, int state);
  * ================================================================ */
 
 /*
- * star_vif_pixfmt -- pixel format for the VIF port fed by a raw sensor.
+ * star_vif_pixfmt -- pixel format for the raw-sensor side of the pipeline.
+ *
+ * Used for both the VIF port and the VPE channel input, since the same
+ * bayer frames cross both and both references derive it identically
+ * (divinus i6_hal.c:293 and :306, waybeam star6e_pipeline.c:475 and
+ * :523).
  *
  * Both references ignore the plane's own pixFmt for bayer sensors and
  * recompute it as RGB_BAYER + precision * I6_BAYER_END + bayer (divinus
@@ -170,7 +135,7 @@ int hal_ircut_set(void *ctx, int state);
  * sentinel itself through the formula; the difference is unreachable for real
  * values, but >= is what the sentence above actually means.)
  */
-static i6_common_pixfmt star_vif_pixfmt(const i6_snr_plane *plane)
+i6_common_pixfmt star_vif_pixfmt(const i6_snr_plane *plane)
 {
     if (plane->bayer >= I6_BAYER_END)
         return plane->pixFmt;
@@ -235,10 +200,18 @@ static int star_sensor_bringup(star_state_t *st, int mirror, int flip)
         return RSS_ERR_IO;
     }
 
+    /*
+     * Record the rate as well as programming it: MI_SYS_BindChnPort2
+     * takes source and destination frame rates, so both the VIF->VPE
+     * bind below and 2d's VPE->VENC bind need to know it, and MI offers
+     * no way to read back what the sensor is running at.
+     */
     if (st->res.maxFps) {
         ret = st->snr.fnSetFramerate(STAR_SNR_INDEX, st->res.maxFps);
         if (ret)
             HAL_LOG_WARN("MI_SNR_SetFps(%u) failed: %d", st->res.maxFps, ret);
+        else
+            st->fps = st->res.maxFps;
     }
 
     /* Orientation before Enable, so the driver's init picks it up. */
@@ -348,6 +321,133 @@ static int star_vif_bringup(star_state_t *st)
     return RSS_OK;
 }
 
+/*
+ * star_vpe_bringup -- create the ISP/scaler channel and hook VIF to it.
+ *
+ * VPE is the ISP plus scaler block: one channel per sensor, with up to
+ * four output ports that are raptor's framesource channels (see
+ * hal_framesource.c). The channel is created here rather than on the
+ * first fs_create_channel because it takes the sensor's geometry and
+ * pixel format, and because nothing moves until it is bound to VIF --
+ * which is also why 2b could not observe frames at the VIF port.
+ *
+ * Three things this deliberately does not do:
+ *
+ * No ports are configured or enabled. divinus binds VIF->VPE with no
+ * ports set up (i6_hal.c:355) and configures them later per encoder
+ * channel, which is the order raptor needs too: hal_init runs before
+ * rvd knows its stream geometry. waybeam configures port 0 first only
+ * because it is a single-purpose daemon that already knows it.
+ *
+ * The i6e_ structs are populated and cast to the shorter declared type.
+ * MI_VPE_CreateChannel and MI_VPE_SetChannelParam read a longer struct
+ * on Infinity6E than on Infinity6 (the LDC members); divinus branches
+ * on series == 0xF1 and casts (i6_hal.c:302-345). Our target is 0xF1
+ * only, so the i6e_ variants are always the ones filled in -- passing
+ * the short struct would have MI read past its end. See i6_vpe.h.
+ *
+ * Nothing waits for the ISP. MI_VPE_CreateChannel returns before the
+ * ISP channel has finished initialising, so anything touching MI_ISP
+ * must poll MI_ISP_IQ_GetParaInitStatus first or the kernel logs
+ * "IspApiGet channel not created" (waybeam star6e_pipeline.c:172-200).
+ * No MI_ISP call exists in this backend yet; phase 3 needs that poll
+ * before its first one.
+ */
+static int star_vpe_bringup(star_state_t *st)
+{
+    i6e_vpe_chn channel;
+    i6e_vpe_para param;
+    i6_sys_bind source, dest;
+    unsigned int fps;
+    int ret;
+    int i;
+
+    /*
+     * -1, not the 0 that calloc left behind: 0 is a legitimate file
+     * descriptor, so teardown must be able to tell "never opened" from
+     * "opened as fd 0" before it calls MI_SYS_CloseFd on every port.
+     */
+    for (i = 0; i < STAR_VPE_PORT_NUM; i++)
+        st->port[i].fd = -1;
+
+    memset(&channel, 0, sizeof(channel));
+    channel.capt.width = st->plane.capt.width;
+    channel.capt.height = st->plane.capt.height;
+    channel.pixFmt = star_vif_pixfmt(&st->plane);
+    channel.hdr = I6_HDR_OFF;
+    /* i6_vpe_sens is 1-based: ID0 == 1. Both references pass index + 1. */
+    channel.sensor = (i6_vpe_sens)(STAR_SNR_INDEX + 1);
+    channel.mode = I6_VPE_MODE_REALTIME;
+
+    ret = st->vpe.fnCreateChannel(STAR_VPE_CHN, (i6_vpe_chn *)&channel);
+    if (ret) {
+        HAL_LOG_ERR("MI_VPE_CreateChannel(%d) failed: %d (%ux%u pixFmt %d)", STAR_VPE_CHN,
+                    ret, channel.capt.width, channel.capt.height, channel.pixFmt);
+        return RSS_ERR_IO;
+    }
+    st->vpe_chn_created = true;
+
+    memset(&param, 0, sizeof(param));
+    param.hdr = I6_HDR_OFF;
+    /* 3DNR level 1, as both references default it. Range is 0-7 and
+     * exposing it belongs with the rest of the ISP controls in phase 3. */
+    param.level3DNR = 1;
+    /* Digital mirror/flip stay off; orientation is a sensor register.
+     * See the note in hal_framesource.c's star_fs_configure. */
+    param.mirror = 0;
+    param.flip = 0;
+    param.lensAdjOn = 0;
+
+    ret = st->vpe.fnSetChannelParam(STAR_VPE_CHN, (i6_vpe_para *)&param);
+    if (ret) {
+        HAL_LOG_ERR("MI_VPE_SetChannelParam(%d) failed: %d", STAR_VPE_CHN, ret);
+        return RSS_ERR_IO;
+    }
+
+    ret = st->vpe.fnStartChannel(STAR_VPE_CHN);
+    if (ret) {
+        HAL_LOG_ERR("MI_VPE_StartChannel(%d) failed: %d", STAR_VPE_CHN, ret);
+        return RSS_ERR_IO;
+    }
+    st->vpe_chn_started = true;
+
+    /*
+     * VIF -> VPE, hardware streaming link. I6_SYS_LINK_REALTIME pairs
+     * with the channel's I6_VPE_MODE_REALTIME and VIF's
+     * RGB_REALTIME work mode: pixels reach the ISP without a DRAM
+     * round trip, which is why a realtime-bound port reports
+     * MI_SYS_REALTIME_MAGIC_PADDR/VADDR instead of usable addresses
+     * (SigmaStar MI_SYS reference, MI_SYS_FrameData_PhySignalType).
+     * Frames become CPU-readable at the VPE *output* ports, which are
+     * framebase.
+     */
+    fps = st->fps ? st->fps : st->res.maxFps;
+
+    memset(&source, 0, sizeof(source));
+    source.module = I6_SYS_MOD_VIF;
+    source.device = STAR_VIF_DEV;
+    source.channel = STAR_VIF_CHN;
+    source.port = STAR_VIF_PORT;
+
+    memset(&dest, 0, sizeof(dest));
+    dest.module = I6_SYS_MOD_VPE;
+    dest.device = STAR_VPE_DEV;
+    dest.channel = STAR_VPE_CHN;
+    dest.port = 0;
+
+    ret = st->sys.fnBindExt(&source, &dest, fps, fps, I6_SYS_LINK_REALTIME, 0);
+    if (ret) {
+        HAL_LOG_ERR("MI_SYS_BindChnPort2 VIF->VPE failed: %d", ret);
+        return RSS_ERR_IO;
+    }
+    st->vif_vpe_bound = true;
+
+    HAL_LOG_INFO("VPE up: chn %d, %ux%u in, realtime link from VIF at %u fps", STAR_VPE_CHN,
+                 channel.capt.width, channel.capt.height, fps);
+
+    return RSS_OK;
+}
+
 static int star_teardown(star_state_t *st);
 
 /*
@@ -409,6 +509,9 @@ static int hal_init(void *ctx, const rss_multi_sensor_config_t *cfg)
     ret = i6_vif_load(&st->vif);
     if (ret)
         goto err_unload;
+    ret = i6_vpe_load(&st->vpe);
+    if (ret)
+        goto err_unload;
 
     ret = st->sys.fnInit();
     if (ret) {
@@ -426,6 +529,10 @@ static int hal_init(void *ctx, const rss_multi_sensor_config_t *cfg)
     if (ret)
         goto err_teardown;
 
+    ret = star_vpe_bringup(st);
+    if (ret)
+        goto err_teardown;
+
     g_star = st;
     c->initialized = true;
     return RSS_OK;
@@ -433,6 +540,7 @@ static int hal_init(void *ctx, const rss_multi_sensor_config_t *cfg)
 err_teardown:
     star_teardown(st);
 err_unload:
+    i6_vpe_unload(&st->vpe);
     i6_vif_unload(&st->vif);
     i6_snr_unload(&st->snr);
     i6_sys_unload(&st->sys);
@@ -453,9 +561,66 @@ err_free:
 static int star_teardown(star_state_t *st)
 {
     int ret;
+    int i;
 
     if (!st)
         return RSS_OK;
+
+    /*
+     * Ports first, then the link, then the channel -- the reverse of
+     * bring-up. divinus disables all four ports before unbinding
+     * (i6_hal.c:363-377); a port left enabled with its VENC bind gone
+     * is what leaves MI's kernel side holding buffers.
+     */
+    /* hal_framesource.c is a video-module source, so the audio archive
+     * has no fs ops to have checked a frame out in the first place. */
+#ifdef HAL_MODULE_VIDEO
+    star_fs_release_all(st);
+#endif
+    for (i = 0; i < STAR_VPE_PORT_NUM; i++) {
+        if (!st->port[i].enabled)
+            continue;
+        ret = st->vpe.fnDisablePort(STAR_VPE_CHN, i);
+        if (ret)
+            HAL_LOG_WARN("MI_VPE_DisablePort(%d, %d) failed: %d", STAR_VPE_CHN, i, ret);
+        st->port[i].enabled = false;
+        st->port[i].configured = false;
+    }
+
+    if (st->vif_vpe_bound) {
+        i6_sys_bind source, dest;
+
+        memset(&source, 0, sizeof(source));
+        source.module = I6_SYS_MOD_VIF;
+        source.device = STAR_VIF_DEV;
+        source.channel = STAR_VIF_CHN;
+        source.port = STAR_VIF_PORT;
+
+        memset(&dest, 0, sizeof(dest));
+        dest.module = I6_SYS_MOD_VPE;
+        dest.device = STAR_VPE_DEV;
+        dest.channel = STAR_VPE_CHN;
+        dest.port = 0;
+
+        ret = st->sys.fnUnbind(&source, &dest);
+        if (ret)
+            HAL_LOG_WARN("MI_SYS_UnBindChnPort VIF->VPE failed: %d", ret);
+        st->vif_vpe_bound = false;
+    }
+
+    if (st->vpe_chn_started) {
+        ret = st->vpe.fnStopChannel(STAR_VPE_CHN);
+        if (ret)
+            HAL_LOG_WARN("MI_VPE_StopChannel failed: %d", ret);
+        st->vpe_chn_started = false;
+    }
+
+    if (st->vpe_chn_created) {
+        ret = st->vpe.fnDestroyChannel(STAR_VPE_CHN);
+        if (ret)
+            HAL_LOG_WARN("MI_VPE_DestroyChannel failed: %d", ret);
+        st->vpe_chn_created = false;
+    }
 
     if (st->vif_port_enabled) {
         ret = st->vif.fnDisablePort(STAR_VIF_CHN, STAR_VIF_PORT);
@@ -501,6 +666,7 @@ static int hal_deinit(void *ctx)
 
     star_teardown(st);
 
+    i6_vpe_unload(&st->vpe);
     i6_vif_unload(&st->vif);
     i6_snr_unload(&st->snr);
     i6_sys_unload(&st->sys);
@@ -615,8 +781,25 @@ static const rss_hal_ops_t g_ops = {
     .sys_get_timestamp = hal_sys_get_timestamp,
     .sys_rebase_timestamp = hal_sys_rebase_timestamp,
 
-    /* Framesource, encoder, ISP, OSD and audio ops are added by the
-     * phases that implement them. */
+#ifdef HAL_MODULE_VIDEO
+    /* Framesource -- VPE output ports (src/star/hal_framesource.c).
+     * The ops MI has no equivalent for are listed, with reasons, in
+     * that file's header comment. */
+    .fs_create_channel = hal_fs_create_channel,
+    .fs_set_channel_attr = hal_fs_set_channel_attr,
+    .fs_destroy_channel = hal_fs_destroy_channel,
+    .fs_enable_channel = hal_fs_enable_channel,
+    .fs_disable_channel = hal_fs_disable_channel,
+    .fs_set_fifo = hal_fs_set_fifo,
+    .fs_get_fifo = hal_fs_get_fifo,
+    .fs_set_frame_depth = hal_fs_set_frame_depth,
+    .fs_get_frame_depth = hal_fs_get_frame_depth,
+    .fs_get_frame = hal_fs_get_frame,
+    .fs_release_frame = hal_fs_release_frame,
+#endif
+
+    /* Encoder, ISP, OSD and audio ops are added by the phases that
+     * implement them. */
 
 #ifdef HAL_MODULE_VIDEO
     /* GPIO / IR-cut — vendor-neutral sysfs, works as-is */

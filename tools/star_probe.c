@@ -11,8 +11,8 @@
  * to spot and cheap to fix -- rather than as memory corruption several tasks
  * into the port, which is the failure mode this port most needs to avoid.
  *
- * Never touches VPE/VENC -- those are 2c and 2d. By default it only queries,
- * writing no state but MI_SNR_SetPlaneMode, as divinus does before querying
+ * Never touches VENC -- that is 2d. By default it only queries, writing no
+ * state but MI_SNR_SetPlaneMode, as divinus does before querying
  * (i6_hal.c:228).
  *
  * With -e it additionally runs SetRes/SetFps/SetOrien/Enable first, because
@@ -38,6 +38,13 @@
  * So what -f actually verifies is that MI accepts the descriptors 2b derives
  * from the sensor. -f implies -e.
  *
+ * With -v it builds the 2c stage on top: the VPE channel, the VIF->VPE
+ * realtime bind, a scan of which output ports MI accepts, and an NV12 dump
+ * from port 0 (sensor resolution) and port 1 (640x360) into /tmp. This is
+ * where frames finally become CPU-readable -- VPE output ports are framebase,
+ * unlike the realtime link feeding them -- so -v is the run that either
+ * produces a viewable image or does not. -v implies -f.
+ *
  * On SSC30KQ + GC4653 expect: 2560x1440, 10bpp precision, Bayer GR, MIPI
  * interface, 2 lanes, 5-30 fps, and a single plane (pad.planeCnt reads 0 --
  * see probe_sensor).
@@ -55,18 +62,25 @@
 #include "star/i6_vif.h"
 #include "star/i6_vpe.h"
 
+#include <fcntl.h>
 #include <stdarg.h>
 #include <sys/select.h>
 #include <time.h>
+#include <unistd.h>
 
 /* Sanity bounds on counts MI reports back — see probe_sensor(). */
 #define PROBE_MAX_RES 32
 #define PROBE_MAX_PLANES 4
 
-/* VIF topology, matching src/star/hal_common.c's STAR_VIF_* constants. */
+/* VIF and VPE topology, matching src/star/star_state.h's STAR_* constants. */
 #define PROBE_VIF_DEV 0
 #define PROBE_VIF_CHN 0
 #define PROBE_VIF_PORT 0
+#define PROBE_VPE_DEV 0
+#define PROBE_VPE_CHN 0
+
+/* Where -v writes the NV12 dumps. Board-side path, so /tmp. */
+#define PROBE_DUMP_DIR "/tmp"
 
 /* How long to wait for a frame. At the GC4653's 5 fps floor a frame is 200 ms,
  * so a second is generous without hanging a failed run for long. */
@@ -354,12 +368,293 @@ static i6_common_pixfmt probe_vif_pixfmt(const i6_snr_plane *plane)
 }
 
 /*
+ * probe_vpe_ports -- which VPE output ports does this silicon accept?
+ *
+ * hal_caps.c advertises max_fs_channels = 4 on the strength of divinus
+ * disabling ports 0..3 in teardown, which is documentation by use rather than
+ * a fact about the hardware. MI_VPE_SetPortMode either takes a port or it does
+ * not, so ask, and let the caps value quote a measurement instead.
+ *
+ * Ports are left configured; the caller reconfigures the two it dumps from.
+ */
+static void probe_vpe_ports(i6_vpe_impl *vpe)
+{
+    i6_vpe_port attr;
+    int i;
+
+    printf("\nVPE output ports (MI_VPE_SetPortMode at 640x360 NV12; 0 == accepted):\n ");
+    for (i = 0; i < 4; i++) {
+        memset(&attr, 0, sizeof(attr));
+        attr.output.width = 640;
+        attr.output.height = 360;
+        attr.pixFmt = I6_PIXFMT_YUV420SP;
+        attr.compress = I6_COMPR_NONE;
+        printf("  port %d: %d", i, vpe->fnSetPortConfig(PROBE_VPE_CHN, i, &attr));
+    }
+    printf("\n");
+}
+
+/*
+ * probe_vpe_dump -- configure one VPE port, drain frames, write NV12 to a file.
+ *
+ * This is 2c's verification, and the first point in the port where a frame is
+ * CPU-readable at all: VIF->VPE is a realtime hardware link with no DRAM round
+ * trip, but the VPE *output* ports are framebase.
+ *
+ * The write follows the vendor's own MI_SYS_ChnOutputPortGetBuf sample
+ * (ref/sigmastar-docs, MI_SYS reference 2.4.7), which writes
+ *   height * stride[0] + height * stride[1] / 2
+ * bytes from pVirAddr[0] -- i.e. it assumes the two planes are contiguous.
+ * That assumption is worth checking rather than inheriting, so the plane
+ * pointers are printed and compared.
+ */
+static int probe_vpe_dump(i6_sys_impl *sys, i6_vpe_impl *vpe, int port_id, unsigned short width,
+                          unsigned short height, int frames, const char *dir)
+{
+    i6_vpe_port attr;
+    i6_sys_bind bind;
+    char path[256];
+    int fd = -1;
+    int fout = -1;
+    int captured = 0;
+    int ret;
+
+    memset(&attr, 0, sizeof(attr));
+    attr.output.width = width;
+    attr.output.height = height;
+    attr.pixFmt = I6_PIXFMT_YUV420SP;
+    attr.compress = I6_COMPR_NONE;
+
+    ret = vpe->fnSetPortConfig(PROBE_VPE_CHN, port_id, &attr);
+    if (ret) {
+        printf("\nMI_VPE_SetPortMode(%d, %d) %ux%u: %d\n", PROBE_VPE_CHN, port_id, width, height,
+               ret);
+        return ret;
+    }
+
+    ret = vpe->fnEnablePort(PROBE_VPE_CHN, port_id);
+    if (ret) {
+        printf("\nMI_VPE_EnablePort(%d, %d): %d\n", PROBE_VPE_CHN, port_id, ret);
+        return ret;
+    }
+
+    printf("\nVPE port %d: %ux%u NV12\n", port_id, width, height);
+
+    memset(&bind, 0, sizeof(bind));
+    bind.module = I6_SYS_MOD_VPE;
+    bind.device = PROBE_VPE_DEV;
+    bind.channel = PROBE_VPE_CHN;
+    bind.port = port_id;
+
+    /* (2, 3) is the vendor sample's own pairing -- user depth 2, queue 3. */
+    ret = sys->fnSetOutputDepth(&bind, 2, 3);
+    if (ret) {
+        printf("  MI_SYS_SetChnOutputPortDepth: %d\n", ret);
+        goto out;
+    }
+
+    if (sys->fnGetFd) {
+        ret = sys->fnGetFd(&bind, &fd);
+        if (ret) {
+            printf("  MI_SYS_GetFd: %d (falling back to polling)\n", ret);
+            fd = -1;
+        }
+    }
+
+    snprintf(path, sizeof(path), "%s/vpe_port%d_%ux%u.nv12", dir, port_id, width, height);
+
+    while (captured < frames) {
+        i6_sys_bufinfo buf;
+        int handle = -1;
+        unsigned int size;
+
+        if (fd >= 0) {
+            fd_set rfds;
+            struct timeval tv = {PROBE_FRAME_TIMEOUT_MS / 1000,
+                                 (PROBE_FRAME_TIMEOUT_MS % 1000) * 1000};
+
+            FD_ZERO(&rfds);
+            FD_SET(fd, &rfds);
+            ret = select(fd + 1, &rfds, NULL, NULL, &tv);
+            if (ret < 0) {
+                printf("  select: %s\n", strerror(errno));
+                break;
+            }
+            if (!ret) {
+                printf("  timeout after %d ms with no frame\n", PROBE_FRAME_TIMEOUT_MS);
+                break;
+            }
+        }
+
+        memset(&buf, 0, sizeof(buf));
+        ret = sys->fnGetOutputBuf(&bind, &buf, &handle);
+        if (ret) {
+            printf("  MI_SYS_ChnOutputPortGetBuf: %d\n", ret);
+            break;
+        }
+
+        size = buf.frame.height * buf.frame.stride[0] + buf.frame.height * buf.frame.stride[1] / 2;
+        if (buf.frame.bufSize && size > buf.frame.bufSize)
+            size = buf.frame.bufSize;
+
+        printf("  [%d] pts %llu  type %d  seq %u  %ux%u  pixFmt %d  stride %u/%u  "
+               "bufSize %u  write %u\n",
+               captured, buf.pts, buf.bufType, buf.seqNum, buf.frame.width, buf.frame.height,
+               buf.frame.pixFmt, buf.frame.stride[0], buf.frame.stride[1], buf.frame.bufSize, size);
+        printf("       va %p/%p  pa 0x%llx  planes %s\n", buf.frame.virAddr[0],
+               buf.frame.virAddr[1], buf.frame.phyAddr[0],
+               (char *)buf.frame.virAddr[1] ==
+                       (char *)buf.frame.virAddr[0] + buf.frame.height * buf.frame.stride[0]
+                   ? "contiguous"
+                   : "NOT contiguous -- the vendor sample's single write is wrong here");
+
+        /* One file per port, first frame only: the point is to look at an
+         * image, and later frames would just append. */
+        if (fout < 0 && buf.frame.virAddr[0] && size) {
+            fout = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fout < 0)
+                printf("       open(%s): %s\n", path, strerror(errno));
+            else if (write(fout, buf.frame.virAddr[0], size) != (ssize_t)size)
+                printf("       write(%s): %s\n", path, strerror(errno));
+            else
+                printf("       wrote %s (%u bytes) -- ffplay -f rawvideo -pix_fmt nv12 "
+                       "-video_size %ux%u %s\n",
+                       path, size, buf.frame.width, buf.frame.height, path);
+        }
+
+        sys->fnPutOutputBuf(handle);
+        captured++;
+    }
+
+    printf("  captured %d of %d frame(s)\n", captured, frames);
+    ret = captured ? 0 : -1;
+
+out:
+    if (fout >= 0)
+        close(fout);
+    if (fd >= 0 && sys->fnCloseFd)
+        sys->fnCloseFd(fd);
+    vpe->fnDisablePort(PROBE_VPE_CHN, port_id);
+
+    return ret;
+}
+
+/*
+ * probe_vpe -- create the VPE channel, bind VIF to it, dump both ports.
+ *
+ * Mirrors star_vpe_bringup() in src/star/hal_common.c plus what
+ * hal_framesource.c does per port; if they ever disagree, those are right and
+ * this is stale.
+ */
+static int probe_vpe(i6_sys_impl *sys, i6_vpe_impl *vpe, const i6_snr_plane *plane,
+                     unsigned int index, unsigned int fps, int frames, const char *dir)
+{
+    i6e_vpe_chn channel;
+    i6e_vpe_para param;
+    i6_sys_bind source, dest;
+    int created = 0, started = 0, bound = 0;
+    int ret, dret;
+
+    memset(&channel, 0, sizeof(channel));
+    channel.capt.width = plane->capt.width;
+    channel.capt.height = plane->capt.height;
+    channel.pixFmt = probe_vif_pixfmt(plane);
+    channel.hdr = I6_HDR_OFF;
+    /* i6_vpe_sens is 1-based: ID0 == 1. Both references pass index + 1. */
+    channel.sensor = (i6_vpe_sens)(index + 1);
+    channel.mode = I6_VPE_MODE_REALTIME;
+
+    printf("\nVPE: chn %d, %ux%u in, pixFmt %d, sensor id %d, mode REALTIME(%d)\n", PROBE_VPE_CHN,
+           channel.capt.width, channel.capt.height, channel.pixFmt, channel.sensor, channel.mode);
+
+    /* i6e_ struct cast to the shorter declared type -- Infinity6E reads the
+     * longer layout. See i6_vpe.h. */
+    ret = vpe->fnCreateChannel(PROBE_VPE_CHN, (i6_vpe_chn *)&channel);
+    if (ret) {
+        printf("MI_VPE_CreateChannel: %d\n", ret);
+        return ret;
+    }
+    created = 1;
+
+    memset(&param, 0, sizeof(param));
+    param.hdr = I6_HDR_OFF;
+    param.level3DNR = 1;
+    ret = vpe->fnSetChannelParam(PROBE_VPE_CHN, (i6_vpe_para *)&param);
+    if (ret) {
+        printf("MI_VPE_SetChannelParam: %d\n", ret);
+        goto out;
+    }
+
+    ret = vpe->fnStartChannel(PROBE_VPE_CHN);
+    if (ret) {
+        printf("MI_VPE_StartChannel: %d\n", ret);
+        goto out;
+    }
+    started = 1;
+
+    memset(&source, 0, sizeof(source));
+    source.module = I6_SYS_MOD_VIF;
+    source.device = PROBE_VIF_DEV;
+    source.channel = PROBE_VIF_CHN;
+    source.port = PROBE_VIF_PORT;
+
+    memset(&dest, 0, sizeof(dest));
+    dest.module = I6_SYS_MOD_VPE;
+    dest.device = PROBE_VPE_DEV;
+    dest.channel = PROBE_VPE_CHN;
+    dest.port = 0;
+
+    ret = sys->fnBindExt(&source, &dest, fps, fps, I6_SYS_LINK_REALTIME, 0);
+    if (ret) {
+        printf("MI_SYS_BindChnPort2 VIF->VPE (realtime, %u fps): %d\n", fps, ret);
+        goto out;
+    }
+    bound = 1;
+    printf("     bound VIF -> VPE, realtime, %u fps\n", fps);
+
+    probe_vpe_ports(vpe);
+
+    /*
+     * Let the ISP finish coming up. MI_VPE_CreateChannel returns before the
+     * ISP channel has initialised (waybeam polls MI_ISP_IQ_GetParaInitStatus
+     * for up to 2 s here), and the first frames off a cold ISP are not worth
+     * looking at anyway.
+     */
+    {
+        struct timespec nap = {1, 0};
+
+        nanosleep(&nap, NULL);
+    }
+
+    /* Port 0 at sensor resolution, port 1 scaled -- the main/sub split the
+     * backend will use, and the substream is where this board's known
+     * trouble lives. */
+    ret = probe_vpe_dump(sys, vpe, 0, plane->capt.width, plane->capt.height, frames, dir);
+    dret = probe_vpe_dump(sys, vpe, 1, 640, 360, frames, dir);
+    if (!ret)
+        ret = dret;
+
+out:
+    if (bound)
+        sys->fnUnbind(&source, &dest);
+    if (started)
+        vpe->fnStopChannel(PROBE_VPE_CHN);
+    if (created)
+        vpe->fnDestroyChannel(PROBE_VPE_CHN);
+
+    return ret;
+}
+
+/*
  * Bring VIF up on an already-enabled sensor and confirm frames arrive. Mirrors
  * star_vif_bringup() in src/star/hal_common.c; if the two ever disagree,
  * hal_common.c is right and this is stale.
+ *
+ * With vpe non-NULL it goes on to build the VPE stage on top before tearing
+ * anything down, since VPE only means anything with VIF live underneath it.
  */
-static int probe_vif(i6_sys_impl *sys, i6_snr_impl *snr, i6_vif_impl *vif, unsigned int index,
-                     int frames)
+static int probe_vif(i6_sys_impl *sys, i6_snr_impl *snr, i6_vif_impl *vif, i6_vpe_impl *vpe,
+                     unsigned int index, int frames, const char *dir)
 {
     i6_snr_pad pad;
     i6_snr_plane plane;
@@ -479,6 +774,23 @@ static int probe_vif(i6_sys_impl *sys, i6_snr_impl *snr, i6_vif_impl *vif, unsig
     probe_proc_grep("/proc/mi_modules/mi_vif/mi_vif0", "OutCount", 1);
 
     /*
+     * With -v, VPE is the observation point and the VIF drain below would only
+     * spend a second confirming what the first two runs already established.
+     * Hand over with VIF still up.
+     */
+    if (vpe) {
+        i6_snr_res res;
+        unsigned int fps = 30;
+
+        memset(&res, 0, sizeof(res));
+        if (!snr->fnGetResolution(index, 0, &res) && res.maxFps)
+            fps = res.maxFps;
+
+        ret = probe_vpe(sys, vpe, &plane, index, fps, frames, dir);
+        goto out;
+    }
+
+    /*
      * The ABI-exercising part, kept because it costs one second and is the only
      * thing that would exercise i6_sys_bufinfo. It is expected to time out
      * here for the realtime-link reason in the file header; 2c is where this
@@ -590,10 +902,13 @@ int main(int argc, char **argv)
     i6_sys_impl sys;
     i6_snr_impl snr;
     i6_vif_impl vif;
+    i6_vpe_impl vpe;
     i6_sys_ver ver;
+    const char *dir = PROBE_DUMP_DIR;
     unsigned int index = 0;
     int do_enable = 0;
     int do_vif = 0;
+    int do_vpe = 0;
     int frames = 3;
     int i;
 
@@ -605,12 +920,18 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-f")) {
             do_vif = 1;
             do_enable = 1;
+        } else if (!strcmp(argv[i], "-v")) {
+            do_vpe = 1;
+            do_vif = 1;
+            do_enable = 1;
+        } else if (!strcmp(argv[i], "-o") && i + 1 < argc) {
+            dir = argv[++i];
         } else if (!strcmp(argv[i], "-n") && i + 1 < argc) {
             frames = (int)strtol(argv[++i], NULL, 0);
             if (frames < 0)
                 frames = 0;
         } else if (!strcmp(argv[i], "-h")) {
-            printf("usage: star_probe [-e] [-f] [-n count] [sensor-index]\n"
+            printf("usage: star_probe [-e] [-f] [-v] [-n count] [-o dir] [sensor-index]\n"
                    "  -e  run the sensor bring-up sequence (SetRes/SetFps/SetOrien/Enable)\n"
                    "      before querying, then Disable. Needed to see pad intfAttr and\n"
                    "      plane geometry, since those are only populated once the sensor\n"
@@ -619,20 +940,26 @@ int main(int argc, char **argv)
                    "  -f  additionally bring up VIF and check that frames arrive, via\n"
                    "      /proc/mi_modules counters and then by draining the VIF output\n"
                    "      port. Implies -e. Everything is torn down again before exit.\n"
-                   "  -n  how many frames -f should try to read (default %d)\n",
-                   frames);
+                   "  -v  additionally create the VPE channel, bind VIF to it, report which\n"
+                   "      output ports MI accepts, and dump one NV12 frame from port 0 (full\n"
+                   "      resolution) and port 1 (640x360). Implies -f, and replaces -f's\n"
+                   "      VIF drain -- a realtime-bound VIF port has nothing to hand the CPU.\n"
+                   "  -n  how many frames to try to read per port (default %d)\n"
+                   "  -o  where -v writes its dumps (default %s)\n",
+                   frames, dir);
             return 0;
         } else
             index = (unsigned int)strtoul(argv[i], NULL, 0);
     }
 
-    printf("star_probe -- %s, sensor index %u%s%s\n\n", HAL_PLATFORM_NAME, index,
-           do_enable ? ", with bring-up" : "", do_vif ? " + VIF" : "");
+    printf("star_probe -- %s, sensor index %u%s%s%s\n\n", HAL_PLATFORM_NAME, index,
+           do_enable ? ", with bring-up" : "", do_vif ? " + VIF" : "", do_vpe ? " + VPE" : "");
     print_sizes();
 
     memset(&sys, 0, sizeof(sys));
     memset(&snr, 0, sizeof(snr));
     memset(&vif, 0, sizeof(vif));
+    memset(&vpe, 0, sizeof(vpe));
 
     ret = i6_sys_load(&sys);
     if (ret) {
@@ -705,8 +1032,11 @@ int main(int argc, char **argv)
 
         if (vret)
             printf("i6_vif_load: %d\n", vret);
+        else if (do_vpe && (vret = i6_vpe_load(&vpe)))
+            printf("i6_vpe_load: %d\n", vret);
         else
-            vret = probe_vif(&sys, &snr, &vif, index, frames);
+            vret = probe_vif(&sys, &snr, &vif, do_vpe ? &vpe : NULL, index, frames, dir);
+        i6_vpe_unload(&vpe);
         i6_vif_unload(&vif);
         if (vret)
             ret = vret;
