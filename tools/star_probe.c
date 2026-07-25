@@ -11,13 +11,19 @@
  * to spot and cheap to fix -- rather than as memory corruption several tasks
  * into the port, which is the failure mode this port most needs to avoid.
  *
- * Deliberately stops short of streaming: it queries the sensor and never
- * calls MI_SNR_Enable or touches VIF/VPE/VENC, so it cannot leave hardware
- * running. MI_SNR_SetPlaneMode is the one state it writes, matching what
- * divinus does before querying (i6_hal.c:228).
+ * Never touches VIF/VPE/VENC -- those are 2b through 2d. By default it only
+ * queries, writing no state but MI_SNR_SetPlaneMode, as divinus does before
+ * querying (i6_hal.c:228).
  *
- * On SSC30KQ + GC4653 expect: one plane, 2560x1440, 10bpp precision,
- * Bayer GR, MIPI interface, 2 lanes, 5-30 fps.
+ * With -e it additionally runs SetRes/SetFps/SetOrien/Enable first, because
+ * the pad's intfAttr and the plane geometry stay zero until the sensor
+ * driver's pCus_sensor_init has run, and MI_SNR_Enable is what triggers it --
+ * which is why waybeam queries the pad after Enable (sensor_select.c:485).
+ * Enable is always paired with Disable, so even -e leaves nothing streaming.
+ *
+ * On SSC30KQ + GC4653 expect: 2560x1440, 10bpp precision, Bayer GR, MIPI
+ * interface, 2 lanes, 5-30 fps, and a single plane (pad.planeCnt reads 0 --
+ * see probe_sensor).
  *
  * Copyright (C) 2026 Thingino Project
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -114,7 +120,7 @@ static void print_sizes(void)
     printf("\n");
 }
 
-static int probe_sensor(i6_snr_impl *snr, unsigned int index)
+static int probe_sensor(i6_snr_impl *snr, unsigned int index, int do_enable)
 {
     i6_snr_pad pad;
     i6_snr_plane plane;
@@ -168,6 +174,37 @@ static int probe_sensor(i6_snr_impl *snr, unsigned int index)
         printf("current: [%u] %ux%u fps %u-%u\n", cur, res.output.width, res.output.height,
                res.minFps, res.maxFps);
 
+    /*
+     * Optional bring-up. Until the sensor driver's pCus_sensor_init has run,
+     * the pad descriptor is only partly populated -- planeCnt and intfAttr
+     * read back as zero. That init is triggered by MI_SNR_Enable, which is
+     * why waybeam queries the pad *after* Enable (sensor_select.c:485) while
+     * divinus queries before it and relies only on the fields that are
+     * populated either way (i6_hal.c:257).
+     *
+     * Enable starts the sensor, so it is behind a flag rather than the
+     * default, and it is always paired with Disable below.
+     */
+    if (do_enable) {
+        printf("\nbring-up: SetRes(%u) -> SetFps(%u) -> SetOrien(0,0) -> Enable\n", cur,
+               res.maxFps ? res.maxFps : 30);
+        ret = snr->fnSetResolution(index, cur);
+        if (ret)
+            printf("MI_SNR_SetRes: %d (continuing)\n", ret);
+        ret = snr->fnSetFramerate(index, res.maxFps ? res.maxFps : 30);
+        if (ret)
+            printf("MI_SNR_SetFps: %d (continuing)\n", ret);
+        ret = snr->fnSetOrientation(index, 0, 0);
+        if (ret)
+            printf("MI_SNR_SetOrien: %d (continuing)\n", ret);
+        ret = snr->fnEnable(index);
+        if (ret) {
+            printf("MI_SNR_Enable: %d\n", ret);
+            return ret;
+        }
+        printf("enabled\n\n");
+    }
+
     memset(&pad, 0, sizeof(pad));
     ret = snr->fnGetPadInfo(index, &pad);
     if (ret) {
@@ -180,6 +217,33 @@ static int probe_sensor(i6_snr_impl *snr, unsigned int index)
         printf("     mipi: lanes %u  rgbFmt %u  input %d  hsyncMode %u  hwHdr %d  virtChn %u\n",
                pad.intfAttr.mipi.laneCnt, pad.intfAttr.mipi.rgbFmtOn, pad.intfAttr.mipi.input,
                pad.intfAttr.mipi.hsyncMode, pad.intfAttr.mipi.hwHdr, pad.intfAttr.mipi.virtChn);
+    if (!pad.planeCnt)
+        printf("     (planeCnt 0 is normal before bring-up; neither reference reads this\n"
+               "      field -- both query plane 0 directly, as below)\n");
+
+    /*
+     * Plane 0 unconditionally, not a loop over planeCnt. Both references do
+     * exactly this -- divinus i6_hal.c:259 and waybeam sensor_select.c:491
+     * both hardcode index 0 and neither reads planeCnt anywhere -- and
+     * looping over it instead means an unpopulated pad silently skips the
+     * most important struct in this header set: i6_snr_plane is what feeds
+     * VIF port geometry and pixel format in 2b.
+     *
+     * Extra planes only exist for hardware HDR, which GC4653 has disabled.
+     * They are reported when claimed, but never gate plane 0.
+     */
+    ret = snr->fnGetPlaneInfo(index, 0, &plane);
+    if (ret) {
+        printf("plane 0: MI_SNR_GetPlaneInfo: %d\n", ret);
+        printf("  (without this the i6_snr_plane layout is untested -- rerun with -e)\n");
+        return ret;
+    }
+    printf("plane 0: id %u  \"%.32s\"  capt %ux%u+%u+%u\n", plane.planeId, plane.sensName,
+           plane.capt.width, plane.capt.height, plane.capt.x, plane.capt.y);
+    printf("         bayer %s(%d)  prec %s(%d)  pixFmt %d  hdrSrc %d\n", bayer_name(plane.bayer),
+           plane.bayer, prec_name(plane.precision), plane.precision, plane.pixFmt, plane.hdrSrc);
+    printf("         shutter %uus  sensGain %u/1024  compGain %u\n", plane.shutter,
+           plane.sensGain, plane.compGain);
 
     if (pad.planeCnt > PROBE_MAX_PLANES) {
         printf("  !! planeCnt implausible, clamping to %u -- suspect a layout error\n",
@@ -187,20 +251,16 @@ static int probe_sensor(i6_snr_impl *snr, unsigned int index)
         pad.planeCnt = PROBE_MAX_PLANES;
     }
 
-    for (i = 0; i < pad.planeCnt; i++) {
+    for (i = 1; i < pad.planeCnt; i++) {
         memset(&plane, 0, sizeof(plane));
         ret = snr->fnGetPlaneInfo(index, i, &plane);
         if (ret) {
-            printf("  plane %u: MI_SNR_GetPlaneInfo: %d\n", i, ret);
+            printf("plane %u: MI_SNR_GetPlaneInfo: %d\n", i, ret);
             continue;
         }
-        printf("  plane %u: id %u  \"%.32s\"  capt %ux%u+%u+%u\n", i, plane.planeId,
-               plane.sensName, plane.capt.width, plane.capt.height, plane.capt.x, plane.capt.y);
-        printf("           bayer %s(%d)  prec %s(%d)  pixFmt %d  hdrSrc %d\n",
-               bayer_name(plane.bayer), plane.bayer, prec_name(plane.precision), plane.precision,
-               plane.pixFmt, plane.hdrSrc);
-        printf("           shutter %uus  sensGain %u/1024  compGain %u\n", plane.shutter,
-               plane.sensGain, plane.compGain);
+        printf("plane %u: id %u  \"%.32s\"  capt %ux%u  bayer %s  prec %s\n", i, plane.planeId,
+               plane.sensName, plane.capt.width, plane.capt.height, bayer_name(plane.bayer),
+               prec_name(plane.precision));
     }
 
     return 0;
@@ -212,12 +272,28 @@ int main(int argc, char **argv)
     i6_snr_impl snr;
     i6_sys_ver ver;
     unsigned int index = 0;
+    int do_enable = 0;
+    int i;
+
     int ret;
 
-    if (argc > 1)
-        index = (unsigned int)strtoul(argv[1], NULL, 0);
+    for (i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "-e"))
+            do_enable = 1;
+        else if (!strcmp(argv[i], "-h")) {
+            printf("usage: star_probe [-e] [sensor-index]\n"
+                   "  -e  run the sensor bring-up sequence (SetRes/SetFps/SetOrien/Enable)\n"
+                   "      before querying, then Disable. Needed to see pad intfAttr and\n"
+                   "      plane geometry, since those are only populated once the sensor\n"
+                   "      driver's init has run. Starts the sensor -- stop any streamer\n"
+                   "      first.\n");
+            return 0;
+        } else
+            index = (unsigned int)strtoul(argv[i], NULL, 0);
+    }
 
-    printf("star_probe -- %s, sensor index %u\n\n", HAL_PLATFORM_NAME, index);
+    printf("star_probe -- %s, sensor index %u%s\n\n", HAL_PLATFORM_NAME, index,
+           do_enable ? ", with bring-up" : "");
     print_sizes();
 
     memset(&sys, 0, sizeof(sys));
@@ -253,7 +329,15 @@ int main(int argc, char **argv)
     else
         printf("MI version: \"%.127s\"\n\n", (char *)ver.version);
 
-    ret = probe_sensor(&snr, index);
+    ret = probe_sensor(&snr, index, do_enable);
+
+    /*
+     * Always pair Enable with Disable, including on the failure paths above --
+     * a probe that leaves the sensor streaming would poison the next run and
+     * confuse whoever restarts the real streamer.
+     */
+    if (do_enable)
+        snr.fnDisable(index);
 
     sys.fnExit();
     i6_snr_unload(&snr);
