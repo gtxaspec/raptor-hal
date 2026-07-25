@@ -867,8 +867,8 @@ const rss_hal_caps_t g_hal_caps = {
      * max_fs_channels is 4 because a raptor framesource channel is a VPE
      * output port (src/star/hal_framesource.c) and a VPE channel has four
      * of them: divinus's teardown disables ports 0..3 (i6_hal.c:365) and
-     * waybeam uses 0 and 1. star_probe -v reports which ports actually
-     * accept MI_VPE_SetPortMode on this silicon. */
+     * waybeam uses 0 and 1. Measured on an SSC30KQ: star_probe -v had all
+     * four ports accept MI_VPE_SetPortMode at 640x360 NV12. */
     .max_enc_channels = 8,
     .max_fs_channels = 4,
 };
