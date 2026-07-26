@@ -9,3 +9,6 @@ tools/star_probe
 tests/t_osd
 tests/t_isp
 tests/t_audio
+
+# build stamp: raptor/Makefile builds this directory through it
+.built

@@ -233,7 +233,11 @@ $(LIB_AUDIO): src/hal_common_audio.o $(CORE_OBJS) $(AUDIO_OBJS)
 
 clean:
 	@echo "  CLEAN"
-	$(Q)rm -f $(ALL_OBJS) $(DEPS) $(LIB_VIDEO) $(LIB_AUDIO) tools/star_probe tools/star_probe.d
+	# .built is the stamp raptor/Makefile builds this directory through. It has
+	# to go whenever the archives do: left behind, it tells the parent make that
+	# archives it can no longer see have already been produced, and the next
+	# daemon link fails on a missing .a.
+	$(Q)rm -f $(ALL_OBJS) $(DEPS) $(LIB_VIDEO) $(LIB_AUDIO) tools/star_probe tools/star_probe.d .built
 	# `make clean` runs without PLATFORM, so VENDOR defaults to ingenic and
 	# $(ALL_OBJS) names only that backend's objects. Sweep the other
 	# vendors' subdirs explicitly so a clean is vendor-independent.
