@@ -210,7 +210,17 @@ typedef struct {
  * numbers and what the three reference sources use.
  */
 #define STAR_AUD_PORT_USR_DEPTH 1
-#define STAR_AUD_PORT_BUF_DEPTH 4
+#define STAR_AUD_PORT_BUF_DEPTH 16
+
+/*
+ * What to fall back to if MI refuses BUF_DEPTH above. The references all use
+ * small values (vendor 8, divinus 4, waybeam 2) so a deeper queue is the one
+ * thing here with no third-party precedent, and a refused depth fails
+ * hal_audio_init outright -- i.e. no audio at all, which is far worse than a
+ * shallow queue. 4 is the value this board ran with for the whole bring-up,
+ * so it is known to be accepted.
+ */
+#define STAR_AUD_PORT_BUF_DEPTH_FALLBACK 4
 
 /*
  * "Insufficient audio input buffer" -- the port has no user-side queue. One

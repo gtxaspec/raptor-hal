@@ -253,9 +253,21 @@ static void star_audio_teardown(star_state_t *st)
  * channel: read_frame refuses a second read until the first is released.
  * Asking for more would only add the latency waybeam measured at 2.
  *
- * buf_depth 4 for ~80 ms of slack, since rad software-encodes and publishes to
- * shared memory between reads, and a scheduling delay there should cost
- * latency rather than samples.
+ * buf_depth is the slack between rad's reads, and 4 (~80 ms) was not enough.
+ * On the board, MI reported "Buffer(s) is lost due to slow fetching" and rad
+ * independently reported "audio clock resync +151ms" -- the two halves of one
+ * event, where rad did not get back to GetFrame inside 80 ms and MI overwrote
+ * captured periods rather than queue them. rad's loop is a plain SCHED_OTHER
+ * thread competing with VENC and the ISP, so delays of that size are a
+ * property of the system, not a bug to be eliminated; the queue is what
+ * decides whether they cost latency or samples.
+ *
+ * 16 (~320 ms) covers the observed stall and still sits inside the 400 ms
+ * device ring, so MI never has to choose between the two. Deepening costs
+ * nothing in steady state -- GetFrame returns the oldest queued period, and
+ * the queue only holds more than one when rad is behind -- and rad's clock
+ * slew is already written for the resulting drain bursts (it tolerates being
+ * up to 1 s ahead of the wall clock for exactly this reason).
  *
  * Factored out of init because read_frame re-applies it: see the NOBUF
  * recovery there.
@@ -263,6 +275,7 @@ static void star_audio_teardown(star_state_t *st)
 static int star_audio_set_port_depth(star_state_t *st, int chn)
 {
     i6_sys_bind port;
+    int ret;
 
     memset(&port, 0, sizeof(port));
     port.module = I6_SYS_MOD_AI;
@@ -270,7 +283,21 @@ static int star_audio_set_port_depth(star_state_t *st, int chn)
     port.channel = (unsigned int)chn;
     port.port = 0;
 
-    return st->sys.fnSetOutputDepth(&port, STAR_AUD_PORT_USR_DEPTH, STAR_AUD_PORT_BUF_DEPTH);
+    ret = st->sys.fnSetOutputDepth(&port, STAR_AUD_PORT_USR_DEPTH, STAR_AUD_PORT_BUF_DEPTH);
+    if (!ret)
+        return 0;
+
+    /*
+     * A depth MI will not accept must not cost us audio entirely: init treats
+     * a failure here as fatal, and every reference source uses a shallower
+     * queue than this, so retry at the depth this board is known to accept.
+     */
+    HAL_LOG_WARN("audio: chn %d rejected output port depth (%d, %d): %d -- retrying at (%d, %d)",
+                 chn, STAR_AUD_PORT_USR_DEPTH, STAR_AUD_PORT_BUF_DEPTH, ret,
+                 STAR_AUD_PORT_USR_DEPTH, STAR_AUD_PORT_BUF_DEPTH_FALLBACK);
+
+    return st->sys.fnSetOutputDepth(&port, STAR_AUD_PORT_USR_DEPTH,
+                                    STAR_AUD_PORT_BUF_DEPTH_FALLBACK);
 }
 
 int hal_audio_init(void *ctx, const rss_audio_config_t *cfg)
