@@ -126,6 +126,15 @@ typedef struct {
      * region's geometry changes. */
     void *bmp;
     size_t bmp_size;
+
+    /*
+     * Set once the first bitmap has been accepted by MI_RGN_SetBitMap, so
+     * that fact can be logged exactly once per region. Without it the
+     * only two failure modes an invisible overlay can have -- "attached
+     * but never fed" and "fed but not composited" -- look identical from
+     * the log, which is precisely the hole the const-alpha bug hid in.
+     */
+    bool bmp_logged;
 } star_osd_region_t;
 
 /*

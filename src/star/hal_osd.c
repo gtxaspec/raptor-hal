@@ -175,21 +175,32 @@ static void star_osd_fill_chn(const star_osd_region_t *r, i6_rgn_chn *chn)
 
     chn->osd.layer = (unsigned int)r->layer;
     /*
-     * bgFgAlpha is {background, foreground} and is what applies when
-     * constAlphaOn is 0, i.e. when the bitmap's own alpha channel is
-     * modulated by these. rvd's fg_alpha/bg_alpha mean the same thing.
-     * A region that asked for global alpha gets constAlpha instead,
-     * which ignores the per-pixel channel -- that is the distinction
-     * global_alpha_en draws on Ingenic too.
+     * ALPHA: constAlphaOn STAYS 0. Board-verified 2026-07-26 -- setting
+     * it is what made every overlay invisible.
+     *
+     * bgFgAlpha is {background, foreground}: the alphas the hardware
+     * applies to a pixel according to its own alpha channel, so the
+     * bitmap's per-pixel transparency survives and antialiased glyph
+     * edges blend. constAlphaOn = 1 switches that off and gives the whole
+     * *rectangle* one alpha from constAlpha -- and since it shares the
+     * union with bgFgAlpha, constAlpha[0] is whatever bg_alpha was. rvd
+     * sends bg_alpha = 0 for every text region, so const-alpha mode
+     * painted each region with alpha 0: regions created, attached, shown,
+     * and perfectly transparent. Nothing in the log, because the driver
+     * had been told exactly what to do.
+     *
+     * So global_alpha_en cannot be mapped onto constAlphaOn even though
+     * the names line up. On Ingenic, global alpha *modulates* the
+     * per-pixel channel; MI's const alpha *replaces* it. The honest
+     * mapping of "modulate" onto MI is the bgFgAlpha path, which is also
+     * the only configuration either reference uses (divinus:
+     * constAlphaOn = 0, bgFgAlpha = {0, opacity}). A caller that really
+     * wants a uniform-alpha rectangle wants a COVER region, which is the
+     * branch above.
      */
-    chn->osd.constAlphaOn = r->global_alpha_en ? 1 : 0;
-    if (r->global_alpha_en) {
-        chn->osd.constAlpha[0] = r->bg_alpha;
-        chn->osd.constAlpha[1] = r->fg_alpha;
-    } else {
-        chn->osd.bgFgAlpha[0] = r->bg_alpha;
-        chn->osd.bgFgAlpha[1] = r->fg_alpha;
-    }
+    chn->osd.constAlphaOn = 0;
+    chn->osd.bgFgAlpha[0] = r->bg_alpha;
+    chn->osd.bgFgAlpha[1] = r->fg_alpha;
 }
 
 /*
@@ -203,12 +214,22 @@ static void star_osd_fill_chn(const star_osd_region_t *r, i6_rgn_chn *chn)
  *
  * A probe handle above every real one keeps this from colliding with a
  * region rvd is about to create.
+ *
+ * RSS_OSD_PIXFMT restricts the probe to one format, for bring-up on a
+ * board where "the driver accepts it" and "it composites correctly" have
+ * turned out to be different questions. It only narrows the list -- the
+ * driver still has to accept the choice -- so it cannot force a format
+ * mi_rgn.ko rejects. It exists because ARGB4444 is what this chip
+ * accepts while ARGB1555 is the only format either reference has ever
+ * been seen to display, and settling that on hardware should not need a
+ * rebuild.
  */
 static int star_osd_probe_pixfmt(star_state_t *st)
 {
     static const i6_rgn_pixfmt tries[] = {I6_RGN_PIXFMT_ARGB888, I6_RGN_PIXFMT_ARGB4444,
                                           I6_RGN_PIXFMT_ARGB1555};
     const unsigned int probe_handle = STAR_OSD_REGION_MAX;
+    const char *want = getenv("RSS_OSD_PIXFMT");
     unsigned int i;
 
     if (st->rgn_fmt_known)
@@ -218,6 +239,9 @@ static int star_osd_probe_pixfmt(star_state_t *st)
         i6_rgn_cnf cnf;
         int ret;
 
+        if (want && want[0] && strcmp(want, star_osd_fmt_name(tries[i])) != 0)
+            continue;
+
         memset(&cnf, 0, sizeof(cnf));
         cnf.type = I6_RGN_TYPE_OSD;
         cnf.pixFmt = tries[i];
@@ -226,21 +250,38 @@ static int star_osd_probe_pixfmt(star_state_t *st)
 
         ret = st->rgn.fnCreateRegion(probe_handle, &cnf);
         if (ret) {
-            HAL_LOG_DBG("osd: %s rejected by MI_RGN_Create: %#x", star_osd_fmt_name(tries[i]),
-                        (unsigned int)ret);
+            /*
+             * INFO, not DBG: a rejected probe makes mi_rgn.ko print
+             * "<<<MI_RGN_IMPL_Create[...] Check osd attr error!" to the
+             * kernel log at KERN_ERR, in red. That message is expected --
+             * asking is the whole point of a probe -- but with this line
+             * compiled out (HAL_LOG_DBG needs HAL_DEBUG) the kernel error
+             * appeared in logread with nothing in userspace to explain it,
+             * which cost real time to chase. One INFO line per rejected
+             * format, once per boot, is worth it.
+             */
+            HAL_LOG_INFO("osd: %s rejected by MI_RGN_Create: %#x "
+                         "(the kernel's \"Check osd attr error\" is this probe)",
+                         star_osd_fmt_name(tries[i]), (unsigned int)ret);
             continue;
         }
 
         st->rgn.fnDestroyRegion(probe_handle);
         st->rgn_fmt = tries[i];
         st->rgn_fmt_known = true;
-        HAL_LOG_INFO("osd: using %s%s", star_osd_fmt_name(tries[i]),
-                     tries[i] == I6_RGN_PIXFMT_ARGB888 ? " (no conversion needed)" : "");
+        HAL_LOG_INFO("osd: using %s%s%s", star_osd_fmt_name(tries[i]),
+                     tries[i] == I6_RGN_PIXFMT_ARGB888 ? " (no conversion needed)" : "",
+                     want && want[0] ? " (RSS_OSD_PIXFMT)" : "");
         return RSS_OK;
     }
 
-    HAL_LOG_ERR("osd: MI_RGN_Create rejected every pixel format tried "
-                "(ARGB8888, ARGB4444, ARGB1555)");
+    if (want && want[0])
+        HAL_LOG_ERR("osd: RSS_OSD_PIXFMT=%s matched no probeable format, or MI_RGN_Create "
+                    "rejected it (try ARGB8888, ARGB4444 or ARGB1555)",
+                    want);
+    else
+        HAL_LOG_ERR("osd: MI_RGN_Create rejected every pixel format tried "
+                    "(ARGB8888, ARGB4444, ARGB1555)");
     return RSS_ERR_NOTSUP;
 }
 
@@ -301,7 +342,15 @@ static int star_osd_try_attach(star_state_t *st, int handle, star_osd_region_t *
     }
 
     r->attached = true;
-    HAL_LOG_DBG("osd: region %d attached to VPE port %u (group %d)", handle, port.port, r->grp);
+    /*
+     * INFO for the same reason as the probe rejection: this is the one
+     * line that says an overlay reached the compositor at all, it fires
+     * once per region rather than per frame, and its absence from a
+     * release build is indistinguishable from a silent deferral in
+     * star_osd_port_for_group.
+     */
+    HAL_LOG_INFO("osd: region %d attached to VPE port %u (group %d), layer %d, alpha bg/fg %u/%u",
+                 handle, port.port, r->grp, r->layer, r->bg_alpha, r->fg_alpha);
 
     return RSS_OK;
 }
@@ -695,6 +744,7 @@ int hal_osd_set_region_attr(void *ctx, int handle, const rss_osd_region_t *attr)
     free(r->bmp);
     r->bmp = NULL;
     r->bmp_size = 0;
+    r->bmp_logged = false;
 
     ret = star_osd_create_mi(st, handle, r);
     if (ret) {
@@ -807,6 +857,12 @@ int hal_osd_update_region_data(void *ctx, int handle, const uint8_t *data)
     if (ret) {
         HAL_LOG_WARN("MI_RGN_SetBitMap(region %d) failed: %#x", handle, (unsigned int)ret);
         return RSS_ERR_IO;
+    }
+
+    if (!r->bmp_logged) {
+        r->bmp_logged = true;
+        HAL_LOG_INFO("osd: region %d first bitmap accepted, %dx%d %s", handle, r->width, r->height,
+                     star_osd_fmt_name(st->rgn_fmt));
     }
 
     return RSS_OK;

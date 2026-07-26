@@ -4,3 +4,8 @@
 
 # throwaway ABI probe (tools/star_probe.c) — built on demand, never shipped
 tools/star_probe
+
+# host test binaries, one per suite (tests/Makefile)
+tests/t_osd
+tests/t_isp
+tests/t_audio
