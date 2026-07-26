@@ -844,6 +844,15 @@ int hal_enc_start(void *ctx, int chn)
     }
     enc->receiving = true;
 
+    /*
+     * Last and best chance to load the sensor's tuning binary: the whole
+     * chain is live by now, so an ISP that will not answer here is not
+     * going to. Verbose for that reason -- the framesource enable already
+     * tried quietly a moment ago. Idempotent, so a second stream's start
+     * costs nothing.
+     */
+    star_isp_tune_when_ready(st, true);
+
     return RSS_OK;
 }
 

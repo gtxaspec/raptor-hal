@@ -355,6 +355,15 @@ int hal_fs_enable_channel(void *ctx, int chn)
     }
     port->enabled = true;
 
+    /*
+     * Enabling a port is what finally makes the VPE channel run, and the
+     * ISP is served by that channel -- so this is the earliest moment the
+     * ISP can answer anything, and the earliest the sensor's tuning
+     * binary can be loaded. Opportunistic and quiet: frames need a moment
+     * to start, and hal_enc_start tries again straight afterwards.
+     */
+    star_isp_tune_when_ready(st, false);
+
     /* Flush whatever depths were requested while the port was down. */
     return star_fs_apply_depth(st, chn, port);
 }

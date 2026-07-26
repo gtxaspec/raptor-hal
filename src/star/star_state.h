@@ -253,6 +253,23 @@ typedef struct {
      */
     char iq_file[128];
     bool isp_loaded;
+
+    /*
+     * Set once the ISP has answered and the tuning binary has had its
+     * one attempt. Before that the ISP refuses every query -- it is
+     * served by the VPE channel, which does not run until an output port
+     * is enabled -- so the control ops queue their values instead of
+     * failing, and this is the flag that says which of the two applies.
+     * See the comment above star_isp_bringup.
+     */
+    bool isp_tuned;
+
+    /* Gain ceilings requested before the ISP would accept them; -1 for
+     * "nothing asked". Not in the IQ table because MI keeps both in the
+     * AE exposure-limit struct rather than in a per-module payload. */
+    int pend_max_again;
+    int pend_max_dgain;
+
     bool gray;
     bool hflip;
     bool vflip;
@@ -346,20 +363,27 @@ void star_enc_release_all(star_state_t *st);
  * ================================================================ */
 
 /*
- * Bring the ISP up: bind libmi_isp, wait for the IQ parameter store to
- * initialise, load the sensor's tuning binary, then start CUS3A.
+ * Bind libmi_isp and work out which tuning binary to load.
  *
- * Called from hal_init *after* the VPE channel is created and bound,
- * because none of it is legal before then -- the ISP channel is the
- * front half of the VPE channel (see STAR_ISP_CHN). Failure is
- * deliberately non-fatal: a camera with an untuned image is worth far
- * more than a camera that refuses to stream, which is also why phase
- * 2's colour cast was a defect and not an outage.
+ * Called from hal_init. Touches no MI call at all, because at that point
+ * the ISP cannot answer one: it is served by the VPE channel, and the
+ * VPE channel does not run until an output port is enabled. The actual
+ * load is therefore star_isp_tune_when_ready's job -- the long comment
+ * above star_isp_bringup explains what this cost on the first board run.
  *
- * cfg supplies the optional iq_file override and the sensor name used
- * to derive the default path.
+ * cfg supplies the optional iq_file override and the sensor name used to
+ * derive the default path.
  */
 void star_isp_bringup(star_state_t *st, const rss_sensor_config_t *cfg);
+
+/*
+ * Load the tuning binary and flush any queued control values, once the
+ * ISP is answering. Idempotent, and a no-op until then, so the enable
+ * and start paths can both call it and the first one to find the ISP up
+ * wins. verbose=false for early opportunistic attempts, true for the
+ * one whose failure is worth a warning.
+ */
+void star_isp_tune_when_ready(star_state_t *st, bool verbose);
 
 /* Release the ISP libraries. Called from star_teardown. */
 void star_isp_teardown(star_state_t *st);

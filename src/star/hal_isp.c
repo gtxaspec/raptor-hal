@@ -182,6 +182,15 @@
 #define STAR_ISP_READY_TIMEOUT_MS 2000
 #define STAR_ISP_READY_POLL_MS 10
 
+/*
+ * Budget for the early opportunistic attempt, made the moment a VPE port
+ * is enabled. Short on purpose: frames need about one frame period to
+ * start, so a ready ISP answers well inside this, and an unready one must
+ * not spend the full timeout here only for the attempt at encoder start
+ * to spend it again.
+ */
+#define STAR_ISP_READY_QUICK_MS 400
+
 /* Largest payload the table below touches (NR3D, 1776). Sized generously
  * so a future entry does not silently overflow -- star_iq_call refuses
  * anything that does not fit rather than truncating. */
@@ -217,6 +226,22 @@ typedef struct {
      * these sit on rvd's control path and the symbol never changes. */
     i6_isp_cmd_fn fn_get;
     i6_isp_cmd_fn fn_set;
+
+    /*
+     * Value requested before the ISP would accept it, flushed by
+     * star_isp_tune_when_ready. rvd applies its whole [image] block
+     * during pipeline *construction*, well before any VPE port is
+     * enabled, so without this queue every one of those calls fails and
+     * the operator's settings are silently lost. Flushing after the
+     * tuning binary loads is also the only correct order -- applied
+     * before, the load would overwrite them.
+     *
+     * Lives in the table beside the cached symbols, on the same
+     * single-instance assumption, and is cleared by star_isp_teardown.
+     */
+    int pending;
+    bool has_pending;
+    bool pending_is_raw; /* set via star_iq_set_raw, not _set_scalar */
 } star_iq_param_t;
 
 enum {
@@ -436,16 +461,12 @@ static uint8_t star_iq_unscale(uint32_t mi, uint32_t unity, uint32_t max)
  * tuning binary disabled a module, re-enabling it behind the tuner's
  * back is not this layer's call.
  */
-static int star_iq_set_scalar(void *ctx, int idx, int val)
+static int star_iq_apply_scalar(star_state_t *st, int idx, int val)
 {
-    star_state_t *st = star_state(ctx);
     star_iq_param_t *p = &g_iq[idx];
     uint8_t buf[STAR_IQ_PAYLOAD_MAX];
     uint32_t mi_val;
     int ret;
-
-    if (!st)
-        return RSS_ERR_INVAL;
 
     ret = star_iq_fetch(st, idx, buf);
     if (ret != RSS_OK)
@@ -470,6 +491,30 @@ static int star_iq_set_scalar(void *ctx, int idx, int val)
     return ret;
 }
 
+/*
+ * Queue-or-apply. Splitting this from star_iq_apply_scalar lets the
+ * flush drain the queue without re-entering it, and keeps the "is the
+ * ISP reachable yet" question in exactly one place per direction.
+ */
+static int star_iq_set_scalar(void *ctx, int idx, int val)
+{
+    star_state_t *st = star_state(ctx);
+    star_iq_param_t *p = &g_iq[idx];
+
+    if (!st)
+        return RSS_ERR_INVAL;
+
+    if (!st->isp_tuned) {
+        p->pending = val;
+        p->has_pending = true;
+        p->pending_is_raw = false;
+        HAL_LOG_DBG("isp: %s = %d queued until the ISP is up", p->name, val);
+        return RSS_OK;
+    }
+
+    return star_iq_apply_scalar(st, idx, val);
+}
+
 static int star_iq_get_scalar(void *ctx, int idx, uint8_t *out)
 {
     star_state_t *st = star_state(ctx);
@@ -479,6 +524,13 @@ static int star_iq_get_scalar(void *ctx, int idx, uint8_t *out)
 
     if (!st || !out)
         return RSS_ERR_INVAL;
+
+    /* Report what was asked for while the ISP cannot be read, so a
+     * set/get pair is consistent even before the pipeline runs. */
+    if (!st->isp_tuned) {
+        *out = p->has_pending ? (uint8_t)p->pending : (uint8_t)STAR_ISP_NEUTRAL;
+        return RSS_OK;
+    }
 
     ret = star_iq_fetch(st, idx, buf);
     if (ret != RSS_OK)
@@ -502,15 +554,11 @@ static int star_iq_get_scalar(void *ctx, int idx, uint8_t *out)
 
 /* Raw field access for the enum- and bool-valued parameters, which have
  * no 0..255 scale to map through. */
-static int star_iq_set_raw(void *ctx, int idx, uint32_t raw)
+static int star_iq_apply_raw(star_state_t *st, int idx, uint32_t raw)
 {
-    star_state_t *st = star_state(ctx);
     star_iq_param_t *p = &g_iq[idx];
     uint8_t buf[STAR_IQ_PAYLOAD_MAX];
     int ret;
-
-    if (!st)
-        return RSS_ERR_INVAL;
 
     ret = star_iq_fetch(st, idx, buf);
     if (ret != RSS_OK)
@@ -524,6 +572,25 @@ static int star_iq_set_raw(void *ctx, int idx, uint32_t raw)
     return ret;
 }
 
+static int star_iq_set_raw(void *ctx, int idx, uint32_t raw)
+{
+    star_state_t *st = star_state(ctx);
+    star_iq_param_t *p = &g_iq[idx];
+
+    if (!st)
+        return RSS_ERR_INVAL;
+
+    if (!st->isp_tuned) {
+        p->pending = (int)raw;
+        p->has_pending = true;
+        p->pending_is_raw = true;
+        HAL_LOG_DBG("isp: %s = %u queued until the ISP is up", p->name, raw);
+        return RSS_OK;
+    }
+
+    return star_iq_apply_raw(st, idx, raw);
+}
+
 static int star_iq_get_raw(void *ctx, int idx, uint32_t *raw)
 {
     star_state_t *st = star_state(ctx);
@@ -533,6 +600,11 @@ static int star_iq_get_raw(void *ctx, int idx, uint32_t *raw)
 
     if (!st || !raw)
         return RSS_ERR_INVAL;
+
+    if (!st->isp_tuned) {
+        *raw = p->has_pending ? (uint32_t)p->pending : 0u;
+        return RSS_OK;
+    }
 
     ret = star_iq_fetch(st, idx, buf);
     if (ret != RSS_OK)
@@ -549,33 +621,49 @@ static int star_iq_get_raw(void *ctx, int idx, uint32_t *raw)
 /*
  * Wait for the IQ parameter store to come up.
  *
- * Returns RSS_OK once the flag is set. A timeout is reported but is not
- * treated as fatal by any caller: the worst case is the bin load below
- * failing with the kernel's own "channel not created", which is a
- * clearer diagnostic than anything invented here.
+ * Distinguishes "the call failed" from "the flag is not set yet", which
+ * matters more than it looks: the first board run of this file reported
+ * only a flat "not ready after 2000 ms" while every underlying call was
+ * in fact returning 6, and collapsing those two cases into one message
+ * is what made a plain ordering bug look like a timing problem.
  */
-static int star_isp_wait_ready(star_state_t *st)
+static int star_isp_wait_ready(star_state_t *st, unsigned int timeout_ms, bool verbose)
 {
     unsigned int waited = 0;
+    int last_ret = 0;
 
     if (!st->isp.fnGetParaInitStatus)
         return RSS_ERR_NOTSUP;
 
-    while (waited < STAR_ISP_READY_TIMEOUT_MS) {
+    while (waited < timeout_ms) {
         i6_isp_parainit status;
+        int ret;
 
         memset(&status, 0, sizeof(status));
-        if (st->isp.fnGetParaInitStatus(STAR_ISP_CHN, &status) == 0 && status.ready) {
+        ret = st->isp.fnGetParaInitStatus(STAR_ISP_CHN, &status);
+        if (ret == 0 && status.ready) {
             HAL_LOG_DBG("isp: parameter store ready after %u ms", waited);
             return RSS_OK;
         }
+        last_ret = ret;
 
         star_isp_sleep_ms(STAR_ISP_READY_POLL_MS);
         waited += STAR_ISP_READY_POLL_MS;
     }
 
-    HAL_LOG_WARN("isp: parameter store not ready after %u ms; continuing",
-                 STAR_ISP_READY_TIMEOUT_MS);
+    if (!verbose) {
+        /* An early opportunistic attempt; a later one will retry. */
+        HAL_LOG_DBG("isp: parameter store not up yet after %u ms (last return %d)", timeout_ms,
+                    last_ret);
+    } else if (last_ret) {
+        HAL_LOG_WARN("isp: MI_ISP_IQ_GetParaInitStatus keeps returning %d after %u ms -- the ISP "
+                     "is not answering on VPE channel %d, so tuning is being skipped",
+                     last_ret, timeout_ms, STAR_ISP_CHN);
+    } else {
+        HAL_LOG_WARN("isp: parameter store still not ready after %u ms; skipping tuning",
+                     timeout_ms);
+    }
+
     return RSS_ERR_TIMEOUT;
 }
 
@@ -742,6 +830,39 @@ int star_isp_cap_exposure(star_state_t *st, unsigned int fps)
     return RSS_OK;
 }
 
+/*
+ * ================================================================
+ * WHY THE TUNING LOAD IS NOT DONE HERE
+ *
+ * The first board run of this file had every single MI_ISP call fail
+ * with 6 and the parameter store never come ready. The cause is
+ * ordering, and it is structural rather than a matter of waiting longer.
+ *
+ * MI has no independent ISP device. Disassembling any
+ * MI_ISP_{IQ,AE}_Get<Module> shows it delegate to
+ * _MI_ISP_GetIspApiData, which dispatches through a per-channel handler
+ * table and, where no handler is registered, falls back to
+ * MI_VPE_GetIspApiData -- the ISP is answered *by the VPE channel*. And
+ * a VPE channel with no enabled output port has nowhere to send frames,
+ * so it does not run, so its ISP front end never initialises and every
+ * query is refused.
+ *
+ * At hal_init time that is exactly the state: star_vpe_bringup has
+ * created, started and bound the channel, but the output ports belong to
+ * the framesource ops and no caller has enabled one yet. Waiting longer
+ * cannot help -- nothing was going to happen.
+ *
+ * Both references get this right by construction rather than by
+ * explanation: divinus loads its IQ file at the very end of sdk_init,
+ * after the encoding thread is already running (media.c:827), and
+ * waybeam loads after its output and video stages are up. So the load
+ * moves to star_isp_tune_when_ready, which the framesource and encoder
+ * start paths call once frames can actually flow.
+ *
+ * What stays here is only what is safe before the pipeline runs: binding
+ * the library and working out which file to load. Neither touches MI.
+ * ================================================================
+ */
 void star_isp_bringup(star_state_t *st, const rss_sensor_config_t *cfg)
 {
     char path[sizeof(st->iq_file)];
@@ -756,6 +877,9 @@ void star_isp_bringup(star_state_t *st, const rss_sensor_config_t *cfg)
      * for weeks with the generic tuning precisely because a wrong-looking
      * image is a defect rather than an outage.
      */
+    st->pend_max_again = -1;
+    st->pend_max_dgain = -1;
+
     ret = i6_isp_load(&st->isp);
     if (ret != RSS_OK) {
         HAL_LOG_WARN("isp: MI_ISP unavailable (%d); no tuning or 3A control this run", ret);
@@ -763,9 +887,39 @@ void star_isp_bringup(star_state_t *st, const rss_sensor_config_t *cfg)
     }
     st->isp_loaded = true;
 
-    star_isp_wait_ready(st);
+    /* Resolution is pure path arithmetic plus access(), so it is legal
+     * now, and cfg is only in scope during init. */
+    if (star_isp_resolve_iq(st, cfg, path, sizeof(path)))
+        snprintf(st->iq_file, sizeof(st->iq_file), "%s", path);
+}
 
-    if (star_isp_resolve_iq(st, cfg, path, sizeof(path))) {
+/*
+ * Load the tuning binary, once the ISP is actually answering.
+ *
+ * Called from the framesource enable and encoder start paths rather than
+ * from hal_init -- see the comment above star_isp_bringup for why that
+ * is not a detail. Idempotent, and deliberately does *not* mark itself
+ * done when the ISP is not ready yet, so a later call retries; the
+ * quiet/verbose split keeps the first attempt from logging a warning
+ * that the second one is about to make untrue.
+ */
+static void star_isp_flush_pending(star_state_t *st);
+
+void star_isp_tune_when_ready(star_state_t *st, bool verbose)
+{
+    int ret;
+
+    if (!st || !st->isp_loaded || st->isp_tuned)
+        return;
+
+    if (star_isp_wait_ready(st, verbose ? STAR_ISP_READY_TIMEOUT_MS : STAR_ISP_READY_QUICK_MS,
+                            verbose) != RSS_OK)
+        return;
+
+    /* Ready is a one-way transition, so one attempt from here on. */
+    st->isp_tuned = true;
+
+    if (st->iq_file[0]) {
         /*
          * Hand the running 3A off before swapping the tables it is
          * reading, then start it again afterwards. Both references do
@@ -775,20 +929,21 @@ void star_isp_bringup(star_state_t *st, const rss_sensor_config_t *cfg)
         if (st->isp.fnDisableUserspace3A(STAR_ISP_CHN))
             HAL_LOG_WARN("isp: MI_ISP_DisableUserspace3A failed; loading anyway");
 
-        star_isp_wait_ready(st);
-
-        ret = st->isp.fnLoadChannelConfig(STAR_ISP_CHN, path, STAR_IQ_LOAD_KEY);
+        ret = st->isp.fnLoadChannelConfig(STAR_ISP_CHN, st->iq_file, STAR_IQ_LOAD_KEY);
         if (ret) {
             HAL_LOG_WARN("isp: loading %s failed: %d; the generic vendor tuning stays in "
                          "effect and colour will be off",
-                         path, ret);
+                         st->iq_file, ret);
+            st->iq_file[0] = '\0';
         } else {
-            snprintf(st->iq_file, sizeof(st->iq_file), "%s", path);
-            HAL_LOG_INFO("isp: loaded tuning file %s", path);
+            HAL_LOG_INFO("isp: loaded tuning file %s", st->iq_file);
         }
 
         star_isp_enable_3a(st);
     }
+
+    /* Config knobs go on after the tuning file, never before. */
+    star_isp_flush_pending(st);
 
     /* Worth doing whether or not a tuning file loaded: the limits come
      * from whichever tuning is in effect, and neither is obliged to suit
@@ -808,10 +963,12 @@ void star_isp_teardown(star_state_t *st)
     for (i = 0; i < IQ_PARAM_COUNT; i++) {
         g_iq[i].fn_get = NULL;
         g_iq[i].fn_set = NULL;
+        g_iq[i].has_pending = false;
     }
 
     i6_isp_unload(&st->isp);
     st->isp_loaded = false;
+    st->isp_tuned = false;
     st->iq_file[0] = '\0';
 }
 
@@ -953,16 +1110,10 @@ int hal_isp_get_antiflicker(void *ctx, rss_antiflicker_t *mode)
  * fabricated one would be worse than a documented pass-through -- so
  * treat these two keys as MI-native on this platform.
  */
-static int star_isp_set_gain_limit(void *ctx, bool sensor_gain, int gain)
+static int star_isp_apply_gain_limit(star_state_t *st, bool sensor_gain, int gain)
 {
-    star_state_t *st = star_state(ctx);
     i6_isp_exp limit;
     int ret;
-
-    if (!st || !st->isp_loaded)
-        return RSS_ERR_NOENT;
-    if (gain < 0)
-        return RSS_ERR_INVAL;
 
     memset(&limit, 0, sizeof(limit));
     ret = st->isp.fnGetExposureLimit(STAR_ISP_CHN, &limit);
@@ -997,6 +1148,13 @@ static int star_isp_get_gain_limit(void *ctx, bool sensor_gain, uint32_t *gain)
     if (!gain)
         return RSS_ERR_INVAL;
 
+    if (!st->isp_tuned) {
+        int pend = sensor_gain ? st->pend_max_again : st->pend_max_dgain;
+
+        *gain = pend >= 0 ? (uint32_t)pend : 0u;
+        return RSS_OK;
+    }
+
     memset(&limit, 0, sizeof(limit));
     ret = st->isp.fnGetExposureLimit(STAR_ISP_CHN, &limit);
     if (ret) {
@@ -1006,6 +1164,63 @@ static int star_isp_get_gain_limit(void *ctx, bool sensor_gain, uint32_t *gain)
 
     *gain = sensor_gain ? limit.maxSensorGain : limit.maxIspGain;
     return RSS_OK;
+}
+
+static int star_isp_set_gain_limit(void *ctx, bool sensor_gain, int gain)
+{
+    star_state_t *st = star_state(ctx);
+
+    if (!st || !st->isp_loaded)
+        return RSS_ERR_NOENT;
+    if (gain < 0)
+        return RSS_ERR_INVAL;
+
+    /* Queued like the IQ knobs, and for the same reason. */
+    if (!st->isp_tuned) {
+        if (sensor_gain)
+            st->pend_max_again = gain;
+        else
+            st->pend_max_dgain = gain;
+        HAL_LOG_DBG("isp: max %s gain = %d queued until the ISP is up",
+                    sensor_gain ? "sensor" : "isp", gain);
+        return RSS_OK;
+    }
+
+    return star_isp_apply_gain_limit(st, sensor_gain, gain);
+}
+
+/*
+ * Drain everything that was asked for before the ISP could answer.
+ *
+ * Called from star_isp_tune_when_ready *after* the tuning binary has
+ * loaded, which is the only correct order: applied first, the load would
+ * overwrite them.
+ */
+static void star_isp_flush_pending(star_state_t *st)
+{
+    size_t i;
+
+    for (i = 0; i < IQ_PARAM_COUNT; i++) {
+        star_iq_param_t *p = &g_iq[i];
+
+        if (!p->has_pending)
+            continue;
+        p->has_pending = false;
+
+        if (p->pending_is_raw)
+            (void)star_iq_apply_raw(st, (int)i, (uint32_t)p->pending);
+        else
+            (void)star_iq_apply_scalar(st, (int)i, p->pending);
+    }
+
+    if (st->pend_max_again >= 0) {
+        (void)star_isp_apply_gain_limit(st, true, st->pend_max_again);
+        st->pend_max_again = -1;
+    }
+    if (st->pend_max_dgain >= 0) {
+        (void)star_isp_apply_gain_limit(st, false, st->pend_max_dgain);
+        st->pend_max_dgain = -1;
+    }
 }
 
 int hal_isp_set_max_again(void *ctx, int gain)
