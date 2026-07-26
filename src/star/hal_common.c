@@ -762,6 +762,17 @@ static int hal_init(void *ctx, const rss_multi_sensor_config_t *cfg)
     }
     st->sys_inited = true;
 
+    /*
+     * Orientation comes from the sensor config, not from hflip_state[].
+     * That array is where the generic ISP layer records what an op last
+     * set, and no op can have run yet -- it is unavoidably still zero
+     * here, so reading it was the same as hardcoding "no flip" and the
+     * config's request never reached the sensor. It is set from the
+     * config so a later read of it agrees with the hardware.
+     */
+    c->hflip_state[0] = c->sensors[0].hflip ? 1 : 0;
+    c->vflip_state[0] = c->sensors[0].vflip ? 1 : 0;
+
     ret = star_sensor_bringup(st, &c->sensors[0], c->hflip_state[0], c->vflip_state[0]);
     if (ret)
         goto err_teardown;

@@ -507,6 +507,26 @@ typedef struct {
      * compiled into the sensor driver.
      */
     char iq_file[128];
+
+    /*
+     * Mirror and flip, as requested by the config.
+     *
+     * These are here, rather than left to isp_set_hflip/isp_set_vflip,
+     * because on SigmaStar orientation is a sensor register and the
+     * driver latches it when MI_SNR_Enable runs the sensor's init
+     * routine. Enable happens during hal_init, long before a caller can
+     * reach an ISP op, so an op-only path cannot decide the orientation
+     * the pipeline starts with -- which is the case that matters, since
+     * a camera is mounted one way round and stays there.
+     *
+     * The ops still work for changing it afterwards; this is about what
+     * the first frame comes out looking like.
+     *
+     * Ingenic backends ignore these and use the ops, where orientation
+     * is an ISP attribute settable at any time.
+     */
+    int hflip;
+    int vflip;
 } rss_sensor_config_t;
 
 /* Maximum number of sensors supported (IMPVI_MAIN, SEC, THR) */

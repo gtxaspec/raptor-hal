@@ -904,6 +904,7 @@ void star_isp_bringup(star_state_t *st, const rss_sensor_config_t *cfg)
  * that the second one is about to make untrue.
  */
 static void star_isp_flush_pending(star_state_t *st);
+static int star_isp_set_orien(star_state_t *st);
 
 void star_isp_tune_when_ready(star_state_t *st, bool verbose)
 {
@@ -949,6 +950,27 @@ void star_isp_tune_when_ready(star_state_t *st, bool verbose)
      * from whichever tuning is in effect, and neither is obliged to suit
      * the framerate this pipeline asked for. */
     star_isp_cap_exposure(st, st->fps);
+
+    /*
+     * Orientation goes on last, and only when something was asked for.
+     *
+     * MI_SNR_SetOrien does not write the sensor's mirror register. The
+     * driver stores the value, marks it dirty, and writes it on the next
+     * frame notification from AE -- pCus_SetOrien and
+     * pCus_AEStatusNotify(CUS_FRAME_ACTIVE) in the vendor
+     * sensor_<name>_mipi.c. Anything between bring-up and here that
+     * reprograms sensor timing or restarts 3A can therefore lose that
+     * pending write, and both the tuning load and the MI_SNR_SetFps
+     * inside star_isp_cap_exposure are candidates. waybeam hit exactly
+     * this after a live bin reload and fixed it by re-issuing SetOrien
+     * once afterwards; this is the same repair at the same point in the
+     * sequence.
+     *
+     * No re-apply is needed when nothing was asked for, because anything
+     * that resets orientation resets it to unmirrored.
+     */
+    if (st->hflip || st->vflip)
+        star_isp_set_orien(st);
 }
 
 void star_isp_teardown(star_state_t *st)
@@ -1288,11 +1310,23 @@ int hal_isp_get_running_mode(void *ctx, rss_isp_mode_t *mode)
 /*
  * Mirror and flip.
  *
- * Done in the sensor, not the ISP: MI_SNR_SetOrien takes both at once,
- * so each op has to supply the other axis from tracked state. The
- * initial values come from the config at bring-up
- * (star_sensor_bringup), and these keep that state in step when
- * something changes one at runtime.
+ * Done in the sensor, not the ISP. MI_SNR_SetOrien takes both axes at
+ * once, so each op has to supply the one it is not changing from tracked
+ * state; the starting values come from the sensor config, applied before
+ * MI_SNR_Enable in star_sensor_bringup.
+ *
+ * That bring-up path is the one both references use and the one to trust.
+ * A runtime change is best-effort by comparison, because of how the
+ * vendor sensor driver implements it: SetOrien only stores the value and
+ * sets a dirty flag, and the register is written by
+ * pCus_AEStatusNotify(CUS_FRAME_ACTIVE) -- so it lands on the next AE
+ * frame notification if 3A is running, and sits pending if it is not.
+ * MI_SNR_GetOrien is no help in telling which happened: the vendor
+ * driver reads it back from its static default table rather than the live
+ * value, so it reports unmirrored however the image actually looks (which
+ * matches waybeam's note that GetOrien "reads 0 while the image is
+ * plainly held"). Hence the tracked state here, and hence the re-apply at
+ * the end of star_isp_tune_when_ready.
  */
 static int star_isp_set_orien(star_state_t *st)
 {
