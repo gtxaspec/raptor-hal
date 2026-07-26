@@ -139,6 +139,16 @@
 #define STAR_AUD_ERR_BUF_EMPTY 0xA004200Eu
 
 /*
+ * MI_SYS output-port queue for each AI channel, set right after
+ * MI_AI_EnableChn. Without it MI_AI_GetFrame returns MI_AI_ERR_NOBUF
+ * (0xA004200D) on every call while the device looks healthy -- see the
+ * long comment at the call site in hal_audio.c for why these particular
+ * numbers and what the three reference sources use.
+ */
+#define STAR_AUD_PORT_USR_DEPTH 1
+#define STAR_AUD_PORT_BUF_DEPTH 4
+
+/*
  * Default output-port buffer-queue depth, and how long a blocking
  * frame fetch waits.
  *
