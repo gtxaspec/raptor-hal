@@ -204,6 +204,21 @@ typedef struct {
 #define STAR_AUD_PORT_BUF_DEPTH 4
 
 /*
+ * "Insufficient audio input buffer" -- the port has no user-side queue. One
+ * digit from BUF_EMPTY above and nothing like it in meaning, which is why
+ * hal_audio.c names codes in its log instead of printing bare hex.
+ */
+#define STAR_AUD_ERR_NOBUF 0xA004200Du
+
+/*
+ * How many times read_frame will re-establish a channel's output port queue in
+ * response to NOBUF before it gives up and just reports the error. Small on
+ * purpose: this recovers a port that was lost during bring-up, and must not
+ * become an unbounded retry loop running at the capture period.
+ */
+#define STAR_AUD_NOBUF_RECOVER_MAX 3
+
+/*
  * Default output-port buffer-queue depth, and how long a blocking
  * frame fetch waits.
  *
@@ -477,6 +492,10 @@ typedef struct {
      * is named once instead of every capture period. */
     int aud_last_err;
     bool aud_dev_warned;
+
+    /* NOBUF recovery attempts spent on this channel, reset by any frame that
+     * arrives. Bounds the re-apply in hal_audio_read_frame. */
+    int aud_nobuf_recover[STAR_AUD_CHN_MAX];
 
     /* Unwind flags -- each set only once its step has succeeded, so
      * teardown undoes exactly what was done and no more. */

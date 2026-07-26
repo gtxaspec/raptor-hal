@@ -118,7 +118,7 @@ static const char *star_audio_err_name(int err)
     case 0xA0042009u: return "NOT_PERM";
     case 0xA004200Cu: return "NOMEM";
     /* Missing output-port queue -- see STAR_AUD_PORT_USR_DEPTH. */
-    case 0xA004200Du: return "NOBUF";
+    case STAR_AUD_ERR_NOBUF: return "NOBUF";
     case STAR_AUD_ERR_BUF_EMPTY: return "BUF_EMPTY";
     case 0xA004200Fu: return "BUF_FULL";
     case 0xA0042010u: return "SYS_NOTREADY";
@@ -235,6 +235,44 @@ static void star_audio_teardown(star_state_t *st)
  * runtime, so an already-running device is torn down first rather than
  * refused.
  */
+
+/*
+ * Give one channel's output port somewhere to put frames.
+ *
+ * This is not tuning and it is not optional. An MI channel's output port
+ * starts with no user-side queue at all, so MI_AI_GetFrame has nothing to hand
+ * back and fails with MI_AI_ERR_NOBUF (0xA004200D, "insufficient audio input
+ * buffer") on every call while the device reports itself perfectly enabled --
+ * which is exactly the fault this board showed on 2026-07-25. All three sources
+ * do it: the vendor MI_AI reference's own capture example (1, 8), divinus
+ * (2, 4) and waybeam (1, 2). It is also why the doc calling u32FrmNum
+ * "Reserved, unused" matters here -- the device-side ring is not what feeds
+ * userspace, this queue is.
+ *
+ * user_depth 1 because this backend structurally holds at most one frame per
+ * channel: read_frame refuses a second read until the first is released.
+ * Asking for more would only add the latency waybeam measured at 2.
+ *
+ * buf_depth 4 for ~80 ms of slack, since rad software-encodes and publishes to
+ * shared memory between reads, and a scheduling delay there should cost
+ * latency rather than samples.
+ *
+ * Factored out of init because read_frame re-applies it: see the NOBUF
+ * recovery there.
+ */
+static int star_audio_set_port_depth(star_state_t *st, int chn)
+{
+    i6_sys_bind port;
+
+    memset(&port, 0, sizeof(port));
+    port.module = I6_SYS_MOD_AI;
+    port.device = (unsigned int)st->aud_dev;
+    port.channel = (unsigned int)chn;
+    port.port = 0;
+
+    return st->sys.fnSetOutputDepth(&port, STAR_AUD_PORT_USR_DEPTH, STAR_AUD_PORT_BUF_DEPTH);
+}
+
 int hal_audio_init(void *ctx, const rss_audio_config_t *cfg)
 {
     rss_hal_ctx_t *c = (rss_hal_ctx_t *)ctx;
@@ -359,8 +397,6 @@ int hal_audio_init(void *ctx, const rss_audio_config_t *cfg)
     st->aud_dev_enabled = true;
 
     for (i = 0; i < chn_count; i++) {
-        i6_sys_bind port;
-
         ret = st->aud.fnEnableChannel(st->aud_dev, (int)i);
         if (ret) {
             HAL_LOG_ERR("MI_AI_EnableChn(%d, %u) failed: %d", st->aud_dev, i, ret);
@@ -369,39 +405,7 @@ int hal_audio_init(void *ctx, const rss_audio_config_t *cfg)
         }
         st->aud_chn_enabled[i] = true;
 
-        /*
-         * Give the channel's output port somewhere to put frames.
-         *
-         * This is not tuning and it is not optional. An MI channel's
-         * output port starts with no user-side queue at all, so
-         * MI_AI_GetFrame has nothing to hand back and fails with
-         * MI_AI_ERR_NOBUF (0xA004200D, "insufficient audio input
-         * buffer") on every call, forever, while the device reports
-         * itself perfectly enabled -- which is exactly the fault this
-         * board showed on 2026-07-25. All three sources do it: the
-         * vendor MI_AI reference's own capture example (1, 8), divinus
-         * (2, 4) and waybeam (1, 2). It is also why the doc calling
-         * u32FrmNum "Reserved, unused" matters here -- the device-side
-         * ring is not what feeds userspace, this queue is.
-         *
-         * user_depth 1 because this backend structurally holds at most
-         * one frame per channel: read_frame refuses a second read until
-         * the first is released. Asking for more would only add the
-         * latency waybeam measured at 2.
-         *
-         * buf_depth 4 for ~80 ms of slack, since rad software-encodes
-         * and publishes to shared memory between reads, and a
-         * scheduling delay there should cost latency rather than
-         * samples.
-         */
-        memset(&port, 0, sizeof(port));
-        port.module = I6_SYS_MOD_AI;
-        port.device = (unsigned int)st->aud_dev;
-        port.channel = i;
-        port.port = 0;
-
-        ret = st->sys.fnSetOutputDepth(&port, STAR_AUD_PORT_USR_DEPTH,
-                                       STAR_AUD_PORT_BUF_DEPTH);
+        ret = star_audio_set_port_depth(st, (int)i);
         if (ret) {
             HAL_LOG_ERR("MI_SYS_SetChnOutputPortDepth(AI %d, %u) failed: %d -- GetFrame would "
                         "return NOBUF forever",
@@ -491,6 +495,42 @@ int hal_audio_read_frame(void *ctx, int dev, int chn, rss_audio_frame_t *frame, 
     memset(slot, 0, sizeof(*slot));
 
     ret = st->aud.fnGetFrame(dev, chn, slot, NULL, block ? STAR_AUD_GET_TIMEOUT_MS : 0);
+
+    /*
+     * NOBUF means one specific thing -- this port has no user-side queue -- so
+     * the one useful response is to establish it again and retry, rather than
+     * report a read error for the life of the process.
+     *
+     * It is worth doing even though init already set the depth successfully,
+     * because the board shows NOBUF when rad starts during boot and not when
+     * rad is started by hand a little later against the very same
+     * configuration. Something is dropping the queue between init and the
+     * first read; until that is identified, re-establishing it is both the
+     * correct remedy for the error MI is actually reporting and cheap.
+     *
+     * Bounded, because a genuinely broken port must not turn into an infinite
+     * retry loop at the audio period rate, and each attempt is logged so this
+     * never becomes silent self-healing that hides a real fault.
+     */
+    if ((unsigned int)ret == STAR_AUD_ERR_NOBUF &&
+        st->aud_nobuf_recover[chn] < STAR_AUD_NOBUF_RECOVER_MAX) {
+        int depth_ret;
+
+        st->aud_nobuf_recover[chn]++;
+        depth_ret = star_audio_set_port_depth(st, chn);
+        HAL_LOG_WARN("audio: chn %d returned NOBUF; re-applying output port depth (attempt %d/%d, "
+                     "SetChnOutputPortDepth -> %d)",
+                     chn, st->aud_nobuf_recover[chn], STAR_AUD_NOBUF_RECOVER_MAX, depth_ret);
+
+        if (!depth_ret) {
+            memset(slot, 0, sizeof(*slot));
+            ret = st->aud.fnGetFrame(dev, chn, slot, NULL, block ? STAR_AUD_GET_TIMEOUT_MS : 0);
+            if (!ret)
+                HAL_LOG_INFO("audio: chn %d recovered after re-applying the output port depth",
+                             chn);
+        }
+    }
+
     if (ret) {
         if ((unsigned int)ret == STAR_AUD_ERR_BUF_EMPTY)
             return RSS_ERR_TIMEOUT;
@@ -503,6 +543,9 @@ int hal_audio_read_frame(void *ctx, int dev, int chn, rss_audio_frame_t *frame, 
         return RSS_ERR_IO;
     }
     st->aud_last_err = 0;
+    /* A frame arrived, so spend the recovery budget again if the port is ever
+     * lost a second time rather than leaving it exhausted from startup. */
+    st->aud_nobuf_recover[chn] = 0;
 
     if (!slot->addr[0] || !slot->length) {
         /* A success with nothing in it. Give it straight back rather than
