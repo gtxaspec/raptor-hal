@@ -141,7 +141,7 @@ VIDEO_SRCS := src/star/hal_encoder.c \
               src/star/hal_isp.c \
               src/hal_gpio.c
 
-AUDIO_SRCS :=
+AUDIO_SRCS := src/star/hal_audio.c
 
 else
 

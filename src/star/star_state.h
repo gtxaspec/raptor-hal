@@ -21,6 +21,7 @@
 
 #include "hal_internal.h"
 
+#include "i6_aud.h"
 #include "i6_isp.h"
 #include "i6_snr.h"
 #include "i6_sys.h"
@@ -71,6 +72,71 @@
  * max_fs_channels quotes that result.
  */
 #define STAR_VPE_PORT_NUM 4
+
+/*
+ * Audio input device.
+ *
+ * MI's AI "device" is not a numbering convenience like it is elsewhere --
+ * the MI_AI reference is explicit that it selects the *physical* input
+ * ("Amic/Dmic/I2S RX/Line in"), so the index is a board property. 0 is
+ * the onboard analog path, which is what both references use and all the
+ * vendor examples pass.
+ *
+ * rad's `[audio] device` defaults to 1 (an Ingenic index), so hal_audio.c
+ * configures this device regardless and warns once if it was asked for a
+ * different one; raptor-ssc30kq.conf sets the key to 0 to keep the log
+ * quiet.
+ */
+#define STAR_AUD_DEV 0
+
+/*
+ * Tracks this backend supports. MI allows up to I6_AUD_CHN_NUM per
+ * device, but raptor's audio config only distinguishes mono from stereo
+ * (rss_audio_config_t.chn_count is 1 or 2) and rad only ever reads
+ * channel 0, so anything beyond 2 would be state nothing can reach.
+ */
+#define STAR_AUD_CHN_MAX 2
+
+/*
+ * How long a blocking MI_AI_GetFrame waits, in ms.
+ *
+ * 128 is divinus's value (waybeam uses 50). At the 20 ms capture period
+ * this backend configures, either is several periods of slack, and the
+ * timeout only decides how promptly a stopped device is noticed -- rad
+ * treats a timeout as "try again", so a longer wait costs nothing but
+ * latency in the failure case.
+ */
+#define STAR_AUD_GET_TIMEOUT_MS 128
+
+/*
+ * MI_AI_SetVqeVolume's argument is an index into a per-device analog-gain
+ * table, not a decibel value -- the MI_AI reference spells the table out
+ * ("the corresponding gain (DB) of s32volumedb under each device"). The
+ * columns are arithmetically self-consistent, which is what makes them
+ * safe to quote: Amic runs 0..21 for -6..+57 dB in 3 dB steps, Line in
+ * 0..7 for -6..+15 dB, Dmic 0..4 for 0..+24 dB in 6 dB steps.
+ *
+ * Both references pass dB-shaped numbers straight through -- divinus
+ * validates its `[audio] gain` to [-60,30] and waybeam maps 0..100 onto
+ * -60..+30 -- so on this API most of their range is out of table. Their
+ * *defaults* happen to be valid indices, which is presumably why it never
+ * surfaced.
+ */
+#define STAR_AUD_VOL_MAX_AMIC 21
+#define STAR_AUD_VOL_MAX_DMIC 4
+
+/*
+ * MI_AI_ERR_BUF_EMPTY -- "audio input buffer is empty", from the MI_AI
+ * reference's error-code table. The one MI_AI_GetFrame failure that means
+ * "nothing captured yet" rather than "something is wrong", so it is the
+ * one hal_audio.c reports as a timeout instead of an error.
+ *
+ * Quoted from the SSD20X documentation, so treat a *different* code
+ * arriving every period on this chip as this constant being wrong rather
+ * than as a real fault -- hal_audio.c logs the code it saw, which is what
+ * makes that distinguishable.
+ */
+#define STAR_AUD_ERR_BUF_EMPTY 0xA004200Eu
 
 /*
  * Default output-port buffer-queue depth, and how long a blocking
@@ -277,6 +343,47 @@ typedef struct {
     star_vpe_port_t port[STAR_VPE_PORT_NUM];
     star_venc_chn_t enc[I6_VENC_CHN_NUM];
 
+    /*
+     * Audio capture state -- src/star/hal_audio.c.
+     *
+     * Lives in the same struct as the video state even though the two
+     * never coexist in one process, because star_state_t is what
+     * rss_hal_ctx_t->platform points at and both archives compile
+     * hal_common.c. The audio archive simply leaves the video half zero.
+     *
+     * aud_owns_sys records that audio_init brought MI_SYS up itself.
+     * rad calls rss_hal_create and then audio_init directly -- it never
+     * calls the init op -- so on this backend audio_init has to do the
+     * MI_SYS work that hal_init would otherwise have done, and teardown
+     * has to know whether it is entitled to undo it.
+     *
+     * The volume is tracked rather than read back because MI's getter
+     * (MI_AI_GetVqeVolume) reports the *VQE* volume, and the VQE
+     * algorithm libraries are absent on this platform.
+     */
+    i6_aud_impl aud;
+    bool aud_loaded;
+    bool aud_owns_sys;
+    bool aud_dev_enabled;
+    bool aud_chn_enabled[STAR_AUD_CHN_MAX];
+    int aud_dev;
+    unsigned int aud_chn_count;
+    int aud_rate;
+    int aud_volume;
+    rss_audio_input_t aud_input;
+
+    /* One outstanding frame per channel. MI hands out a descriptor that
+     * must come back to MI_AI_ReleaseFrame unchanged, and
+     * rss_audio_frame_t has nowhere to store 200-odd bytes, so the
+     * descriptor stays here and _priv points at it. */
+    i6_aud_frm aud_frame[STAR_AUD_CHN_MAX];
+    bool aud_frame_held[STAR_AUD_CHN_MAX];
+
+    /* Last MI_AI_GetFrame failure already reported, so a persistent fault
+     * is named once instead of every capture period. */
+    int aud_last_err;
+    bool aud_dev_warned;
+
     /* Unwind flags -- each set only once its step has succeeded, so
      * teardown undoes exactly what was done and no more. */
     bool sys_inited;
@@ -429,5 +536,20 @@ int hal_isp_get_max_again(void *ctx, uint32_t *gain);
 int hal_isp_get_max_dgain(void *ctx, uint32_t *gain);
 int hal_isp_get_running_mode(void *ctx, rss_isp_mode_t *mode);
 int hal_isp_get_hvflip(void *ctx, int *hflip, int *vflip);
+
+/*
+ * Audio capture ops -- src/star/hal_audio.c.
+ *
+ * This is the whole of it. Everything else in the audio half of
+ * rss_hal_ops_t stays NULL, which RSS_HAL_CALL already turns into
+ * RSS_ERR_NOTSUP; hal_audio.c's OP COVERAGE comment says why for each.
+ */
+int hal_audio_init(void *ctx, const rss_audio_config_t *cfg);
+int hal_audio_deinit(void *ctx);
+int hal_audio_read_frame(void *ctx, int dev, int chn, rss_audio_frame_t *frame, bool block);
+int hal_audio_release_frame(void *ctx, int dev, int chn, rss_audio_frame_t *frame);
+int hal_audio_set_volume(void *ctx, int dev, int chn, int vol);
+int hal_audio_get_volume(void *ctx, int dev, int chn, int *vol);
+int hal_audio_set_mute(void *ctx, int dev, int chn, int mute);
 
 #endif /* STAR_STATE_H */

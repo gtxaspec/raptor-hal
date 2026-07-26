@@ -1239,8 +1239,27 @@ static const rss_hal_ops_t g_ops = {
     .enc_get_fd = hal_enc_get_fd,
 #endif
 
-    /* ISP, OSD and audio ops are added by the phases that implement
-     * them. */
+    /* OSD ops are added by the phase that implements them. */
+
+#ifdef HAL_MODULE_AUDIO
+    /*
+     * Audio capture. Only in the audio archive, since src/star/hal_audio.c
+     * is an AUDIO_SRCS member and the video build has no such symbols.
+     *
+     * Capture only, and a deliberately short list -- see hal_audio.c's OP
+     * COVERAGE comment for why each absent op is absent. The short version:
+     * MI's noise reduction, AGC, HPF and echo cancellation are all VQE
+     * features whose algorithm packs are weak-undefined NULL on this
+     * platform, and there is no audio output in scope at all.
+     */
+    .audio_init = hal_audio_init,
+    .audio_deinit = hal_audio_deinit,
+    .audio_read_frame = hal_audio_read_frame,
+    .audio_release_frame = hal_audio_release_frame,
+    .audio_set_volume = hal_audio_set_volume,
+    .audio_get_volume = hal_audio_get_volume,
+    .audio_set_mute = hal_audio_set_mute,
+#endif
 
 #ifdef HAL_MODULE_VIDEO
     /* GPIO / IR-cut — vendor-neutral sysfs, works as-is */

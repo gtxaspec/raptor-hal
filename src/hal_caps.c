@@ -878,6 +878,20 @@ const rss_hal_caps_t g_hal_caps = {
     .has_ae_comp = true,
     .has_max_gain = true,
 
+    /*
+     * Audio — every audio cap stays false, and phase 4 does not change
+     * that even though capture itself works.
+     *
+     * has_audio_process_lib, has_agc_mode, has_hpf_cutoff,
+     * has_howling_suppress and has_audio_aec_channel all describe MI's
+     * VQE features, whose algorithm packs are weak-undefined NULL in
+     * libmi_ai.so here — and MI's own reference says the API "no longer
+     * includes the associated algorithm functions" from version 2.19.
+     * has_alc_gain and has_digital_gain describe two separate gain stages;
+     * MI has one input gain control, and audio_set_volume owns it.
+     * See hal_audio.c's OP COVERAGE comment.
+     */
+
     /* System — all three describe Ingenic internals (xburst2 core, IMP SDK
      * generation, IMPVI multi-sensor calling convention) and are
      * permanently false for any non-Ingenic vendor. */
