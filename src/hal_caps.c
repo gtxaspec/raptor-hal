@@ -884,9 +884,29 @@ const rss_hal_caps_t g_hal_caps = {
      *
      * has_audio_process_lib, has_agc_mode, has_hpf_cutoff,
      * has_howling_suppress and has_audio_aec_channel all describe MI's
-     * VQE features, whose algorithm packs are weak-undefined NULL in
-     * libmi_ai.so here — and MI's own reference says the API "no longer
+     * VQE features (noise reduction, AGC, high-pass, echo cancellation).
+     * Verified 2026-07-26, because "false" here is not caution -- turning
+     * any of them on is a crash:
+     *
+     *   1. None of the 20 libraries OpenIPC ships for infinity6e defines
+     *      a single Iaa* symbol. The whole algorithm surface --
+     *      IaaApc_* (the NS/AGC/EQ chain), IaaAec_*, IaaSsl_*, IaaBf_*,
+     *      and IaaSrc_* (the resampler, which is why capture rates are
+     *      gated) -- is weak-undefined in libmi_ai.so with no provider.
+     *   2. The MI_AI_*Vqe* wrappers themselves *are* defined, so nothing
+     *      fails at dlopen or at symbol load. MI_AI_EnableVqe is mostly
+     *      argument validation and logging.
+     *   3. The real call sites (_MI_AI_G726Init and the capture path)
+     *      reach IaaApc_GetBufferSize/Init/Config/Run through the PLT
+     *      with **no null guard**. An unresolved weak symbol's GOT slot
+     *      is 0, so the blx jumps to address 0 and takes the process
+     *      down.
+     *
+     * MI's own reference agrees the packs are gone: the API "no longer
      * includes the associated algorithm functions" from version 2.19.
+     * Doing any of this in software instead would belong in rad, not
+     * here, and is explicitly out of scope.
+     *
      * has_alc_gain and has_digital_gain describe two separate gain stages;
      * MI has one input gain control, and audio_set_volume owns it.
      * See hal_audio.c's OP COVERAGE comment.
