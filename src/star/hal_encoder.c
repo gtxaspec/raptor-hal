@@ -33,6 +33,25 @@
  * exposes it through MI_VENC_SetParam* structures that nothing in rvd
  * asks for on this SoC; RSS_HAL_CALL turns each into RSS_ERR_NOTSUP.
  *
+ * Two of those absences are load-bearing and must stay absent:
+ * enc_get_rmem_info and enc_inject_stream_shm. They are what enable
+ * rvd's *refmode*, where the ring carries an (offset, length) reference
+ * into the encoder's output memory instead of a copy, and the consumer
+ * reads it after the HAL has already released the frame. That is safe
+ * on Ingenic, whose encoder writes each frame into a distinct rmem
+ * slot. It is not safe here: star_probe -c saw three consecutive frames
+ * of 61634, 2582 and 4073 bytes all land at the same address
+ * (0xb607c000 / phys 0x302c3000), so MI reuses the stream buffer as
+ * soon as MI_VENC_ReleaseStream hands it back. A reference published
+ * across that boundary reads whatever the next frame overwrote it with.
+ *
+ * Leaving both ops unimplemented is what keeps refmode off: rvd's
+ * encoder thread falls back to embedded (copying) publication when
+ * ref_base is zero, which is exactly what a NOTSUP enc_get_rmem_info
+ * produces. Anyone implementing either one later has to solve the
+ * buffer lifetime first -- by holding the frame until the consumer is
+ * done, or by copying into a region MI does not recycle.
+ *
  * Copyright (C) 2026 Thingino Project
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
@@ -369,26 +388,34 @@ static bool star_enc_nal_is_key(rss_nal_type_t type)
  *
  * IMP emits one NAL per pack and rss_nal_unit_t was shaped for that.
  * MI emits one pack per frame containing several NAL units, described
- * by pack->packetInfo[0..packNum-1] as {type, offset, length}. The
- * tempting move is to explode those into one rss_nal_unit_t each -- but
- * the vendor documentation defines u32PackOffset only as "the offset of
- * other stream packet data" without stating the base it is relative to,
- * and divinus reads packetInfo offsets against pack->data while the
- * vendor's own sample writes the payload as pack->data + pack->offset.
- * Guessing wrong there does not fail loudly; it emits a stream that is
- * subtly misaligned.
+ * by pack->packetInfo[0..packNum-1] as {type, offset, length}.
  *
- * So the addresses come only from documented fields -- the vendor
+ * The addresses here come only from documented fields -- the vendor
  * sample's own expression, pu8Addr + u32Offset for u32Len - u32Offset
  * bytes -- and packetInfo is used exclusively to *type* the pack:
  * scanned for a slice NAL to report as the pack's type and to decide
- * is_key. Nothing downstream needs finer granularity, because
- * rvd publishes the frame's NALs as one concatenated byte run into the
- * ring and rsd's Annex-B transport re-splits on start codes anyway.
+ * is_key. Nothing downstream needs finer granularity, because rvd
+ * publishes a frame's NALs as one concatenated byte run into the ring
+ * and rsd's Annex-B transport re-splits on start codes anyway.
  *
- * star_probe -c prints both the pack fields and the packetInfo entries
- * against a hexdump, which is what will settle the offset base if a
- * later phase ever needs per-NAL addresses.
+ * star_probe -c measured what the vendor reference leaves unstated, on
+ * an SSC30KQ:
+ *
+ *   - packetInfo offsets are relative to the start of the pack's valid
+ *     data and tile it exactly -- an IDR pack of 61634 bytes came back
+ *     as SPS at 0 (24 bytes), PPS at 24 (8), IDR at 32 (61602), each
+ *     landing on an Annex-B start code. So per-NAL addressing is
+ *     available to a later phase that wants it; divinus's reading is
+ *     the correct one. (pack->offset was 0 on every pack, so "relative
+ *     to pu8Addr" and "relative to pu8Addr + u32Offset" coincide and
+ *     the run cannot separate them. They agree here, which is what
+ *     matters.)
+ *
+ *   - pack->naluType is the pack's *primary* NAL type, not its first:
+ *     that SPS+PPS+IDR pack reported ISLICE, not SPS. The refinement
+ *     loop below therefore agrees with pack->naluType rather than
+ *     correcting it -- it is kept because it costs nothing and does not
+ *     depend on that behaviour holding for every frame shape.
  */
 static void star_enc_fill_nals(star_venc_chn_t *enc, rss_frame_t *frame)
 {
