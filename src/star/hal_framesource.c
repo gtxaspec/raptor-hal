@@ -368,6 +368,19 @@ int hal_fs_enable_channel(void *ctx, int chn)
     return star_fs_apply_depth(st, chn, port);
 }
 
+/* True while any output port is still up, and so while the VPE channel --
+ * and with it the ISP -- is still running. */
+static bool star_fs_any_port_enabled(const star_state_t *st)
+{
+    int i;
+
+    for (i = 0; i < STAR_VPE_PORT_NUM; i++)
+        if (st->port[i].enabled)
+            return true;
+
+    return false;
+}
+
 int hal_fs_disable_channel(void *ctx, int chn)
 {
     int ret;
@@ -382,6 +395,18 @@ int hal_fs_disable_channel(void *ctx, int chn)
 
     ret = st->vpe.fnDisablePort(STAR_VPE_CHN, chn);
     port->enabled = false;
+
+    /*
+     * The last port down stops the VPE channel, and stopping it discards
+     * the ISP tuning -- CUS3A restarts on the generic binary when the
+     * channel comes back. Say so now so the next enable reloads the
+     * sensor's binary instead of trusting a latch that outlived what it
+     * described. Done even when DisablePort reported an error: the port is
+     * marked down either way, so the tuning must not stay marked live.
+     */
+    if (!star_fs_any_port_enabled(st))
+        star_isp_untune(st);
+
     if (ret) {
         HAL_LOG_ERR("MI_VPE_DisablePort(%d, %d) failed: %d", STAR_VPE_CHN, chn, ret);
         return RSS_ERR_IO;

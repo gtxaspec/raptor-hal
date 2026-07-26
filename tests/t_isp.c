@@ -401,6 +401,132 @@ static void test_orientation_carries_both_axes(void)
     CHECK(hal_isp_set_hflip(c, 1) == RSS_ERR_NOTSUP, "missing SetOrien symbol is NOTSUP");
 }
 
+/*
+ * A tuning reload must be able to put the knobs back, so the recorded
+ * values have to survive the flush that applies them.
+ *
+ * The failure this guards is rvd's hot restart (stream-restart,
+ * set-resolution, set-codec, osd-restart): it stops the last VPE port,
+ * which stops the VPE channel, which throws away the tuning binary and
+ * every knob with it. A flush that consumed its queue would reload the
+ * binary and silently leave the operator's settings at the binary's
+ * defaults -- and a latch that outlived the channel would not reload the
+ * binary at all.
+ */
+static void test_recorded_values_survive_a_reload(void)
+{
+    rss_hal_ctx_t ctx;
+    star_state_t st;
+    void *c = &ctx;
+    size_t i;
+
+    memset(&ctx, 0, sizeof(ctx));
+    memset(&st, 0, sizeof(st));
+    ctx.platform = &st;
+    st.isp_loaded = true;
+    st.isp_tuned = false;
+    st.pend_max_again = -1;
+    st.pend_max_dgain = -1;
+    for (i = 0; i < IQ_PARAM_COUNT; i++)
+        g_iq[i].has_pending = false;
+
+    CHECK(hal_isp_set_saturation(c, 200) == RSS_OK, "saturation is recorded");
+    CHECK(hal_isp_set_max_again(c, 160) == RSS_OK, "max_again is recorded");
+
+    /* No MI handle here, so the applies inside fail; what this test is
+     * about is the state of the record afterwards. */
+    star_isp_flush_pending(&st);
+
+    CHECK(g_iq[IQ_SATURATION].has_pending, "the flush must not consume the record");
+    CHECK(g_iq[IQ_SATURATION].pending == 200, "nor alter it, got %d", g_iq[IQ_SATURATION].pending);
+    CHECK(st.pend_max_again == 160, "the gain ceiling survives the flush too, got %d",
+          st.pend_max_again);
+
+    /* A value set while the ISP *is* up must be recorded just the same, or
+     * the reload after the next restart loses it. */
+    st.isp_tuned = true;
+    (void)hal_isp_set_sharpness(c, 90); /* the apply fails: no MI handle */
+    CHECK(g_iq[IQ_SHARPNESS].has_pending && g_iq[IQ_SHARPNESS].pending == 90,
+          "a live set is recorded for the next reload even when the apply fails");
+
+    /* And losing the VPE channel must clear the latch claiming the tuning
+     * is in effect, idempotently. */
+    star_isp_untune(&st);
+    CHECK(!st.isp_tuned, "untune clears the tuned latch");
+    star_isp_untune(&st);
+    CHECK(!st.isp_tuned, "untune is idempotent");
+
+    for (i = 0; i < IQ_PARAM_COUNT; i++)
+        g_iq[i].has_pending = false;
+}
+
+/*
+ * CUS3A: the flags MI reads are three bytes, and this test has to look at
+ * them as bytes.
+ *
+ * This is the bug that shipped and ran on the board for two days. The
+ * block was declared `int params[13]` and "AWB on" was written as
+ * params[1] = 1 -- which sets byte *4*. Byte 1, the only byte
+ * MI_ISP_CUS3A_Enable's `ldrb r3, [r3, #1]` reads for AWB, stayed zero, so
+ * the pipeline ran with no auto white balance and a magenta cast that
+ * looked exactly like a missing tuning file.
+ *
+ * Note what would *not* have caught it: any assertion phrased in the
+ * struct's own field names, because the struct itself was the thing that
+ * was wrong. So this reads the raw bytes at the offsets taken from the
+ * disassembly, which is the only description of this block MI agrees with.
+ */
+static unsigned int cus3a_calls;
+static unsigned char cus3a_seen[4][3];
+
+static int fake_cus3a(int channel, i6_isp_p3a *params)
+{
+    const unsigned char *raw = (const unsigned char *)params;
+
+    (void)channel;
+    if (cus3a_calls < 4) {
+        cus3a_seen[cus3a_calls][0] = raw[0];
+        cus3a_seen[cus3a_calls][1] = raw[1];
+        cus3a_seen[cus3a_calls][2] = raw[2];
+    }
+    cus3a_calls++;
+    return 0;
+}
+
+static void test_cus3a_enables_awb_in_the_byte_mi_reads(void)
+{
+    star_state_t st;
+
+    memset(&st, 0, sizeof(st));
+    st.isp.fnCus3aEnable = fake_cus3a;
+    cus3a_calls = 0;
+    memset(cus3a_seen, 0xff, sizeof(cus3a_seen));
+
+    star_isp_enable_3a(&st);
+
+    CHECK(cus3a_calls == 2, "CUS3A restart is two calls, got %u", cus3a_calls);
+
+    /* AE alone, then AE+AWB. AF off in both: fixed-focus modules. */
+    CHECK(cus3a_seen[0][0] == 1, "call 1 byte 0 (ae) is 1, got %u", cus3a_seen[0][0]);
+    CHECK(cus3a_seen[0][1] == 0, "call 1 byte 1 (awb) is 0, got %u", cus3a_seen[0][1]);
+    CHECK(cus3a_seen[1][0] == 1, "call 2 byte 0 (ae) is 1, got %u", cus3a_seen[1][0]);
+    CHECK(cus3a_seen[1][1] == 1,
+          "call 2 byte 1 (awb) is 1 -- the byte MI's ldrb #1 reads, got %u", cus3a_seen[1][1]);
+    CHECK(cus3a_seen[0][2] == 0 && cus3a_seen[1][2] == 0, "af stays off, got %u and %u",
+          cus3a_seen[0][2], cus3a_seen[1][2]);
+
+    /* The offsets themselves, because the host build suppresses the
+     * _Static_asserts in i6_isp.h that guard them on ARM. */
+    CHECK(offsetof(i6_isp_p3a, ae) == 0, "ae is byte 0");
+    CHECK(offsetof(i6_isp_p3a, awb) == 1, "awb is byte 1");
+    CHECK(offsetof(i6_isp_p3a, af) == 2, "af is byte 2");
+
+    /* An unresolved symbol is a no-op, not a crash. */
+    st.isp.fnCus3aEnable = NULL;
+    star_isp_enable_3a(&st);
+    CHECK(cus3a_calls == 2, "no symbol means no calls, got %u", cus3a_calls);
+}
+
 int main(void)
 {
     test_table_bounds();
@@ -412,6 +538,8 @@ int main(void)
     test_scale_degenerate_inputs();
     test_pending_queue();
     test_orientation_carries_both_axes();
+    test_recorded_values_survive_a_reload();
+    test_cus3a_enables_awb_in_the_byte_mi_reads();
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);

@@ -614,6 +614,13 @@ void star_isp_bringup(star_state_t *st, const rss_sensor_config_t *cfg);
  */
 void star_isp_tune_when_ready(star_state_t *st, bool verbose);
 
+/*
+ * Mark the tuning as lost, so the next star_isp_tune_when_ready re-applies
+ * it. Called when the last VPE output port is disabled, because stopping
+ * the VPE channel is what throws the tuning away -- see the definition.
+ */
+void star_isp_untune(star_state_t *st);
+
 /* Release the ISP libraries. Called from star_teardown. */
 void star_isp_teardown(star_state_t *st);
 

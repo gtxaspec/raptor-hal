@@ -53,14 +53,41 @@ typedef struct {
 } i6_isp_exp;
 
 /*
- * CUS3A enable parameters. 13 ints, of which only the first three are
- * ever set by either reference: {1, 0, 0} then {1, 1, 0}, called in that
- * order. Neither project documents the fields, and the pair-of-calls
- * sequence is reproduced rather than explained -- see star_isp_enable_3a.
+ * CUS3A enable flags: three MI_BOOLs, one byte each.
+ *
+ * The byte width is the entire point of this comment. Both references
+ * declare the block as `int params[13]` (waybeam star6e_pipeline.c:274;
+ * divinus binds the symbol and never calls it), and written that way
+ * {1, 1, 0} lays down 01 00 00 00 01 00 00 00 -- byte 1 is zero, so AWB
+ * is asked for and never enabled. That left auto white balance off after
+ * every tuning load and gave the picture a magenta cast identical to
+ * having loaded no tuning file at all (board-diagnosed 2026-07-26).
+ *
+ * MI_ISP_CUS3A_Enable in the board's own libmi_isp.so settles it -- three
+ * byte loads, and a declared payload of 3:
+ *
+ *   6530: ldrb r3, [r3, #0]   @ ae
+ *   6536: ldrb r3, [r3, #1]   @ awb
+ *   653c: ldrb r3, [r3, #2]   @ af
+ *   ...   _MI_ISP_SetIspApiData({20, 3, 0x2e08, channel, 0}, block)
+ *
+ * (Field 2 of that descriptor is the payload size, confirmed against
+ * MI_ISP_IQ_GetBrightness, which declares the 76 bytes hal_isp.c's table
+ * already knows it has.)
+ *
+ * The driver prints the flags it received, so the log is the check: see
+ * star_isp_enable_3a. The tail is padding -- nothing reads past byte 2.
  */
 typedef struct {
-    int params[13];
+    unsigned char ae;
+    unsigned char awb;
+    unsigned char af;
+    unsigned char pad[17];
 } i6_isp_p3a;
+
+_Static_assert(offsetof(i6_isp_p3a, awb) == 1, "CUS3A awb must be the byte the wrapper's ldrb #1 reads");
+_Static_assert(offsetof(i6_isp_p3a, af) == 2, "CUS3A af must be the byte the wrapper's ldrb #2 reads");
+_Static_assert(sizeof(i6_isp_p3a) == 20, "CUS3A block stays as wide as the descriptor's 20 bytes");
 
 /*
  * IQ parameter-init status. MI_ISP_IQ_GetParaInitStatus, command 0x1002,
@@ -90,7 +117,16 @@ typedef struct {
     void *handle, *handleCus3a, *handleIspAlgo;
 
     int (*fnDisableUserspace3A)(int channel);
-    int (*fnEnableUserspace3A)(int channel, i6_isp_p3a *params);
+    /*
+     * Named for the symbol it actually binds. MI_ISP_CUS3A_Enable is not
+     * the inverse of MI_ISP_DisableUserspace3A -- MI_ISP_EnableUserspace3A
+     * is a separate entry point that spawns the SDK's own 3A_Proc thread,
+     * and waybeam's 6E path deliberately does not call it on the normal
+     * (internal-AE) path. The old name read like the pairing it is not,
+     * which is an easy way to "fix" the asymmetry by calling the wrong
+     * function.
+     */
+    int (*fnCus3aEnable)(int channel, i6_isp_p3a *params);
     int (*fnLoadChannelConfig)(int channel, char *path, unsigned int key);
     int (*fnGetParaInitStatus)(int channel, i6_isp_parainit *status);
     int (*fnGetExposureLimit)(int channel, i6_isp_exp *config);
@@ -127,7 +163,7 @@ static inline int i6_isp_load(i6_isp_impl *isp_lib)
                                                     "MI_ISP_DisableUserspace3A")))
         return RSS_ERR_NOTSUP;
 
-    if (!(isp_lib->fnEnableUserspace3A =
+    if (!(isp_lib->fnCus3aEnable =
               (int (*)(int channel, i6_isp_p3a *params))hal_symbol_load(
                   "i6_isp", isp_lib->handle, "MI_ISP_CUS3A_Enable")))
         return RSS_ERR_NOTSUP;

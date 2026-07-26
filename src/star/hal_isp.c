@@ -236,6 +236,12 @@ typedef struct {
      * tuning binary loads is also the only correct order -- applied
      * before, the load would overwrite them.
      *
+     * Recorded whether or not it could be applied straight away, and
+     * *not* cleared by the flush: a tuning reload resets each module to
+     * whatever the binary says, so the last value asked for is also the
+     * value a re-tune has to put back. Without that, the first hot
+     * restart silently reverts every knob the operator had set.
+     *
      * Lives in the table beside the cached symbols, on the same
      * single-instance assumption, and is cleared by star_isp_teardown.
      */
@@ -504,10 +510,13 @@ static int star_iq_set_scalar(void *ctx, int idx, int val)
     if (!st)
         return RSS_ERR_INVAL;
 
+    /* Recorded first and unconditionally, so a re-tune can put it back
+     * whether or not it reached MI on this attempt. */
+    p->pending = val;
+    p->has_pending = true;
+    p->pending_is_raw = false;
+
     if (!st->isp_tuned) {
-        p->pending = val;
-        p->has_pending = true;
-        p->pending_is_raw = false;
         HAL_LOG_DBG("isp: %s = %d queued until the ISP is up", p->name, val);
         return RSS_OK;
     }
@@ -580,10 +589,11 @@ static int star_iq_set_raw(void *ctx, int idx, uint32_t raw)
     if (!st)
         return RSS_ERR_INVAL;
 
+    p->pending = (int)raw;
+    p->has_pending = true;
+    p->pending_is_raw = true;
+
     if (!st->isp_tuned) {
-        p->pending = (int)raw;
-        p->has_pending = true;
-        p->pending_is_raw = true;
         HAL_LOG_DBG("isp: %s = %u queued until the ISP is up", p->name, raw);
         return RSS_OK;
     }
@@ -668,32 +678,45 @@ static int star_isp_wait_ready(star_state_t *st, unsigned int timeout_ms, bool v
 }
 
 /*
- * Start the vendor 3A algorithms.
+ * Restart the vendor 3A algorithms after the tuning binary has replaced
+ * the tables underneath them. VPE already auto-starts CUS3A, so this is
+ * a re-start, not a start.
  *
- * The two-call sequence with {1,0,0} then {1,1,0} is reproduced from
- * both references (divinus i6_hal.c, waybeam star6e_pipeline.c:270-284),
- * neither of which documents the parameter block -- 13 ints of which
- * only the first three are ever non-zero. Since VPE already auto-starts
- * CUS3A, this is really a *re*-start after the bin load replaced the
- * tables underneath it.
+ * AE alone first, then AE+AWB: the order waybeam uses
+ * (star6e_pipeline.c:270-284) and the order CUS3A's own bring-up follows.
+ * AF stays off -- these are fixed-focus modules.
+ *
+ * The parameter block is three bytes, not three ints; getting that wrong
+ * is what silently ran this pipeline without auto white balance. See
+ * i6_isp_p3a for the disassembly that settles the field widths.
  */
 static void star_isp_enable_3a(star_state_t *st)
 {
     i6_isp_p3a params;
 
-    if (!st->isp.fnEnableUserspace3A)
+    if (!st->isp.fnCus3aEnable)
         return;
 
     memset(&params, 0, sizeof(params));
-    params.params[0] = 1;
-    if (st->isp.fnEnableUserspace3A(STAR_ISP_CHN, &params))
-        HAL_LOG_WARN("isp: CUS3A enable (phase 1) failed");
+    params.ae = 1;
+    if (st->isp.fnCus3aEnable(STAR_ISP_CHN, &params))
+        HAL_LOG_WARN("isp: CUS3A enable (AE) failed");
 
     memset(&params, 0, sizeof(params));
-    params.params[0] = 1;
-    params.params[1] = 1;
-    if (st->isp.fnEnableUserspace3A(STAR_ISP_CHN, &params))
-        HAL_LOG_WARN("isp: CUS3A enable (phase 2) failed");
+    params.ae = 1;
+    params.awb = 1;
+    if (st->isp.fnCus3aEnable(STAR_ISP_CHN, &params))
+        HAL_LOG_WARN("isp: CUS3A enable (AE+AWB) failed");
+
+    /*
+     * Worth its own line because the driver prints the flags it received,
+     * so the two are checkable against each other: MI's own
+     * "[MI_ISP_CUS3A_Enable] AE = 1, AWB = 1" beside this line is the
+     * proof white balance is running. An AWB = 0 there means the block's
+     * field widths have drifted again, and the picture will have a colour
+     * cast that looks exactly like a missing tuning file.
+     */
+    HAL_LOG_INFO("isp: CUS3A restarted with AE and AWB (AF off)");
 }
 
 /*
@@ -973,6 +996,28 @@ void star_isp_tune_when_ready(star_state_t *st, bool verbose)
         star_isp_set_orien(st);
 }
 
+/*
+ * Forget that the tuning was applied, so the next star_isp_tune_when_ready
+ * does it again.
+ *
+ * Called when the last VPE output port goes down. The VPE channel only
+ * runs while a port is enabled, and when it comes back CUS3A auto-starts
+ * from scratch and loads the generic /etc/firmware/iqfile0.bin -- so the
+ * sensor's own binary, the AE shutter cap and the control knobs are all
+ * gone, and only a latch that survived the restart made it look otherwise.
+ * That is what turned any hot restart (rvd's stream-restart,
+ * set-resolution, set-codec, osd-restart) into generic colour for the rest
+ * of the process's life, with nothing in the log to say so.
+ */
+void star_isp_untune(star_state_t *st)
+{
+    if (!st || !st->isp_tuned)
+        return;
+
+    st->isp_tuned = false;
+    HAL_LOG_INFO("isp: VPE channel stopped; tuning will be re-applied when it restarts");
+}
+
 void star_isp_teardown(star_state_t *st)
 {
     size_t i;
@@ -1137,6 +1182,13 @@ static int star_isp_apply_gain_limit(star_state_t *st, bool sensor_gain, int gai
     i6_isp_exp limit;
     int ret;
 
+    /* Guarded like every other vendor pointer in this file. i6_isp_load
+     * refuses to report success without these two, so a live pipeline
+     * always has them -- but this is reachable from the flush, and calling
+     * through a null pointer is a worse answer than NOTSUP. */
+    if (!st->isp.fnGetExposureLimit || !st->isp.fnSetExposureLimit)
+        return RSS_ERR_NOTSUP;
+
     memset(&limit, 0, sizeof(limit));
     ret = st->isp.fnGetExposureLimit(STAR_ISP_CHN, &limit);
     if (ret) {
@@ -1197,12 +1249,14 @@ static int star_isp_set_gain_limit(void *ctx, bool sensor_gain, int gain)
     if (gain < 0)
         return RSS_ERR_INVAL;
 
-    /* Queued like the IQ knobs, and for the same reason. */
+    /* Recorded like the IQ knobs, and for the same two reasons: the ISP
+     * may not be up yet, and a later tuning load will need it back. */
+    if (sensor_gain)
+        st->pend_max_again = gain;
+    else
+        st->pend_max_dgain = gain;
+
     if (!st->isp_tuned) {
-        if (sensor_gain)
-            st->pend_max_again = gain;
-        else
-            st->pend_max_dgain = gain;
         HAL_LOG_DBG("isp: max %s gain = %d queued until the ISP is up",
                     sensor_gain ? "sensor" : "isp", gain);
         return RSS_OK;
@@ -1212,11 +1266,15 @@ static int star_isp_set_gain_limit(void *ctx, bool sensor_gain, int gain)
 }
 
 /*
- * Drain everything that was asked for before the ISP could answer.
+ * Re-apply everything that has been asked for.
  *
  * Called from star_isp_tune_when_ready *after* the tuning binary has
  * loaded, which is the only correct order: applied first, the load would
  * overwrite them.
+ *
+ * Nothing is consumed here. Every load resets the modules to the
+ * binary's own state, so these values have to be re-applied after each
+ * one, not drained once -- see the comment on has_pending.
  */
 static void star_isp_flush_pending(star_state_t *st)
 {
@@ -1227,7 +1285,6 @@ static void star_isp_flush_pending(star_state_t *st)
 
         if (!p->has_pending)
             continue;
-        p->has_pending = false;
 
         if (p->pending_is_raw)
             (void)star_iq_apply_raw(st, (int)i, (uint32_t)p->pending);
@@ -1235,14 +1292,10 @@ static void star_isp_flush_pending(star_state_t *st)
             (void)star_iq_apply_scalar(st, (int)i, p->pending);
     }
 
-    if (st->pend_max_again >= 0) {
+    if (st->pend_max_again >= 0)
         (void)star_isp_apply_gain_limit(st, true, st->pend_max_again);
-        st->pend_max_again = -1;
-    }
-    if (st->pend_max_dgain >= 0) {
+    if (st->pend_max_dgain >= 0)
         (void)star_isp_apply_gain_limit(st, false, st->pend_max_dgain);
-        st->pend_max_dgain = -1;
-    }
 }
 
 int hal_isp_set_max_again(void *ctx, int gain)
