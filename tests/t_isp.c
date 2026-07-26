@@ -527,6 +527,99 @@ static void test_cus3a_enables_awb_in_the_byte_mi_reads(void)
     CHECK(cus3a_calls == 2, "no symbol means no calls, got %u", cus3a_calls);
 }
 
+/*
+ * The tuning load must not touch 3A unless explicitly asked to.
+ *
+ * Board evidence 2026-07-26: stopping userspace 3A around the load and
+ * restarting CUS3A afterwards left auto white balance enabled-but-dead
+ * (MI_ISP_DisableUserspace3A unregisters the vendor algorithms;
+ * MI_ISP_CUS3A_Enable only sets flags). divinus loads the binary and
+ * leaves 3A running, and divinus has good colour on this board. This test
+ * pins the default and the RSS_ISP_3A_HANDOFF escape hatch, because the
+ * difference between them is invisible in the code at the call site and
+ * costs a board trip to discover.
+ */
+static unsigned int disable3a_calls, loadcfg_calls;
+
+static int fake_disable3a(int channel)
+{
+    (void)channel;
+    disable3a_calls++;
+    return 0;
+}
+
+static int fake_loadcfg(int channel, char *path, unsigned int key)
+{
+    (void)channel;
+    (void)path;
+    (void)key;
+    loadcfg_calls++;
+    return 0;
+}
+
+static int fake_parainit_ready(int channel, i6_isp_parainit *status)
+{
+    (void)channel;
+    status->ready = 1;
+    return 0;
+}
+
+static void tune_once(star_state_t *st)
+{
+    memset(st, 0, sizeof(*st));
+    st->isp_loaded = true;
+    st->isp_tuned = false;
+    st->pend_max_again = -1;
+    st->pend_max_dgain = -1;
+    st->fps = 30;
+    snprintf(st->iq_file, sizeof(st->iq_file), "/etc/sensors/gc4653.bin");
+    st->isp.fnGetParaInitStatus = fake_parainit_ready;
+    st->isp.fnLoadChannelConfig = fake_loadcfg;
+    st->isp.fnDisableUserspace3A = fake_disable3a;
+    st->isp.fnCus3aEnable = fake_cus3a;
+
+    disable3a_calls = loadcfg_calls = cus3a_calls = 0;
+    star_isp_tune_when_ready(st, false);
+}
+
+static void test_tuning_load_leaves_3a_alone_by_default(void)
+{
+    star_state_t st;
+    size_t i;
+
+    for (i = 0; i < IQ_PARAM_COUNT; i++)
+        g_iq[i].has_pending = false;
+
+    unsetenv("RSS_ISP_3A_HANDOFF");
+    tune_once(&st);
+    CHECK(loadcfg_calls == 1, "the binary is loaded, got %u calls", loadcfg_calls);
+    CHECK(st.isp_tuned, "the tuned latch is set");
+    CHECK(disable3a_calls == 0, "3A must not be disabled by default, got %u calls",
+          disable3a_calls);
+    CHECK(cus3a_calls == 0, "CUS3A must not be restarted by default, got %u calls", cus3a_calls);
+
+    /* And the hatch has to actually reach the old sequence. */
+    setenv("RSS_ISP_3A_HANDOFF", "1", 1);
+    tune_once(&st);
+    CHECK(loadcfg_calls == 1, "the binary is still loaded, got %u calls", loadcfg_calls);
+    CHECK(disable3a_calls == 1, "the hatch disables 3A once, got %u calls", disable3a_calls);
+    CHECK(cus3a_calls == 2, "the hatch restarts CUS3A in two calls, got %u calls", cus3a_calls);
+    CHECK(cus3a_seen[1][1] == 1, "and still enables AWB in byte 1, got %u", cus3a_seen[1][1]);
+
+    /* Anything other than "1" is off, so an empty or stray value cannot
+     * silently re-enable a sequence that broke white balance. */
+    setenv("RSS_ISP_3A_HANDOFF", "", 1);
+    tune_once(&st);
+    CHECK(disable3a_calls == 0, "an empty value is off, got %u calls", disable3a_calls);
+    setenv("RSS_ISP_3A_HANDOFF", "0", 1);
+    tune_once(&st);
+    CHECK(disable3a_calls == 0, "\"0\" is off, got %u calls", disable3a_calls);
+    unsetenv("RSS_ISP_3A_HANDOFF");
+
+    for (i = 0; i < IQ_PARAM_COUNT; i++)
+        g_iq[i].has_pending = false;
+}
+
 int main(void)
 {
     test_table_bounds();
@@ -540,6 +633,7 @@ int main(void)
     test_orientation_carries_both_axes();
     test_recorded_values_survive_a_reload();
     test_cus3a_enables_awb_in_the_byte_mi_reads();
+    test_tuning_load_leaves_3a_alone_by_default();
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);

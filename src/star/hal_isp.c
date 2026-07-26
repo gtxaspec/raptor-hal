@@ -134,6 +134,7 @@
 
 #include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -791,6 +792,8 @@ int star_isp_cap_exposure(star_state_t *st, unsigned int fps)
 
     if (!st || !st->isp_loaded || !fps)
         return RSS_ERR_INVAL;
+    if (!st->isp.fnGetExposureLimit || !st->isp.fnSetExposureLimit)
+        return RSS_ERR_NOTSUP;
 
     memset(&limit, 0, sizeof(limit));
     ret = st->isp.fnGetExposureLimit(STAR_ISP_CHN, &limit);
@@ -945,12 +948,39 @@ void star_isp_tune_when_ready(star_state_t *st, bool verbose)
 
     if (st->iq_file[0]) {
         /*
-         * Hand the running 3A off before swapping the tables it is
-         * reading, then start it again afterwards. Both references do
-         * this in the same order; neither explains it, and the failure
-         * mode of skipping it has not been observed here.
+         * THE 3A HANDOFF IS OFF BY DEFAULT, and that is the whole point.
+         *
+         * The code used to stop userspace 3A before the load and restart
+         * CUS3A after it, copying waybeam (star6e_pipeline.c:270-284).
+         * divinus does neither -- it sleeps a second and loads
+         * (media.c:827) -- and divinus is the reference with known-good
+         * colour on this board.
+         *
+         * Board evidence 2026-07-26: with the handoff in place and
+         * MI_ISP_CUS3A_Enable demonstrably passing AWB = 1 (the driver
+         * prints the flags it received), the picture still had a magenta
+         * cast under artificial light. That is what an auto white balance
+         * which is *enabled* but has no algorithm behind it looks like.
+         * MI_ISP_DisableUserspace3A tears the vendor algorithms down --
+         * libmi_isp imports CUS3A_Init and CUS3A_EnableUserspaceAE/AWB/AF
+         * from libcus3a, and that registration is what
+         * MI_ISP_DisableUserspace3A undoes. MI_ISP_CUS3A_Enable only sets
+         * flags; it cannot put the algorithms back. The one entry point
+         * that can is MI_ISP_EnableUserspace3A, which is a *different*
+         * symbol, and waybeam's own 6E notes say not to call it on the
+         * normal internal-AE path.
+         *
+         * So: load the binary and leave 3A alone, which is both the
+         * smaller change and the one with a working precedent.
+         *
+         * RSS_ISP_3A_HANDOFF=1 restores the old sequence, so the two can
+         * be compared on hardware from one binary.
          */
-        if (st->isp.fnDisableUserspace3A(STAR_ISP_CHN))
+        const char *want_handoff = getenv("RSS_ISP_3A_HANDOFF");
+        bool handoff = want_handoff && want_handoff[0] == '1';
+
+        if (handoff && st->isp.fnDisableUserspace3A &&
+            st->isp.fnDisableUserspace3A(STAR_ISP_CHN))
             HAL_LOG_WARN("isp: MI_ISP_DisableUserspace3A failed; loading anyway");
 
         ret = st->isp.fnLoadChannelConfig(STAR_ISP_CHN, st->iq_file, STAR_IQ_LOAD_KEY);
@@ -960,10 +990,13 @@ void star_isp_tune_when_ready(star_state_t *st, bool verbose)
                          st->iq_file, ret);
             st->iq_file[0] = '\0';
         } else {
-            HAL_LOG_INFO("isp: loaded tuning file %s", st->iq_file);
+            HAL_LOG_INFO("isp: loaded tuning file %s (3A %s)", st->iq_file,
+                         handoff ? "handed off and restarted (RSS_ISP_3A_HANDOFF)"
+                                 : "left running, as divinus does");
         }
 
-        star_isp_enable_3a(st);
+        if (handoff)
+            star_isp_enable_3a(st);
     }
 
     /* Config knobs go on after the tuning file, never before. */
