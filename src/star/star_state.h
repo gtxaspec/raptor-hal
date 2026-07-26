@@ -21,6 +21,7 @@
 
 #include "hal_internal.h"
 
+#include "i6_isp.h"
 #include "i6_snr.h"
 #include "i6_sys.h"
 #include "i6_venc.h"
@@ -42,6 +43,25 @@
 #define STAR_VIF_PORT 0
 #define STAR_VPE_DEV 0
 #define STAR_VPE_CHN 0
+
+/*
+ * ISP channel. Every MI_ISP call takes a channel, and it is the *VPE*
+ * channel index -- MI's ISP is not a separate device but the front half
+ * of the VPE channel, which is why enabling VPE auto-starts CUS3A and
+ * why the IQ binary is loaded per VPE channel. Both references pass a
+ * bare 0 here (divinus's _i6_isp_chn, waybeam's literal); naming it
+ * keeps the coupling to STAR_VPE_CHN visible.
+ */
+#define STAR_ISP_CHN STAR_VPE_CHN
+
+/*
+ * The key MI_ISP_API_CmdLoadBinFile wants alongside the path. Not a
+ * checksum of anything -- both references pass this same literal
+ * (divinus i6_hal.c:215, waybeam star6e_pipeline.c:295), and the
+ * wrapper reads the file itself with fopen, so the value is a
+ * protocol constant rather than a property of the binary.
+ */
+#define STAR_IQ_LOAD_KEY 1234u
 
 /*
  * VPE output ports per channel. divinus's teardown disables ports 0..3
@@ -202,6 +222,7 @@ typedef struct {
     i6_vif_impl vif;
     i6_vpe_impl vpe;
     i6_venc_impl venc;
+    i6_isp_impl isp;
 
     /* Sensor descriptors, read back after MI_SNR_Enable (see hal_init) */
     i6_snr_pad pad;
@@ -214,6 +235,27 @@ typedef struct {
     /* Sensor frame rate, as programmed. Used for the VIF->VPE bind and
      * as the source rate for 2d's VPE->VENC bind. */
     unsigned int fps;
+
+    /*
+     * ISP state.
+     *
+     * iq_file is the tuning binary actually loaded, empty when none was.
+     * Kept because MI offers no way to ask what is loaded, and because a
+     * *reload* is not free: the vendor AE reinitialises the sensor
+     * shutter register from the binary's own defaults, which on a
+     * running pipeline shows up as a framerate change. waybeam skips
+     * redundant loads for exactly that reason
+     * (star6e_pipeline.c:2073-2077).
+     *
+     * gray and the flip pair exist because MI has no getter for either:
+     * MI_ISP_IQ_GetColorToGray reads the IQ struct rather than a
+     * day/night mode, and MI_SNR_SetOrien has no counterpart at all.
+     */
+    char iq_file[128];
+    bool isp_loaded;
+    bool gray;
+    bool hflip;
+    bool vflip;
 
     star_vpe_port_t port[STAR_VPE_PORT_NUM];
     star_venc_chn_t enc[I6_VENC_CHN_NUM];
@@ -298,5 +340,70 @@ int star_enc_unbind_port(star_state_t *st, int port, int chn);
 
 /* Called from star_teardown, before the VPE channel goes away. */
 void star_enc_release_all(star_state_t *st);
+
+/* ================================================================
+ * ISP -- src/star/hal_isp.c
+ * ================================================================ */
+
+/*
+ * Bring the ISP up: bind libmi_isp, wait for the IQ parameter store to
+ * initialise, load the sensor's tuning binary, then start CUS3A.
+ *
+ * Called from hal_init *after* the VPE channel is created and bound,
+ * because none of it is legal before then -- the ISP channel is the
+ * front half of the VPE channel (see STAR_ISP_CHN). Failure is
+ * deliberately non-fatal: a camera with an untuned image is worth far
+ * more than a camera that refuses to stream, which is also why phase
+ * 2's colour cast was a defect and not an outage.
+ *
+ * cfg supplies the optional iq_file override and the sensor name used
+ * to derive the default path.
+ */
+void star_isp_bringup(star_state_t *st, const rss_sensor_config_t *cfg);
+
+/* Release the ISP libraries. Called from star_teardown. */
+void star_isp_teardown(star_state_t *st);
+
+/*
+ * Clamp the AE's maximum shutter to one frame period.
+ *
+ * Called from star_isp_bringup after the tuning binary is loaded, since
+ * the binary carries its own AE limits and they are not required to
+ * suit the framerate this pipeline asked for. An uncapped AE converges
+ * on an exposure longer than the frame period in dim light, and the
+ * sensor answers by dropping its own rate -- a 30 fps request silently
+ * delivering 12 fps, with nothing in any log to say why.
+ */
+int star_isp_cap_exposure(star_state_t *st, unsigned int fps);
+
+/* ISP ops. Only those MI can honour are defined; see the OP COVERAGE
+ * comment in hal_isp.c for what is deliberately absent and why. */
+int hal_isp_set_brightness(void *ctx, int val);
+int hal_isp_set_contrast(void *ctx, int val);
+int hal_isp_set_saturation(void *ctx, int val);
+int hal_isp_set_sharpness(void *ctx, int val);
+int hal_isp_set_sinter_strength(void *ctx, int val);
+int hal_isp_set_temper_strength(void *ctx, int val);
+int hal_isp_set_ae_comp(void *ctx, int val);
+int hal_isp_set_defog(void *ctx, int enable);
+int hal_isp_set_antiflicker(void *ctx, rss_antiflicker_t mode);
+int hal_isp_set_max_again(void *ctx, int gain);
+int hal_isp_set_max_dgain(void *ctx, int gain);
+int hal_isp_set_running_mode(void *ctx, rss_isp_mode_t mode);
+int hal_isp_set_hflip(void *ctx, int enable);
+int hal_isp_set_vflip(void *ctx, int enable);
+
+int hal_isp_get_brightness(void *ctx, uint8_t *val);
+int hal_isp_get_contrast(void *ctx, uint8_t *val);
+int hal_isp_get_saturation(void *ctx, uint8_t *val);
+int hal_isp_get_sharpness(void *ctx, uint8_t *val);
+int hal_isp_get_sinter_strength(void *ctx, uint8_t *val);
+int hal_isp_get_temper_strength(void *ctx, uint8_t *val);
+int hal_isp_get_ae_comp(void *ctx, int *val);
+int hal_isp_get_antiflicker(void *ctx, rss_antiflicker_t *mode);
+int hal_isp_get_max_again(void *ctx, uint32_t *gain);
+int hal_isp_get_max_dgain(void *ctx, uint32_t *gain);
+int hal_isp_get_running_mode(void *ctx, rss_isp_mode_t *mode);
+int hal_isp_get_hvflip(void *ctx, int *hflip, int *vflip);
 
 #endif /* STAR_STATE_H */

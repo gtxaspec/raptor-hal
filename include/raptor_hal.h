@@ -492,6 +492,21 @@ typedef struct {
     uint16_t width;
     uint16_t height;
     uint32_t fps;
+
+    /*
+     * Optional ISP tuning binary, empty to let the backend find its own.
+     *
+     * Only the SigmaStar backend reads this. Its ISP is driven by a
+     * per-sensor tuning file rather than by scalar controls, and without
+     * the right one the vendor 3A falls back to a generic table and the
+     * image comes out miscoloured. The backend derives the usual path
+     * from the sensor name (/etc/sensors/<name>.bin on OpenIPC), so this
+     * only needs setting for a tuning file kept somewhere else.
+     *
+     * Ingenic backends ignore it: there the equivalent tuning is
+     * compiled into the sensor driver.
+     */
+    char iq_file[128];
 } rss_sensor_config_t;
 
 /* Maximum number of sensors supported (IMPVI_MAIN, SEC, THR) */

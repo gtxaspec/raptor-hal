@@ -852,6 +852,32 @@ const rss_hal_caps_t g_hal_caps = {
      * requirements. */
     .has_sensor_detect = true,
 
+    /*
+     * ISP tuning — phase 3. True only where MI has a control that
+     * genuinely matches the raptor knob:
+     *
+     *   defog          MI_ISP_IQ_SetDefog, a toggle. isp_set_defog is
+     *                  implemented; the *strength* variants are not,
+     *                  because there is no strength to set.
+     *   sinter/temper  MI's spatial (NRLuma) and temporal (NR3D) noise
+     *                  reduction, both 0..255 as raptor expects.
+     *   ae_comp        MI_ISP_AE_SetEVComp.
+     *   max_gain       Both ceilings live in MI's AE exposure-limit
+     *                  struct.
+     *
+     * Left false, with the reasoning spelled out in hal_isp.c's OP
+     * COVERAGE comment: dpc and drc (MI's are a toggle and a curve, not
+     * strengths), bcsh_hue (a 64-entry HSV LUT), highlight_depress and
+     * backlight_comp (WDR curve descriptors), and switch_bin -- a tuning
+     * binary *is* loaded during hal_init, but Ingenic's runtime
+     * bin-switching op has no MI counterpart.
+     */
+    .has_defog = true,
+    .has_sinter = true,
+    .has_temper = true,
+    .has_ae_comp = true,
+    .has_max_gain = true,
+
     /* System — all three describe Ingenic internals (xburst2 core, IMP SDK
      * generation, IMPVI multi-sensor calling convention) and are
      * permanently false for any non-Ingenic vendor. */

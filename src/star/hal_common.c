@@ -420,7 +420,12 @@ static int star_sensor_bringup(star_state_t *st, const rss_sensor_config_t *cfg,
             st->fps = want;
     }
 
-    /* Orientation before Enable, so the driver's init picks it up. */
+    /* Orientation before Enable, so the driver's init picks it up.
+     * Recorded because MI_SNR_SetOrien has no getter and it takes both
+     * axes at once, so a later isp_set_hflip has to supply the flip it
+     * is not changing. */
+    st->hflip = mirror ? true : false;
+    st->vflip = flip ? true : false;
     ret = st->snr.fnSetOrientation(STAR_SNR_INDEX, mirror ? 1 : 0, flip ? 1 : 0);
     if (ret)
         HAL_LOG_WARN("MI_SNR_SetOrien(%d,%d) failed: %d", mirror, flip, ret);
@@ -769,6 +774,17 @@ static int hal_init(void *ctx, const rss_multi_sensor_config_t *cfg)
     if (ret)
         goto err_teardown;
 
+    /*
+     * ISP last, and not before: the ISP channel is the front half of the
+     * VPE channel, so nothing here -- not the readiness probe, not the
+     * tuning load -- is legal until star_vpe_bringup has created and
+     * started that channel. Returns void because every failure inside it
+     * is best-effort; see star_isp_bringup.
+     */
+#ifdef HAL_MODULE_VIDEO
+    star_isp_bringup(st, &c->sensors[0]);
+#endif
+
     g_star = st;
     c->initialized = true;
     return RSS_OK;
@@ -817,6 +833,9 @@ static int star_teardown(star_state_t *st)
      * ports, and a VENC channel left bound to a port that is about to be
      * disabled is exactly the state divinus's teardown avoids. */
 #ifdef HAL_MODULE_VIDEO
+    /* ISP first, mirroring bring-up: it is bound to the VPE channel that
+     * is about to go away, and dropping the library handles cannot fail. */
+    star_isp_teardown(st);
     star_enc_release_all(st);
     star_fs_release_all(st);
 #endif
@@ -1119,10 +1138,49 @@ static const rss_hal_ops_t g_ops = {
     .sys_rebase_timestamp = hal_sys_rebase_timestamp,
 
 #ifdef HAL_MODULE_VIDEO
-    /* ISP -- the only op so far. The rest of the ISP surface (tuning,
-     * exposure, white balance) is phase 3; CUS3A runs the 3A loops on its
-     * own in the meantime. */
+    /*
+     * ISP (src/star/hal_isp.c). The tuning binary that CUS3A actually
+     * runs on is loaded during hal_init, not through any op here -- it
+     * has to happen at a specific point in the pipeline's construction,
+     * which is not something a caller can be asked to know.
+     *
+     * The scalar ops below are read-modify-writes of MI's per-module IQ
+     * structs, and they yield to that tuning binary: a knob left at its
+     * neutral 128 puts its module back into *auto* rather than pinning a
+     * midpoint over the tuned curve. That matters because rvd applies
+     * the whole [image] block on every start, defaults included. The
+     * ops MI cannot honour are listed, with reasons, in the OP COVERAGE
+     * comment in that file.
+     */
     .isp_get_sensor_attr = hal_isp_get_sensor_attr,
+
+    .isp_set_brightness = hal_isp_set_brightness,
+    .isp_set_contrast = hal_isp_set_contrast,
+    .isp_set_saturation = hal_isp_set_saturation,
+    .isp_set_sharpness = hal_isp_set_sharpness,
+    .isp_set_sinter_strength = hal_isp_set_sinter_strength,
+    .isp_set_temper_strength = hal_isp_set_temper_strength,
+    .isp_set_ae_comp = hal_isp_set_ae_comp,
+    .isp_set_defog = hal_isp_set_defog,
+    .isp_set_antiflicker = hal_isp_set_antiflicker,
+    .isp_set_max_again = hal_isp_set_max_again,
+    .isp_set_max_dgain = hal_isp_set_max_dgain,
+    .isp_set_running_mode = hal_isp_set_running_mode,
+    .isp_set_hflip = hal_isp_set_hflip,
+    .isp_set_vflip = hal_isp_set_vflip,
+
+    .isp_get_brightness = hal_isp_get_brightness,
+    .isp_get_contrast = hal_isp_get_contrast,
+    .isp_get_saturation = hal_isp_get_saturation,
+    .isp_get_sharpness = hal_isp_get_sharpness,
+    .isp_get_sinter_strength = hal_isp_get_sinter_strength,
+    .isp_get_temper_strength = hal_isp_get_temper_strength,
+    .isp_get_ae_comp = hal_isp_get_ae_comp,
+    .isp_get_antiflicker = hal_isp_get_antiflicker,
+    .isp_get_max_again = hal_isp_get_max_again,
+    .isp_get_max_dgain = hal_isp_get_max_dgain,
+    .isp_get_running_mode = hal_isp_get_running_mode,
+    .isp_get_hvflip = hal_isp_get_hvflip,
 
     /* Framesource -- VPE output ports (src/star/hal_framesource.c).
      * The ops MI has no equivalent for are listed, with reasons, in

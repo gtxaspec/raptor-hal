@@ -138,6 +138,7 @@ HAL_COMMON_SRC := src/star/hal_common.c
 
 VIDEO_SRCS := src/star/hal_encoder.c \
               src/star/hal_framesource.c \
+              src/star/hal_isp.c \
               src/hal_gpio.c
 
 AUDIO_SRCS :=
