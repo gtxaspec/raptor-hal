@@ -238,6 +238,13 @@ typedef struct {
 #define STAR_AUD_NOBUF_RECOVER_MAX 3
 
 /*
+ * Consecutive good frames before the NOBUF recovery budget is refilled --
+ * 5 seconds at a 20ms period. Long enough that "the port is working again"
+ * is a real observation rather than one lucky read between failures.
+ */
+#define STAR_AUD_NOBUF_RECOVER_REARM_FRAMES 250
+
+/*
  * Default output-port buffer-queue depth, and how long a blocking
  * frame fetch waits.
  *
@@ -512,9 +519,13 @@ typedef struct {
     int aud_last_err;
     bool aud_dev_warned;
 
-    /* NOBUF recovery attempts spent on this channel, reset by any frame that
-     * arrives. Bounds the re-apply in hal_audio_read_frame. */
+    /* NOBUF recovery attempts spent on this channel. Bounds the re-apply in
+     * hal_audio_read_frame, which is destructive -- it flushes the port queue.
+     * Refilled only after a sustained run of good frames (aud_ok_run), because
+     * refilling on a single frame let a fault that alternates with successful
+     * reads re-apply at the capture period rate. */
     int aud_nobuf_recover[STAR_AUD_CHN_MAX];
+    int aud_ok_run[STAR_AUD_CHN_MAX];
 
     /* Unwind flags -- each set only once its step has succeeded, so
      * teardown undoes exactly what was done and no more. */

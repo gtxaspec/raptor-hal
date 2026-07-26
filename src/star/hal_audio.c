@@ -524,9 +524,27 @@ int hal_audio_read_frame(void *ctx, int dev, int chn, rss_audio_frame_t *frame, 
     ret = st->aud.fnGetFrame(dev, chn, slot, NULL, block ? STAR_AUD_GET_TIMEOUT_MS : 0);
 
     /*
-     * NOBUF means one specific thing -- this port has no user-side queue -- so
-     * the one useful response is to establish it again and retry, rather than
-     * report a read error for the life of the process.
+     * On a NON-blocking fetch, NOBUF means only "nothing queued right now".
+     *
+     * MI_AI overloads the code: 0xA004200D is both "this port has no user-side
+     * queue" and the empty-queue answer when s32MilliSec is 0. The vendor docs
+     * for VENC and VDEC say an unblocked fetch reports BUF_EMPTY, and that is
+     * simply not what MI_AI does -- board-observed 2026-07-26, and it cost a
+     * build: treating it as a lost queue re-applied the output port depth
+     * (which FLUSHES the queue) on every empty poll, so MI logged "Buffer(s)
+     * is lost" about five periods at a time, continuously.
+     *
+     * Nothing is given up by returning early here. If the port really has lost
+     * its queue, the caller's next *blocking* fetch reports NOBUF too, and the
+     * recovery below runs then.
+     */
+    if ((unsigned int)ret == STAR_AUD_ERR_NOBUF && !block)
+        return RSS_ERR_TIMEOUT;
+
+    /*
+     * On a blocking fetch, NOBUF means what it says -- this port has no
+     * user-side queue -- so the one useful response is to establish it again
+     * and retry, rather than report a read error for the life of the process.
      *
      * It is worth doing even though init already set the depth successfully,
      * because the board shows NOBUF when rad starts during boot and not when
@@ -535,9 +553,9 @@ int hal_audio_read_frame(void *ctx, int dev, int chn, rss_audio_frame_t *frame, 
      * first read; until that is identified, re-establishing it is both the
      * correct remedy for the error MI is actually reporting and cheap.
      *
-     * Bounded, because a genuinely broken port must not turn into an infinite
-     * retry loop at the audio period rate, and each attempt is logged so this
-     * never becomes silent self-healing that hides a real fault.
+     * Re-applying the depth is NOT free: it discards whatever the port had
+     * queued. That is an acceptable price once at bring-up and ruinous at the
+     * period rate, which is why the budget below has to be genuinely bounded.
      */
     if ((unsigned int)ret == STAR_AUD_ERR_NOBUF &&
         st->aud_nobuf_recover[chn] < STAR_AUD_NOBUF_RECOVER_MAX) {
@@ -570,9 +588,19 @@ int hal_audio_read_frame(void *ctx, int dev, int chn, rss_audio_frame_t *frame, 
         return RSS_ERR_IO;
     }
     st->aud_last_err = 0;
-    /* A frame arrived, so spend the recovery budget again if the port is ever
-     * lost a second time rather than leaving it exhausted from startup. */
-    st->aud_nobuf_recover[chn] = 0;
+    /*
+     * Refill the recovery budget only after a sustained run of good frames,
+     * not on the first one. Resetting per frame made the bound meaningless:
+     * any fault that alternates with successful reads gets three destructive
+     * re-applies *per period* instead of three in total, which is exactly how
+     * an empty-queue poll turned into continuous audio loss. A run means the
+     * port is genuinely healthy again, so a later loss deserves a fresh budget.
+     */
+    if (st->aud_nobuf_recover[chn] &&
+        ++st->aud_ok_run[chn] >= STAR_AUD_NOBUF_RECOVER_REARM_FRAMES) {
+        st->aud_nobuf_recover[chn] = 0;
+        st->aud_ok_run[chn] = 0;
+    }
 
     if (!slot->addr[0] || !slot->length) {
         /* A success with nothing in it. Give it straight back rather than

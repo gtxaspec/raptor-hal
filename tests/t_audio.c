@@ -539,15 +539,79 @@ static void test_nobuf_reestablishes_the_port_queue(void)
           "naming the AI channel that failed");
     hal_audio_release_frame(&ctx, STAR_AUD_DEV, 0, &frame);
 
-    /* The budget is spent per fault, not per process: a good frame restores
-     * it, so a port lost twice is still recovered the second time. */
+    /* The budget is spent per fault, not per process, so a port lost a second
+     * time is still recovered -- it is only the *refill* that now requires a
+     * sustained run of good frames rather than one. */
     mi.depth_calls = 0;
     mi.get_calls = 0;
     mi.nobuf_remaining = 1;
     ret = hal_audio_read_frame(&ctx, STAR_AUD_DEV, 0, &frame, true);
     CHECK(ret == RSS_OK, "a second, later loss is recovered too (got %d)", ret);
-    CHECK(mi.depth_calls == 1, "because a delivered frame resets the budget (got %d)",
+    CHECK(mi.depth_calls == 1, "spending the next attempt in the budget (got %d)",
           mi.depth_calls);
+    hal_audio_release_frame(&ctx, STAR_AUD_DEV, 0, &frame);
+}
+
+/*
+ * Re-applying the port depth FLUSHES whatever the port had queued, so a fault
+ * that alternates with successful reads must not be able to re-apply at the
+ * capture period rate. Refilling the budget on a single good frame allowed
+ * exactly that: it shipped, and on the board it destroyed about five periods
+ * of audio at a time, continuously, for as long as rad ran.
+ */
+static void test_one_good_frame_does_not_refill_the_recovery_budget(void)
+{
+    rss_hal_ctx_t ctx;
+    star_state_t st;
+    rss_audio_frame_t frame;
+    int i;
+
+    setup(&ctx, &st, 1);
+
+    /* Each pass: one NOBUF, a re-apply, then a frame. Under the old rule the
+     * delivered frame refilled the budget and this ran forever. */
+    for (i = 0; i < STAR_AUD_NOBUF_RECOVER_MAX + 5; i++) {
+        mi.nobuf_remaining = 1;
+        if (hal_audio_read_frame(&ctx, STAR_AUD_DEV, 0, &frame, true) == RSS_OK)
+            hal_audio_release_frame(&ctx, STAR_AUD_DEV, 0, &frame);
+    }
+
+    CHECK(mi.depth_calls == STAR_AUD_NOBUF_RECOVER_MAX,
+          "the re-apply stops at the budget even when frames keep arriving "
+          "(expected %d, got %d)",
+          STAR_AUD_NOBUF_RECOVER_MAX, mi.depth_calls);
+}
+
+/*
+ * MI_AI overloads NOBUF: it is both "this port has no user-side queue" and the
+ * answer an unblocked fetch gives when nothing is queued yet. The vendor docs
+ * for VENC and VDEC promise BUF_EMPTY for the latter, MI_AI does not do that,
+ * and that is what made a backlog-draining build worse than the one it
+ * replaced -- every empty poll was read as a lost queue and re-applied the
+ * depth, flushing the queue it was polling.
+ *
+ * So: on a non-blocking read, NOBUF is a timeout and must touch nothing.
+ */
+static void test_nonblocking_nobuf_is_empty_not_a_lost_queue(void)
+{
+    rss_hal_ctx_t ctx;
+    star_state_t st;
+    rss_audio_frame_t frame;
+    int ret;
+
+    setup(&ctx, &st, 1);
+
+    mi.nobuf_remaining = 1;
+    ret = hal_audio_read_frame(&ctx, STAR_AUD_DEV, 0, &frame, false);
+    CHECK(ret == RSS_ERR_TIMEOUT, "an unblocked NOBUF reads as a timeout (got %d)", ret);
+    CHECK(mi.depth_calls == 0, "and does not re-apply the port depth (got %d)", mi.depth_calls);
+    CHECK(mi.get_calls == 1, "and does not retry the fetch (got %d)", mi.get_calls);
+
+    /* The protection is not lost: a blocking read still recovers the port. */
+    mi.nobuf_remaining = 1;
+    ret = hal_audio_read_frame(&ctx, STAR_AUD_DEV, 0, &frame, true);
+    CHECK(ret == RSS_OK, "a blocking read still recovers a genuinely lost queue (got %d)", ret);
+    CHECK(mi.depth_calls == 1, "by re-applying the depth (got %d)", mi.depth_calls);
     hal_audio_release_frame(&ctx, STAR_AUD_DEV, 0, &frame);
 }
 
@@ -612,6 +676,8 @@ int main(void)
     test_init_sets_the_output_port_queue();
     test_nobuf_reestablishes_the_port_queue();
     test_nobuf_recovery_is_bounded();
+    test_one_good_frame_does_not_refill_the_recovery_budget();
+    test_nonblocking_nobuf_is_empty_not_a_lost_queue();
     test_buf_empty_does_not_touch_the_port();
 
     if (failures) {
