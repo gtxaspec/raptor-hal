@@ -23,6 +23,7 @@
 
 #include "i6_aud.h"
 #include "i6_isp.h"
+#include "i6_rgn.h"
 #include "i6_snr.h"
 #include "i6_sys.h"
 #include "i6_venc.h"
@@ -72,6 +73,60 @@
  * max_fs_channels quotes that result.
  */
 #define STAR_VPE_PORT_NUM 4
+
+/*
+ * OSD regions the backend will track at once.
+ *
+ * MI publishes no limit on region handles, and neither reference probes
+ * for one: divinus numbers handles from its own overlay slots and
+ * waybeam uses a single fixed handle. 16 is chosen to match rvd's
+ * largest per-platform region budget in hal_caps.c, so a config that
+ * works on Ingenic is not silently truncated here. A region costs a
+ * handle and its bitmap, nothing per-slot, so the array is cheap.
+ */
+#define STAR_OSD_REGION_MAX 16
+
+/*
+ * Per-region bookkeeping.
+ *
+ * Everything here is tracked rather than read back from MI, for two
+ * reasons. MI_RGN_GetAttr and MI_RGN_GetDisplayAttr exist, but the
+ * geometry raptor cares about (x/y/layer/alpha) is spread across the
+ * region attr and the *per-channel* display attr, so a read-back needs
+ * both plus a live attach; and rvd sets attributes before the region is
+ * attached to anything, when there is no display attr to read.
+ *
+ * `attached` is the distinction that matters: registered means rvd asked
+ * for the region to appear on a group, attached means MI has actually
+ * been told, which cannot happen until the VPE port exists. See
+ * star_osd_flush_pending.
+ */
+typedef struct {
+    bool used;
+    rss_osd_type_t type;
+
+    int x;
+    int y;
+    int width;
+    int height;
+    int layer;
+
+    bool global_alpha_en;
+    unsigned char fg_alpha;
+    unsigned char bg_alpha;
+    unsigned int cover_color;
+
+    /* Registered group, or -1. */
+    int grp;
+    bool attached;
+    bool show;
+
+    /* Converted bitmap handed to MI_RGN_SetBitMap. Kept per region so a
+     * per-frame update does not allocate, and resized only when the
+     * region's geometry changes. */
+    void *bmp;
+    size_t bmp_size;
+} star_osd_region_t;
 
 /*
  * Audio input device.
@@ -354,6 +409,35 @@ typedef struct {
     star_venc_chn_t enc[I6_VENC_CHN_NUM];
 
     /*
+     * OSD state -- src/star/hal_osd.c.
+     *
+     * MI_RGN has no notion of a region *group*. raptor's group is the
+     * encoder channel whose picture the region should appear on, so a
+     * group here is just a flag plus the set of regions registered to
+     * it, and the real MI operation is attaching the region to the VPE
+     * output port feeding that encoder.
+     *
+     * osd_src_port exists because rvd's bind chain is
+     * FS -> OSD -> ENC while MI's data path is VPE port -> VENC with no
+     * stage in between. hal_bind records the FS port when it sees
+     * FS -> OSD and performs the real bind when it sees OSD -> ENC, so
+     * the OSD cell collapses instead of being rejected.
+     */
+    i6_rgn_impl rgn;
+    bool rgn_loaded;
+    bool rgn_inited;
+
+    /* Which pixel format MI_RGN_Create actually accepted -- see
+     * star_osd_probe_pixfmt. rgn_fmt_known distinguishes "not probed
+     * yet" from a successfully probed format. */
+    i6_rgn_pixfmt rgn_fmt;
+    bool rgn_fmt_known;
+
+    bool osd_grp[I6_VENC_CHN_NUM];
+    int osd_src_port[I6_VENC_CHN_NUM];
+    star_osd_region_t osd[STAR_OSD_REGION_MAX];
+
+    /*
      * Audio capture state -- src/star/hal_audio.c.
      *
      * Lives in the same struct as the video state even though the two
@@ -561,5 +645,32 @@ int hal_audio_release_frame(void *ctx, int dev, int chn, rss_audio_frame_t *fram
 int hal_audio_set_volume(void *ctx, int dev, int chn, int vol);
 int hal_audio_get_volume(void *ctx, int dev, int chn, int *vol);
 int hal_audio_set_mute(void *ctx, int dev, int chn, int mute);
+
+/*
+ * OSD ops -- src/star/hal_osd.c.
+ *
+ * Twelve ops, which is what rvd calls; hal_osd.c's OP COVERAGE comment
+ * names the five it leaves NULL and why.
+ */
+int hal_osd_set_pool_size(void *ctx, uint32_t bytes);
+int hal_osd_create_group(void *ctx, int grp);
+int hal_osd_destroy_group(void *ctx, int grp);
+int hal_osd_start(void *ctx, int grp);
+int hal_osd_stop(void *ctx, int grp);
+int hal_osd_create_region(void *ctx, int *handle, const rss_osd_region_t *attr);
+int hal_osd_destroy_region(void *ctx, int handle);
+int hal_osd_register_region(void *ctx, int handle, int grp);
+int hal_osd_unregister_region(void *ctx, int handle, int grp);
+int hal_osd_set_region_attr(void *ctx, int handle, const rss_osd_region_t *attr);
+int hal_osd_update_region_data(void *ctx, int handle, const uint8_t *data);
+int hal_osd_show_region(void *ctx, int handle, int grp, int show, int layer);
+
+/*
+ * Attach any region registered to this encoder channel, called once the
+ * VPE port -> VENC bind exists. rvd registers regions before it binds,
+ * so this is where startup overlays actually reach MI.
+ */
+void star_osd_flush_pending(star_state_t *st, int chn);
+void star_osd_release_all(star_state_t *st);
 
 #endif /* STAR_STATE_H */

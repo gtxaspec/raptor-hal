@@ -726,6 +726,9 @@ static int hal_init(void *ctx, const rss_multi_sensor_config_t *cfg)
     for (i = 0; i < I6_VENC_CHN_NUM; i++) {
         st->enc[i].fd = -1;
         st->enc[i].src_port = -1;
+        /* Same reasoning: port 0 is a real port, so "no FS -> OSD seen
+         * for this group yet" needs its own value. */
+        st->osd_src_port[i] = -1;
     }
 
     /*
@@ -847,6 +850,9 @@ static int star_teardown(star_state_t *st)
     /* ISP first, mirroring bring-up: it is bound to the VPE channel that
      * is about to go away, and dropping the library handles cannot fail. */
     star_isp_teardown(st);
+    /* OSD before the encoders: detaching a region names the VPE port
+     * that releasing the encoders is about to unbind. */
+    star_osd_release_all(st);
     star_enc_release_all(st);
     star_fs_release_all(st);
 #endif
@@ -1035,52 +1041,124 @@ static int hal_sys_rebase_timestamp(void *ctx, int64_t base)
  * OSD stage in the data path -- MI_RGN overlays composite onto a VPE
  * port in place rather than sitting between two modules.
  *
- * So the only supported pair is FS -> ENC. Anything else returns
- * RSS_ERR_NOTSUP, which is honest: silently accepting an OSD stage
- * that does not exist would leave rvd believing overlays are bound.
+ * The data path therefore has exactly one link, FS -> ENC. An OSD stage
+ * in the chain is not fiction, though, and it is not ignored: the
+ * overlay really is applied to that link, by hal_osd.c attaching the
+ * region to the same VPE port (phase 5). What has no counterpart is the
+ * *stage*, so the OSD cell is collapsed rather than rejected:
+ *
+ *   FS  -> OSD    remember which framesource port feeds this encoder
+ *   OSD -> ENC    perform the real bind, using the remembered port
+ *
+ * Before phase 5 this returned NOTSUP for anything but FS -> ENC, and
+ * since rvd inserts the OSD stage on `[osd] enabled` alone, that one
+ * rejection took the whole pipeline down -- which is why the board
+ * config had to pin `[osd] enabled = false`. It no longer does.
+ *
+ * IVS is still unsupported: no ops are implemented, so rvd never sets
+ * ivs_active and the stage cannot appear.
  */
-static int star_bind_check(const rss_cell_t *src, const rss_cell_t *dst)
+static int star_bind_collapse(star_state_t *st, const rss_cell_t *src, const rss_cell_t *dst,
+                              int *port, int *chn, bool *collapsed)
 {
+    *collapsed = false;
+
     if (!src || !dst)
         return RSS_ERR_INVAL;
 
-    if (src->device != RSS_DEV_FS || dst->device != RSS_DEV_ENC) {
-        HAL_LOG_ERR("bind: only FS -> ENC is available on this backend (got %d -> %d)",
-                    src->device, dst->device);
-        return RSS_ERR_NOTSUP;
+    /* The direct chain, with OSD disabled. */
+    if (src->device == RSS_DEV_FS && dst->device == RSS_DEV_ENC) {
+        *port = src->group;
+        *chn = dst->group;
+        return RSS_OK;
     }
 
-    return RSS_OK;
+    /*
+     * First half of an OSD chain. Nothing to bind yet -- record the
+     * framesource port so the second half can name it, since rvd does
+     * not repeat it there.
+     */
+    if (src->device == RSS_DEV_FS && dst->device == RSS_DEV_OSD) {
+        if (dst->group < 0 || dst->group >= I6_VENC_CHN_NUM)
+            return RSS_ERR_INVAL;
+
+        st->osd_src_port[dst->group] = src->group;
+        *collapsed = true;
+        return RSS_OK;
+    }
+
+    /* Second half: the bind rvd actually asked for. */
+    if (src->device == RSS_DEV_OSD && dst->device == RSS_DEV_ENC) {
+        if (src->group < 0 || src->group >= I6_VENC_CHN_NUM)
+            return RSS_ERR_INVAL;
+
+        *port = st->osd_src_port[src->group];
+        *chn = dst->group;
+
+        if (*port < 0) {
+            HAL_LOG_ERR("bind: OSD %d -> ENC %d without a preceding FS -> OSD", src->group,
+                        dst->group);
+            return RSS_ERR_INVAL;
+        }
+        return RSS_OK;
+    }
+
+    HAL_LOG_ERR("bind: FS -> [OSD ->] ENC is the only chain this backend supports "
+                "(got %d -> %d)",
+                src->device, dst->device);
+
+    return RSS_ERR_NOTSUP;
 }
 
 static int hal_bind(void *ctx, const rss_cell_t *src, const rss_cell_t *dst)
 {
     star_state_t *st = star_state(ctx);
+    bool collapsed;
+    int port = -1;
+    int chn = -1;
     int ret;
 
     if (!st)
         return RSS_ERR_INVAL;
 
-    ret = star_bind_check(src, dst);
+    ret = star_bind_collapse(st, src, dst, &port, &chn, &collapsed);
+    if (ret)
+        return ret;
+    if (collapsed)
+        return RSS_OK; /* Recorded; the OSD -> ENC step does the work. */
+
+    ret = star_enc_bind_port(st, port, chn);
     if (ret)
         return ret;
 
-    return star_enc_bind_port(st, src->group, dst->group);
+    /*
+     * The port exists now, so any region rvd registered during OSD setup
+     * can finally be attached. Regions are registered before the bind --
+     * see hal_osd.c's WHY ATTACH IS DEFERRED.
+     */
+    star_osd_flush_pending(st, chn);
+
+    return RSS_OK;
 }
 
 static int hal_unbind(void *ctx, const rss_cell_t *src, const rss_cell_t *dst)
 {
     star_state_t *st = star_state(ctx);
+    bool collapsed;
+    int port = -1;
+    int chn = -1;
     int ret;
 
     if (!st)
         return RSS_ERR_INVAL;
 
-    ret = star_bind_check(src, dst);
+    ret = star_bind_collapse(st, src, dst, &port, &chn, &collapsed);
     if (ret)
         return ret;
+    if (collapsed)
+        return RSS_OK; /* FS -> OSD bound nothing, so it unbinds nothing. */
 
-    return star_enc_unbind_port(st, src->group, dst->group);
+    return star_enc_unbind_port(st, port, chn);
 }
 
 #endif /* HAL_MODULE_VIDEO */
@@ -1239,7 +1317,24 @@ static const rss_hal_ops_t g_ops = {
     .enc_get_fd = hal_enc_get_fd,
 #endif
 
-    /* OSD ops are added by the phase that implements them. */
+#ifdef HAL_MODULE_VIDEO
+    /*
+     * OSD. The five rvd never calls stay NULL -- see hal_osd.c's OP
+     * COVERAGE comment.
+     */
+    .osd_set_pool_size = hal_osd_set_pool_size,
+    .osd_create_group = hal_osd_create_group,
+    .osd_destroy_group = hal_osd_destroy_group,
+    .osd_start = hal_osd_start,
+    .osd_stop = hal_osd_stop,
+    .osd_create_region = hal_osd_create_region,
+    .osd_destroy_region = hal_osd_destroy_region,
+    .osd_register_region = hal_osd_register_region,
+    .osd_unregister_region = hal_osd_unregister_region,
+    .osd_set_region_attr = hal_osd_set_region_attr,
+    .osd_update_region_data = hal_osd_update_region_data,
+    .osd_show_region = hal_osd_show_region,
+#endif
 
 #ifdef HAL_MODULE_AUDIO
     /*

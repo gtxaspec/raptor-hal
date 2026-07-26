@@ -927,7 +927,18 @@ const rss_hal_caps_t g_hal_caps = {
      * not the total. Capped at RSS_MAX_ENC_CHANNELS (8) since that is
      * raptor's array bound, so 8 is the most this field can honestly
      * advertise.
-     * OSD limits stay 0 until the region backend lands in phase 5.
+     *
+     * OSD limits (phase 5): max_osd_regions is STAR_OSD_REGION_MAX, the
+     * backend's own tracking bound rather than an MI limit -- MI
+     * publishes none and neither reference probes for one, so this
+     * advertises what the backend will actually honour. max_osd_groups is
+     * 4 because a group here *is* an encoder channel with a bound VPE
+     * port, and there are four ports. The has_osd_* flags all stay false:
+     * MI has only OSD and COVER region types (no mosaic, no
+     * RSS_OSD_PIC_RMEM), no group callback, and while MI's display attr
+     * does carry an invert sub-struct, rss_osd_region_t has no field to
+     * drive it, so claiming the capability would promise something raptor
+     * cannot ask for.
      *
      * max_fs_channels is 4 because a raptor framesource channel is a VPE
      * output port (src/star/hal_framesource.c) and a VPE channel has four
@@ -936,6 +947,11 @@ const rss_hal_caps_t g_hal_caps = {
      * four ports accept MI_VPE_SetPortMode at 640x360 NV12. */
     .max_enc_channels = 8,
     .max_fs_channels = 4,
+    /* Keep in step with STAR_OSD_REGION_MAX in src/star/star_state.h.
+     * Not referenced symbolically because this file is compiled for every
+     * platform and must not pull in the MI headers. */
+    .max_osd_regions = 16,
+    .max_osd_groups = 4,
 };
 
 #else
