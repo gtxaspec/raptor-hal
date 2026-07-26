@@ -28,6 +28,7 @@
 
 #include "star_state.h"
 
+#include <ctype.h>
 #include <stdarg.h>
 #include <syslog.h>
 #include <unistd.h>
@@ -145,6 +146,189 @@ i6_common_pixfmt star_vif_pixfmt(const i6_snr_plane *plane)
 }
 
 /*
+ * star_sensor_name_matches -- "is the config talking about this sensor?"
+ *
+ * Compared by containment after lowercasing, not by equality. MI reports
+ * whatever case the driver author wrote ("GC4653"), config files are
+ * conventionally lowercase, and either side may or may not carry an interface
+ * suffix, so equality would produce false alarms far more often than it would
+ * catch a genuinely wrong config.
+ */
+static bool star_sensor_name_matches(const char *cfg_name, const char *drv_name)
+{
+    char a[48], b[48];
+    size_t i;
+
+    for (i = 0; i + 1 < sizeof(a) && cfg_name[i]; i++)
+        a[i] = (char)tolower((unsigned char)cfg_name[i]);
+    a[i] = '\0';
+    for (i = 0; i + 1 < sizeof(b) && drv_name[i]; i++)
+        b[i] = (char)tolower((unsigned char)drv_name[i]);
+    b[i] = '\0';
+
+    if (!a[0] || !b[0])
+        return true; /* nothing to contradict */
+
+    return strstr(b, a) != NULL || strstr(a, b) != NULL;
+}
+
+/*
+ * star_sensor_detect -- name the loaded sensor driver without touching MI.
+ *
+ * MI reports the sensor name in i6_snr_plane.sensName, but only after
+ * MI_SNR_Enable, and a daemon needs the name earlier than that: it builds the
+ * config it hands to hal_init, and on Ingenic that config is what tells IMP
+ * which sensor to talk to. So this reads what the kernel has already published
+ * instead, and is the one op valid before init.
+ *
+ * On SigmaStar the sensor is a kernel module, insmod'd as sensor_<name>_mipi
+ * (or _dvp), so /proc/modules already carries the answer:
+ *
+ *     sensor_gc4653_mipi 20480 0 - Live 0xbf000000
+ *
+ * The `sensor_` prefix is required rather than optional. Matching any module
+ * whose name merely contains something plausible would eventually pick up an
+ * unrelated module on somebody's board, and the failure mode -- confidently
+ * reporting the wrong sensor -- is worse than reporting none and letting
+ * `[sensor] name` in the config settle it.
+ */
+static int star_sensor_detect_from(const char *path, char *buf, size_t len)
+{
+    FILE *fp;
+    char line[256];
+    char module[64] = "";
+    bool found = false;
+
+    if (!buf || len == 0)
+        return RSS_ERR_INVAL;
+
+    fp = fopen(path, "r");
+    if (!fp) {
+        HAL_LOG_WARN("sensor detect: %s: %s", path, strerror(errno));
+        return RSS_ERR_IO;
+    }
+
+    while (!found && fgets(line, sizeof(line), fp)) {
+        char *name = line;
+        char *end;
+        size_t n;
+
+        /* First field is the module name. */
+        end = strpbrk(name, " \t\n");
+        if (end)
+            *end = '\0';
+
+        if (strncmp(name, "sensor_", 7) != 0)
+            continue;
+        snprintf(module, sizeof(module), "%s", name); /* keep for the log */
+        name += 7;
+        if (!*name)
+            continue;
+
+        /* Trim the interface suffix the driver names carry. */
+        n = strlen(name);
+        if (n > 5 && strcmp(name + n - 5, "_mipi") == 0)
+            n -= 5;
+        else if (n > 4 && strcmp(name + n - 4, "_dvp") == 0)
+            n -= 4;
+        if (n == 0)
+            continue;
+
+        if (n >= len) {
+            HAL_LOG_WARN("sensor detect: name \"%.*s\" needs %zu bytes, caller gave %zu",
+                         (int)n, name, n + 1, len);
+            break;
+        }
+        memcpy(buf, name, n);
+        buf[n] = '\0';
+        found = true;
+    }
+
+    fclose(fp);
+
+    if (!found) {
+        HAL_LOG_WARN("sensor detect: no sensor_*.ko listed in %s", path);
+        return RSS_ERR_NOENT;
+    }
+
+    /* Both names, so a mis-trimmed module is obvious from the log alone. */
+    HAL_LOG_INFO("sensor detect: \"%s\" (module %s in %s)", buf, module, path);
+    return RSS_OK;
+}
+
+static int hal_sensor_detect(void *ctx, char *buf, size_t len)
+{
+    /*
+     * Deliberately does not go through star_state(): this op is legal before
+     * init, when there is no MI state to consult, and it needs none.
+     */
+    if (!ctx)
+        return RSS_ERR_INVAL;
+    return star_sensor_detect_from("/proc/modules", buf, len);
+}
+
+/*
+ * star_sensor_pick_mode -- choose among the modes the sensor driver enumerates.
+ *
+ * Index 0 is the native mode and the default. A config that asks for a
+ * specific geometry gets an exact match on the mode's output dimensions; fps
+ * only breaks ties, because MI_SNR_SetFps programs the rate separately within
+ * a mode's [minFps, maxFps] range, so a mode whose range merely contains the
+ * requested rate is a perfectly good answer.
+ *
+ * An unmatched request warns and falls back to native. The mode list belongs
+ * to the sensor driver, and refusing to start because raptor.conf names a
+ * resolution this sensor lacks would be a worse outcome than starting at its
+ * native one and saying so plainly.
+ */
+static unsigned char star_sensor_pick_mode(star_state_t *st, const rss_sensor_config_t *cfg,
+                                           unsigned int count)
+{
+    unsigned int want_w = cfg->width;
+    unsigned int want_h = cfg->height;
+    unsigned char best = 0;
+    bool have_best = false;
+    unsigned int i;
+
+    /* fps alone does not select a mode -- it is programmed within whatever
+     * mode is chosen, further down in star_sensor_bringup. */
+    if (!want_w || !want_h)
+        return 0;
+
+    /* MI indexes modes with an unsigned char; nothing real comes close. */
+    if (count > 255)
+        count = 255;
+
+    for (i = 0; i < count; i++) {
+        i6_snr_res res;
+
+        if (st->snr.fnGetResolution(STAR_SNR_INDEX, (unsigned char)i, &res))
+            continue;
+        if (res.output.width != want_w || res.output.height != want_h)
+            continue;
+
+        /* Exact geometry. Prefer a mode that can also run the wanted rate. */
+        if (!have_best) {
+            best = (unsigned char)i;
+            have_best = true;
+        }
+        if (cfg->fps && cfg->fps >= res.minFps && cfg->fps <= res.maxFps) {
+            best = (unsigned char)i;
+            break;
+        }
+    }
+
+    if (!have_best) {
+        HAL_LOG_WARN("sensor: no mode matches the requested %ux%u; using native mode 0",
+                     want_w, want_h);
+        return 0;
+    }
+
+    HAL_LOG_INFO("sensor: mode %u matches the requested %ux%u", best, want_w, want_h);
+    return best;
+}
+
+/*
  * star_sensor_bringup -- select a mode, start the sensor, read back what it is.
  *
  * Sequence follows both references: SetPlaneMode -> QueryResCount ->
@@ -152,12 +336,11 @@ i6_common_pixfmt star_vif_pixfmt(const i6_snr_plane *plane)
  *
  * Two deliberate choices:
  *
- * Geometry comes from the sensor, not from a constant. hal_init has no
- * geometry in its arguments (rss_sensor_config_t carries I2C and GPIO
- * details only), so the native mode is the only thing it *can* mean, and
- * for GC4653 there is exactly one. That is not the configuration plumbing
- * 2e owns -- choosing *among* modes is -- and it avoids a hardcoded 2560x1440
- * that would silently mislead on any other sensor.
+ * Geometry comes from the sensor, not from a constant: the mode list is read
+ * from the driver at runtime, and the config can only *select* among what the
+ * driver offers, never assert a size. So there is no hardcoded 2560x1440 to
+ * mislead on a different sensor, and a board with a multi-mode sensor is
+ * configurable without a table in here.
  *
  * The descriptors are read back *after* Enable, unlike divinus. The sensor
  * driver's pCus_sensor_init runs on Enable, and before it does, pad.intfAttr
@@ -167,7 +350,8 @@ i6_common_pixfmt star_vif_pixfmt(const i6_snr_plane *plane)
  * because the single field it uses from intfAttr, mipi.input, is 0 for this
  * sensor anyway. waybeam queries after Enable (sensor_select.c:485); so do we.
  */
-static int star_sensor_bringup(star_state_t *st, int mirror, int flip)
+static int star_sensor_bringup(star_state_t *st, const rss_sensor_config_t *cfg, int mirror,
+                               int flip)
 {
     unsigned int count = 0;
     int ret;
@@ -186,8 +370,7 @@ static int star_sensor_bringup(star_state_t *st, int mirror, int flip)
         return RSS_ERR_NOENT;
     }
 
-    /* Native mode. 2e picks among modes; there is only one here. */
-    st->res_index = 0;
+    st->res_index = star_sensor_pick_mode(st, cfg, count);
     ret = st->snr.fnGetResolution(STAR_SNR_INDEX, st->res_index, &st->res);
     if (ret) {
         HAL_LOG_ERR("MI_SNR_GetRes(%u) failed: %d", st->res_index, ret);
@@ -201,17 +384,40 @@ static int star_sensor_bringup(star_state_t *st, int mirror, int flip)
     }
 
     /*
-     * Record the rate as well as programming it: MI_SYS_BindChnPort2
-     * takes source and destination frame rates, so both the VIF->VPE
-     * bind below and 2d's VPE->VENC bind need to know it, and MI offers
-     * no way to read back what the sensor is running at.
+     * Frame rate: honour the config's request within the mode's range, else
+     * run the mode as fast as it goes.
+     *
+     * `[sensor] fps` reaches Ingenic through isp_set_sensor_fps, which MI has
+     * no equivalent of -- MI_SNR_SetFps is part of sensor bring-up and is
+     * called once, here, before Enable. So this is where that setting has to
+     * be applied on this backend, and without it the key would silently do
+     * nothing.
+     *
+     * A request outside [minFps, maxFps] is clamped rather than refused, and
+     * says so: the range belongs to the selected mode, and dropping to a
+     * working rate beats failing to start.
+     *
+     * The rate is recorded as well as programmed because MI_SYS_BindChnPort2
+     * takes source and destination frame rates -- both the VIF->VPE bind below
+     * and the VPE->VENC bind need it -- and MI offers no way to read back what
+     * the sensor is actually running at.
      */
     if (st->res.maxFps) {
-        ret = st->snr.fnSetFramerate(STAR_SNR_INDEX, st->res.maxFps);
+        unsigned int want = cfg->fps ? cfg->fps : st->res.maxFps;
+
+        if (want > st->res.maxFps || (st->res.minFps && want < st->res.minFps)) {
+            unsigned int clamped = want > st->res.maxFps ? st->res.maxFps : st->res.minFps;
+            HAL_LOG_WARN("sensor: requested %u fps is outside the mode's %u-%u range; "
+                         "using %u",
+                         want, st->res.minFps, st->res.maxFps, clamped);
+            want = clamped;
+        }
+
+        ret = st->snr.fnSetFramerate(STAR_SNR_INDEX, want);
         if (ret)
-            HAL_LOG_WARN("MI_SNR_SetFps(%u) failed: %d", st->res.maxFps, ret);
+            HAL_LOG_WARN("MI_SNR_SetFps(%u) failed: %d", want, ret);
         else
-            st->fps = st->res.maxFps;
+            st->fps = want;
     }
 
     /* Orientation before Enable, so the driver's init picks it up. */
@@ -243,10 +449,23 @@ static int star_sensor_bringup(star_state_t *st, int mirror, int flip)
         return RSS_ERR_IO;
     }
 
-    HAL_LOG_INFO("sensor \"%.32s\": %ux%u, %u-%u fps, bayer %d, precision %d, pixFmt %d",
-                 st->plane.sensName, st->plane.capt.width, st->plane.capt.height,
-                 st->res.minFps, st->res.maxFps, st->plane.bayer, st->plane.precision,
-                 st->plane.pixFmt);
+    HAL_LOG_INFO("sensor \"%.32s\": mode %u \"%.32s\", %ux%u, %u-%u fps, bayer %d, "
+                 "precision %d, pixFmt %d",
+                 st->plane.sensName, st->res_index, st->res.desc, st->plane.capt.width,
+                 st->plane.capt.height, st->res.minFps, st->res.maxFps, st->plane.bayer,
+                 st->plane.precision, st->plane.pixFmt);
+
+    /*
+     * MI's own idea of the sensor name is authoritative and only available
+     * here, after Enable. If the config named a different one, the config is
+     * stale or was copied from another board -- worth saying, but not worth
+     * refusing to start over, since MI addresses the sensor by index and the
+     * name it was given never reached the hardware either way.
+     */
+    if (cfg->name[0] && !star_sensor_name_matches(cfg->name, st->plane.sensName))
+        HAL_LOG_WARN("sensor: config says \"%.20s\" but the driver reports \"%.32s\"; "
+                     "the config name is advisory on this backend and was not used",
+                     cfg->name, st->plane.sensName);
 
     return RSS_OK;
 }
@@ -538,7 +757,7 @@ static int hal_init(void *ctx, const rss_multi_sensor_config_t *cfg)
     }
     st->sys_inited = true;
 
-    ret = star_sensor_bringup(st, c->hflip_state[0], c->vflip_state[0]);
+    ret = star_sensor_bringup(st, &c->sensors[0], c->hflip_state[0], c->vflip_state[0]);
     if (ret)
         goto err_teardown;
 
@@ -851,6 +1070,35 @@ static const rss_hal_caps_t *hal_get_caps(void *ctx)
     return &c->caps;
 }
 
+#ifdef HAL_MODULE_VIDEO
+/*
+ * hal_isp_get_sensor_attr -- the sensor's active geometry.
+ *
+ * Reports what MI_SNR handed back for the mode actually selected, which is why
+ * this is worth having even though a daemon could read a resolution out of its
+ * own config: the config only *requests*, and an unmatched request falls back
+ * to native. This is the answer after that negotiation.
+ *
+ * Post-init only, unlike sensor_detect -- the plane descriptor is not populated
+ * until MI_SNR_Enable has run.
+ */
+static int hal_isp_get_sensor_attr(void *ctx, uint32_t *width, uint32_t *height)
+{
+    star_state_t *st = star_state(ctx);
+
+    if (!st || !width || !height)
+        return RSS_ERR_INVAL;
+    /* Same convention the encoder ops use for "asked about something that
+     * does not exist yet": there is no RSS_ERR_STATE. */
+    if (!st->snr_enabled)
+        return RSS_ERR_NOENT;
+
+    *width = st->plane.capt.width;
+    *height = st->plane.capt.height;
+    return RSS_OK;
+}
+#endif /* HAL_MODULE_VIDEO */
+
 /* ================================================================
  * OPS VTABLE
  *
@@ -863,6 +1111,7 @@ static const rss_hal_ops_t g_ops = {
     .init = hal_init,
     .deinit = hal_deinit,
     .get_caps = hal_get_caps,
+    .sensor_detect = hal_sensor_detect,
 
     /* System utilities */
     .sys_get_version = hal_sys_get_version,
@@ -870,6 +1119,11 @@ static const rss_hal_ops_t g_ops = {
     .sys_rebase_timestamp = hal_sys_rebase_timestamp,
 
 #ifdef HAL_MODULE_VIDEO
+    /* ISP -- the only op so far. The rest of the ISP surface (tuning,
+     * exposure, white balance) is phase 3; CUS3A runs the 3A loops on its
+     * own in the meantime. */
+    .isp_get_sensor_attr = hal_isp_get_sensor_attr,
+
     /* Framesource -- VPE output ports (src/star/hal_framesource.c).
      * The ops MI has no equivalent for are listed, with reasons, in
      * that file's header comment. */
