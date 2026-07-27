@@ -12,6 +12,7 @@
 #include "star/hal_isp.c"
 
 #include <assert.h>
+#include <stdarg.h>
 #include <stdio.h>
 
 /*
@@ -35,6 +36,37 @@ static void quiet_log(int level, const char *file, int line, const char *fmt, ..
     (void)file;
     (void)line;
     (void)fmt;
+}
+
+/*
+ * Some behaviour of this backend IS a log line -- the AE lane
+ * identification exists only to be read off a board log -- so one test
+ * needs to see what was written rather than just that nothing crashed.
+ */
+static char g_log[8][256];
+static unsigned int g_log_lines;
+
+static void capture_log(int level, const char *file, int line, const char *fmt, ...)
+{
+    va_list ap;
+
+    (void)level;
+    (void)file;
+    (void)line;
+    if (g_log_lines >= 8)
+        return;
+    va_start(ap, fmt);
+    vsnprintf(g_log[g_log_lines], sizeof(g_log[0]), fmt, ap);
+    va_end(ap);
+    g_log_lines++;
+}
+
+static const char *log_containing(const char *needle)
+{
+    for (unsigned int i = 0; i < g_log_lines; i++)
+        if (strstr(g_log[i], needle))
+            return g_log[i];
+    return NULL;
 }
 
 rss_hal_log_func_t rss_hal_log_fn = quiet_log;
@@ -461,92 +493,20 @@ static void test_recorded_values_survive_a_reload(void)
 }
 
 /*
- * CUS3A: the flags MI reads are three bytes, and this test has to look at
- * them as bytes.
- *
- * This is the bug that shipped and ran on the board for two days. The
- * block was declared `int params[13]` and "AWB on" was written as
- * params[1] = 1 -- which sets byte *4*. Byte 1, the only byte
- * MI_ISP_CUS3A_Enable's `ldrb r3, [r3, #1]` reads for AWB, stayed zero, so
- * the pipeline ran with no auto white balance and a magenta cast that
- * looked exactly like a missing tuning file.
- *
- * Note what would *not* have caught it: any assertion phrased in the
- * struct's own field names, because the struct itself was the thing that
- * was wrong. So this reads the raw bytes at the offsets taken from the
- * disassembly, which is the only description of this block MI agrees with.
- */
-static unsigned int cus3a_calls;
-static unsigned char cus3a_seen[4][3];
-
-static int fake_cus3a(int channel, i6_isp_p3a *params)
-{
-    const unsigned char *raw = (const unsigned char *)params;
-
-    (void)channel;
-    if (cus3a_calls < 4) {
-        cus3a_seen[cus3a_calls][0] = raw[0];
-        cus3a_seen[cus3a_calls][1] = raw[1];
-        cus3a_seen[cus3a_calls][2] = raw[2];
-    }
-    cus3a_calls++;
-    return 0;
-}
-
-static void test_cus3a_enables_awb_in_the_byte_mi_reads(void)
-{
-    star_state_t st;
-
-    memset(&st, 0, sizeof(st));
-    st.isp.fnCus3aEnable = fake_cus3a;
-    cus3a_calls = 0;
-    memset(cus3a_seen, 0xff, sizeof(cus3a_seen));
-
-    star_isp_enable_3a(&st);
-
-    CHECK(cus3a_calls == 2, "CUS3A restart is two calls, got %u", cus3a_calls);
-
-    /* AE alone, then AE+AWB. AF off in both: fixed-focus modules. */
-    CHECK(cus3a_seen[0][0] == 1, "call 1 byte 0 (ae) is 1, got %u", cus3a_seen[0][0]);
-    CHECK(cus3a_seen[0][1] == 0, "call 1 byte 1 (awb) is 0, got %u", cus3a_seen[0][1]);
-    CHECK(cus3a_seen[1][0] == 1, "call 2 byte 0 (ae) is 1, got %u", cus3a_seen[1][0]);
-    CHECK(cus3a_seen[1][1] == 1,
-          "call 2 byte 1 (awb) is 1 -- the byte MI's ldrb #1 reads, got %u", cus3a_seen[1][1]);
-    CHECK(cus3a_seen[0][2] == 0 && cus3a_seen[1][2] == 0, "af stays off, got %u and %u",
-          cus3a_seen[0][2], cus3a_seen[1][2]);
-
-    /* The offsets themselves, because the host build suppresses the
-     * _Static_asserts in i6_isp.h that guard them on ARM. */
-    CHECK(offsetof(i6_isp_p3a, ae) == 0, "ae is byte 0");
-    CHECK(offsetof(i6_isp_p3a, awb) == 1, "awb is byte 1");
-    CHECK(offsetof(i6_isp_p3a, af) == 2, "af is byte 2");
-
-    /* An unresolved symbol is a no-op, not a crash. */
-    st.isp.fnCus3aEnable = NULL;
-    star_isp_enable_3a(&st);
-    CHECK(cus3a_calls == 2, "no symbol means no calls, got %u", cus3a_calls);
-}
-
-/*
- * The tuning load must not touch 3A unless explicitly asked to.
+ * The tuning load must not touch 3A at all.
  *
  * Board evidence 2026-07-26: stopping userspace 3A around the load and
  * restarting CUS3A afterwards left auto white balance enabled-but-dead
  * (MI_ISP_DisableUserspace3A unregisters the vendor algorithms;
  * MI_ISP_CUS3A_Enable only sets flags). divinus loads the binary and
- * leaves 3A running, and divinus has good colour on this board. This test
- * pins the default and the RSS_ISP_3A_HANDOFF escape hatch, because the
- * difference between them is invisible in the code at the call site and
- * costs a board trip to discover.
+ * leaves 3A running, and divinus has good colour on this board.
+ * Board-verified under artificial light 2026-07-27, after which the
+ * RSS_ISP_3A_HANDOFF hatch and the CUS3A binding were removed outright --
+ * so what this now pins is that the load calls nothing but the load. The
+ * byte-width assertions that used to live here went with i6_isp_p3a; the
+ * disassembly they encoded is in 4141c43.
  */
-static unsigned int disable3a_calls, loadcfg_calls;
-
-static int fake_disable3a(int channel)
-{
-    (void)channel;
-    disable3a_calls++;
-    return 0;
-}
+static unsigned int loadcfg_calls;
 
 static int fake_loadcfg(int channel, char *path, unsigned int key)
 {
@@ -575,14 +535,12 @@ static void tune_once(star_state_t *st)
     snprintf(st->iq_file, sizeof(st->iq_file), "/etc/sensors/gc4653.bin");
     st->isp.fnGetParaInitStatus = fake_parainit_ready;
     st->isp.fnLoadChannelConfig = fake_loadcfg;
-    st->isp.fnDisableUserspace3A = fake_disable3a;
-    st->isp.fnCus3aEnable = fake_cus3a;
 
-    disable3a_calls = loadcfg_calls = cus3a_calls = 0;
+    loadcfg_calls = 0;
     star_isp_tune_when_ready(st, false);
 }
 
-static void test_tuning_load_leaves_3a_alone_by_default(void)
+static void test_tuning_load_leaves_3a_alone(void)
 {
     star_state_t st;
     size_t i;
@@ -590,31 +548,13 @@ static void test_tuning_load_leaves_3a_alone_by_default(void)
     for (i = 0; i < IQ_PARAM_COUNT; i++)
         g_iq[i].has_pending = false;
 
-    unsetenv("RSS_ISP_3A_HANDOFF");
     tune_once(&st);
     CHECK(loadcfg_calls == 1, "the binary is loaded, got %u calls", loadcfg_calls);
     CHECK(st.isp_tuned, "the tuned latch is set");
-    CHECK(disable3a_calls == 0, "3A must not be disabled by default, got %u calls",
-          disable3a_calls);
-    CHECK(cus3a_calls == 0, "CUS3A must not be restarted by default, got %u calls", cus3a_calls);
 
-    /* And the hatch has to actually reach the old sequence. */
-    setenv("RSS_ISP_3A_HANDOFF", "1", 1);
-    tune_once(&st);
-    CHECK(loadcfg_calls == 1, "the binary is still loaded, got %u calls", loadcfg_calls);
-    CHECK(disable3a_calls == 1, "the hatch disables 3A once, got %u calls", disable3a_calls);
-    CHECK(cus3a_calls == 2, "the hatch restarts CUS3A in two calls, got %u calls", cus3a_calls);
-    CHECK(cus3a_seen[1][1] == 1, "and still enables AWB in byte 1, got %u", cus3a_seen[1][1]);
-
-    /* Anything other than "1" is off, so an empty or stray value cannot
-     * silently re-enable a sequence that broke white balance. */
-    setenv("RSS_ISP_3A_HANDOFF", "", 1);
-    tune_once(&st);
-    CHECK(disable3a_calls == 0, "an empty value is off, got %u calls", disable3a_calls);
-    setenv("RSS_ISP_3A_HANDOFF", "0", 1);
-    tune_once(&st);
-    CHECK(disable3a_calls == 0, "\"0\" is off, got %u calls", disable3a_calls);
-    unsetenv("RSS_ISP_3A_HANDOFF");
+    /* The hatch is gone, so neither symbol is bound any more. The test
+     * that it cannot be reached is that i6_isp_impl has nowhere to put
+     * one: this file would not compile if the fields came back unused. */
 
     for (i = 0; i < IQ_PARAM_COUNT; i++)
         g_iq[i].has_pending = false;
@@ -794,6 +734,94 @@ static void test_exposure_luma_from_either_layout(void)
 
     free(g_ae_stats);
     g_ae_stats = NULL;
+}
+
+/*
+ * The AE lane-identification line must not be spent on a frame that
+ * cannot answer the question it exists to ask.
+ *
+ * This has now cost two board runs. The first logged r=0 g=0 b=0 y=0 from
+ * an ISP that had just been reset to its defaults; the guard added for
+ * that only rejected all-zero, so the second logged
+ * r=253 g=252 b=253 y=253 -- a daylight scene clipped against the untuned
+ * 300us shutter floor. Neither distinguishes any lane order from any
+ * other, and both consumed the one shot for the process.
+ *
+ * The line is only worth writing on a frame with colour in it, and then
+ * it should state a verdict rather than four numbers for someone to
+ * weigh up by eye: with a genuine r,g,b,y layout, lane 3 is the BT.601
+ * sum of the first three.
+ */
+static void fill_lanes(unsigned char *cell, unsigned int cells, unsigned char r, unsigned char g,
+                       unsigned char b, unsigned char y)
+{
+    memset(g_ae_stats, 0xEE, sizeof(*g_ae_stats));
+
+    for (unsigned int i = 0; i < cells; i++) {
+        cell[i * I6_ISP_AE_CELL_SZ + 0] = r;
+        cell[i * I6_ISP_AE_CELL_SZ + 1] = g;
+        cell[i * I6_ISP_AE_CELL_SZ + 2] = b;
+        cell[i * I6_ISP_AE_CELL_SZ + I6_ISP_AE_CELL_Y] = y;
+    }
+}
+
+static void lane_probe(unsigned char r, unsigned char g, unsigned char b, unsigned char y)
+{
+    rss_hal_ctx_t ctx;
+    star_state_t st;
+    rss_exposure_t exp;
+
+    exposure_setup(&ctx, &st);
+    fill_lanes(g_ae_stats->lead.cell, 8, r, g, b, y);
+    g_ae_stats->lead.blkX = 4;
+    g_ae_stats->lead.blkY = 2;
+
+    g_log_lines = 0;
+    rss_hal_log_fn = capture_log;
+    CHECK(hal_isp_get_exposure(&ctx, &exp) == RSS_OK, "the probe frame must read");
+    rss_hal_log_fn = quiet_log;
+}
+
+static void test_ae_lane_identification_waits_for_a_frame_that_answers(void)
+{
+    g_ae_stats = malloc(sizeof(*g_ae_stats));
+    assert(g_ae_stats);
+    star_ae_lanes_identified = false;
+
+    /* The two frames that actually happened. */
+    lane_probe(0, 0, 0, 0);
+    CHECK(!log_containing("AE lanes"), "an all-zero frame identifies nothing");
+    lane_probe(253, 252, 253, 253);
+    CHECK(!log_containing("AE lanes"), "a clipped frame identifies nothing");
+
+    /* And the one that was reported as "should be good enough": a neutral
+     * scene is unclipped and still cannot separate the lanes. */
+    lane_probe(46, 46, 44, 46);
+    CHECK(!log_containing("AE lanes"), "a neutral frame identifies nothing");
+    CHECK(!star_ae_lanes_identified, "none of those may consume the one shot");
+
+    /* A coloured frame whose lane 3 really is BT.601 luma:
+     * (299*180 + 587*90 + 114*40) / 1000 = 111. */
+    lane_probe(180, 90, 40, 111);
+    CHECK(log_containing("AE lanes") != NULL, "a coloured frame must report");
+    CHECK(log_containing("order is confirmed") != NULL, "and must confirm the r,g,b,y order: %s",
+          log_containing("AE lanes") ? log_containing("AE lanes") : "(nothing logged)");
+
+    /* One shot: the answer does not change, so neither does the log. */
+    lane_probe(180, 90, 40, 111);
+    CHECK(!log_containing("AE lanes"), "the line is once per process");
+
+    /* A lane 3 that is not luma has to say so rather than be read as a
+     * confirmation. 40 is the b lane, i.e. the order b,g,r,y. */
+    star_ae_lanes_identified = false;
+    lane_probe(180, 90, 40, 40);
+    CHECK(log_containing("WRONG -- lane 3 is not luma") != NULL,
+          "a non-luma lane 3 must be called out: %s",
+          log_containing("AE lanes") ? log_containing("AE lanes") : "(nothing logged)");
+
+    free(g_ae_stats);
+    g_ae_stats = NULL;
+    star_ae_lanes_identified = false;
 }
 
 static void test_exposure_refuses_an_unconfirmed_layout(void)
@@ -1214,11 +1242,11 @@ int main(void)
     test_pending_queue();
     test_orientation_carries_both_axes();
     test_recorded_values_survive_a_reload();
-    test_cus3a_enables_awb_in_the_byte_mi_reads();
-    test_tuning_load_leaves_3a_alone_by_default();
+    test_tuning_load_leaves_3a_alone();
     test_exposure_waits_for_the_isp();
     test_exposure_gain_is_x1024_fixed_point();
     test_exposure_luma_from_either_layout();
+    test_ae_lane_identification_waits_for_a_frame_that_answers();
     test_exposure_refuses_an_unconfirmed_layout();
     test_bin_limits_snapshot_records_the_tuning();
     test_gain_ceiling_refuses_ingenic_units();

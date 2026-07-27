@@ -670,48 +670,6 @@ static int star_isp_wait_ready(star_state_t *st, unsigned int timeout_ms, bool v
 }
 
 /*
- * Restart the vendor 3A algorithms after the tuning binary has replaced
- * the tables underneath them. VPE already auto-starts CUS3A, so this is
- * a re-start, not a start.
- *
- * AE alone first, then AE+AWB: the order waybeam uses
- * (star6e_pipeline.c:270-284) and the order CUS3A's own bring-up follows.
- * AF stays off -- these are fixed-focus modules.
- *
- * The parameter block is three bytes, not three ints; getting that wrong
- * is what silently ran this pipeline without auto white balance. See
- * i6_isp_p3a for the disassembly that settles the field widths.
- */
-static void star_isp_enable_3a(star_state_t *st)
-{
-    i6_isp_p3a params;
-
-    if (!st->isp.fnCus3aEnable)
-        return;
-
-    memset(&params, 0, sizeof(params));
-    params.ae = 1;
-    if (st->isp.fnCus3aEnable(STAR_ISP_CHN, &params))
-        HAL_LOG_WARN("isp: CUS3A enable (AE) failed");
-
-    memset(&params, 0, sizeof(params));
-    params.ae = 1;
-    params.awb = 1;
-    if (st->isp.fnCus3aEnable(STAR_ISP_CHN, &params))
-        HAL_LOG_WARN("isp: CUS3A enable (AE+AWB) failed");
-
-    /*
-     * Worth its own line because the driver prints the flags it received,
-     * so the two are checkable against each other: MI's own
-     * "[MI_ISP_CUS3A_Enable] AE = 1, AWB = 1" beside this line is the
-     * proof white balance is running. An AWB = 0 there means the block's
-     * field widths have drifted again, and the picture will have a colour
-     * cast that looks exactly like a missing tuning file.
-     */
-    HAL_LOG_INFO("isp: CUS3A restarted with AE and AWB (AF off)");
-}
-
-/*
  * Work out which tuning binary to load.
  *
  * An explicit [sensor] iq_file wins. Otherwise the sensor's own name
@@ -1030,13 +988,12 @@ void star_isp_tune_when_ready(star_state_t *st, bool verbose)
 
     if (st->iq_file[0]) {
         /*
-         * THE 3A HANDOFF IS OFF BY DEFAULT, and that is the whole point.
+         * Load the binary and leave 3A alone, which is what divinus does
+         * -- it sleeps a second and loads (media.c:827) -- and divinus is
+         * the reference with known-good colour on this board.
          *
          * The code used to stop userspace 3A before the load and restart
          * CUS3A after it, copying waybeam (star6e_pipeline.c:270-284).
-         * divinus does neither -- it sleeps a second and loads
-         * (media.c:827) -- and divinus is the reference with known-good
-         * colour on this board.
          *
          * Board evidence 2026-07-26: with the handoff in place and
          * MI_ISP_CUS3A_Enable demonstrably passing AWB = 1 (the driver
@@ -1052,19 +1009,17 @@ void star_isp_tune_when_ready(star_state_t *st, bool verbose)
          * symbol, and waybeam's own 6E notes say not to call it on the
          * normal internal-AE path.
          *
-         * So: load the binary and leave 3A alone, which is both the
-         * smaller change and the one with a working precedent.
-         *
-         * RSS_ISP_3A_HANDOFF=1 restores the old sequence, so the two can
-         * be compared on hardware from one binary.
+         * That was diagnosed twice over. 19170e8 removed the handoff and
+         * was wrong about why the picture improved -- the real cause was
+         * the tuning tear-down this file now repairs -- so an
+         * RSS_ISP_3A_HANDOFF hatch stayed behind to compare the two
+         * sequences from one binary once the tear-down was dealt with.
+         * BOARD-VERIFIED 2026-07-27, under artificial light, on a build
+         * whose reload repair had fired: colour is correct with no
+         * handoff. The hatch and star_isp_enable_3a are gone with it. If
+         * some future board shows the cast, the sequence is described
+         * above and the code for it is in 19170e8.
          */
-        const char *want_handoff = getenv("RSS_ISP_3A_HANDOFF");
-        bool handoff = want_handoff && want_handoff[0] == '1';
-
-        if (handoff && st->isp.fnDisableUserspace3A &&
-            st->isp.fnDisableUserspace3A(STAR_ISP_CHN))
-            HAL_LOG_WARN("isp: MI_ISP_DisableUserspace3A failed; loading anyway");
-
         ret = st->isp.fnLoadChannelConfig(STAR_ISP_CHN, st->iq_file, STAR_IQ_LOAD_KEY);
         if (ret) {
             HAL_LOG_WARN("isp: loading %s failed: %d; the generic vendor tuning stays in "
@@ -1072,13 +1027,9 @@ void star_isp_tune_when_ready(star_state_t *st, bool verbose)
                          st->iq_file, ret);
             st->iq_file[0] = '\0';
         } else {
-            HAL_LOG_INFO("isp: loaded tuning file %s (3A %s)", st->iq_file,
-                         handoff ? "handed off and restarted (RSS_ISP_3A_HANDOFF)"
-                                 : "left running, as divinus does");
+            HAL_LOG_INFO("isp: loaded tuning file %s (3A left running, as divinus does)",
+                         st->iq_file);
         }
-
-        if (handoff)
-            star_isp_enable_3a(st);
     }
 
     /*
@@ -1694,6 +1645,25 @@ static uint32_t star_ae_total_gain(const i6_isp_ae_status *ae)
 }
 
 /*
+ * Thresholds for the one-shot lane-identification line below. A lane mean
+ * this close to the 255 ceiling is a clipped frame carrying no colour
+ * information; fewer than this many counts between the brightest and
+ * dimmest colour lane is a scene too neutral to tell any lane order from
+ * another. The Y tolerance is generous on purpose -- the AE grid is
+ * subsampled and its weights are the vendor's, so the check is meant to
+ * separate "lane 3 is luma" from "lane 3 is a colour channel", not to
+ * validate a colour matrix.
+ */
+#define STAR_AE_LANE_CLIP 240u
+#define STAR_AE_LANE_SPREAD 16u
+#define STAR_AE_LANE_Y_TOL 12u
+
+/* At file scope rather than inside the function so the host suite can
+ * clear it between cases; a one-shot latch is otherwise untestable except
+ * in whichever test happens to run first. */
+static bool star_ae_lanes_identified;
+
+/*
  * Mean of the AE grid's Y lane, or 0 if the layout cannot be confirmed.
  *
  * The confirmation is the point. i6_isp.h derives a 128x90 grid of
@@ -1715,6 +1685,7 @@ static uint32_t star_ae_luma(star_state_t *st, const i6_isp_ae_status *ae)
     unsigned int blk_y = ae->avgBlkY;
     unsigned int cells;
     uint64_t sum[I6_ISP_AE_CELL_SZ] = {0};
+    unsigned int mean[I6_ISP_AE_CELL_SZ];
     uint32_t luma;
     int ret;
 
@@ -1777,27 +1748,60 @@ static uint32_t star_ae_luma(star_state_t *st, const i6_isp_ae_status *ae)
 
     luma = (uint32_t)(sum[I6_ISP_AE_CELL_Y] / cells);
 
+    for (unsigned int lane = 0; lane < I6_ISP_AE_CELL_SZ; lane++)
+        mean[lane] = (unsigned int)(sum[lane] / cells);
+
     /*
-     * All four lane means, once. The cell layout is waybeam's r, g, b, y
-     * and nothing here proves which lane is Y; on a coloured scene the
-     * four means differ, and this line is what says whether lane 3 is
-     * behaving like luma. Cheap to compute in the same pass and worth
-     * far more than a debug build on a camera nobody is watching.
-     */
-    /*
-     * An all-zero sample settles nothing and must not consume the one
-     * shot. That is not hypothetical: on this board the probe fired in the
-     * window where the ISP had been reset back to its defaults and logged
-     * r=0 g=0 b=0 y=0, spending the one line that was supposed to identify
-     * the lanes on a frame that had no statistics in it at all.
+     * Where the cells sit, once. Any frame with data in it settles that,
+     * so the only guard needed is against an all-zero sample -- which is
+     * not hypothetical: this fired in the window where the ISP had been
+     * reset to its defaults and logged r=0 g=0 b=0 y=0.
      */
     if (!layout_logged && (sum[0] || sum[1] || sum[2] || sum[3])) {
         HAL_LOG_INFO("isp: AE grid %ux%u, cells at offset %u, lane means "
-                     "r=%llu g=%llu b=%llu y=%llu (y is the one used)",
-                     blk_x, blk_y, cell == stats->lead.cell ? 8u : 0u,
-                     (unsigned long long)(sum[0] / cells), (unsigned long long)(sum[1] / cells),
-                     (unsigned long long)(sum[2] / cells), (unsigned long long)(sum[3] / cells));
+                     "r=%u g=%u b=%u y=%u (y is the one used)",
+                     blk_x, blk_y, cell == stats->lead.cell ? 8u : 0u, mean[0], mean[1], mean[2],
+                     mean[3]);
         layout_logged = true;
+    }
+
+    /*
+     * WHICH lane is which is a separate question, and the placement line
+     * cannot answer it. The board has now spent two of those on frames
+     * that could not: r=0 g=0 b=0 y=0 from the reset ISP, then
+     * r=253 g=252 b=253 y=253 from a daylight scene pinned against the
+     * untuned 300us shutter floor. Both are degenerate the same way --
+     * with no spread between the lanes, every lane order fits.
+     *
+     * So this waits for a frame that discriminates, however many polls it
+     * takes (ric polls once a second, the flag is per process, waiting is
+     * free), and then checks the claim instead of leaving it to be
+     * eyeballed. If the layout really is waybeam's r,g,b,y then lane 3 is
+     * the BT.601 weighted sum of the first three -- a far sharper test
+     * than "the numbers differ", since a swapped order or a fourth colour
+     * channel misses it by tens of counts.
+     */
+    if (!star_ae_lanes_identified && mean[0] < STAR_AE_LANE_CLIP && mean[1] < STAR_AE_LANE_CLIP &&
+        mean[2] < STAR_AE_LANE_CLIP) {
+        unsigned int lo = mean[0], hi = mean[0], y601, err;
+
+        for (unsigned int lane = 1; lane < 3; lane++) {
+            if (mean[lane] < lo)
+                lo = mean[lane];
+            if (mean[lane] > hi)
+                hi = mean[lane];
+        }
+
+        y601 = (299u * mean[0] + 587u * mean[1] + 114u * mean[2]) / 1000u;
+        err = mean[3] > y601 ? mean[3] - y601 : y601 - mean[3];
+
+        if (hi - lo >= STAR_AE_LANE_SPREAD) {
+            HAL_LOG_INFO("isp: AE lanes r=%u g=%u b=%u y=%u across %u counts of colour spread; "
+                         "BT.601 luma of the first three is %u, so the r,g,b,y order is %s",
+                         mean[0], mean[1], mean[2], mean[3], hi - lo, y601,
+                         err <= STAR_AE_LANE_Y_TOL ? "confirmed" : "WRONG -- lane 3 is not luma");
+            star_ae_lanes_identified = true;
+        }
     }
 
     free(stats);
