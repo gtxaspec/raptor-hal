@@ -30,7 +30,11 @@ CFLAGS = -Wall -Wextra -std=c11 -D_GNU_SOURCE -g -fsanitize=$(SAN) \
 	 -I../src -I../include -I../../raptor-common/include
 LDFLAGS = -fsanitize=$(SAN) -lpthread
 
-SUITES = osd isp audio
+# gpio is the odd one out: src/hal_gpio.c is platform-independent sysfs
+# rather than a star/ file. It is here because phase 6 (IR-cut day/night)
+# rests on it and its behaviour is which file gets written in what order,
+# which a host can check once the sysfs root is redirected.
+SUITES = osd isp audio gpio
 BINS = $(addprefix t_,$(SUITES))
 
 test: $(addprefix test-,$(SUITES))

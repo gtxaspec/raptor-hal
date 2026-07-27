@@ -83,15 +83,6 @@
  * and rvd treats all of these as advisory. Left unimplemented on
  * purpose:
  *
- *   isp_get_exposure      MI exposes no current-exposure query. There is
- *                         AE_GetManualExpo (the manual *setting*, not
- *                         what the AE converged on), AE_GetExposureLimit
- *                         (bounds), and raw histogram stats. None answer
- *                         "what is the shutter right now", so the op
- *                         would have to fabricate a number that phase 6
- *                         would then use for IR-cut decisions.
- *                         AE_GetAeHwAvgStats is the honest starting
- *                         point when phase 6 needs a luma signal.
  *   isp_set_dpc_strength  MI's DynamicDP manual field is one bit. A
  *                         0..255 strength knob does not map onto it, and
  *                         pretending otherwise reads as support for a
@@ -1349,6 +1340,208 @@ int hal_isp_get_max_again(void *ctx, uint32_t *gain)
 int hal_isp_get_max_dgain(void *ctx, uint32_t *gain)
 {
     return star_isp_get_gain_limit(ctx, false, gain);
+}
+
+/*
+ * Exposure readback -- what the AE converged on, for ric's day/night
+ * detection.
+ *
+ * This op was in the "left unimplemented on purpose" list above until
+ * phase 6, on the grounds that MI exposes no current-exposure query. That
+ * was wrong about one symbol: AE_GetManualExpo returns the manual
+ * *setting* and AE_GetExposureLimit the bounds, but CUS3A_GetAeStatus
+ * returns what the AE actually converged on.
+ *
+ * Two calls, and the second one is optional. MI_ISP_CUS3A_GetAeStatus
+ * gives shutter and both gains, which is a complete ambient-light signal
+ * on its own: a scene going dark drives the shutter and then the gain up,
+ * and ric's night->day rule compares gain against its own night baseline
+ * so it needs no absolute scale. MI_ISP_AE_GetAeHwAvgStats adds scene
+ * luma, which ric's day->night rule prefers because IR illumination does
+ * not inflate it the way it inflates gain.
+ *
+ * Deliberately not filled: ev (an Ingenic GetEVAttr concept with no MI
+ * equivalent) and wb_rgain/wb_bgain (MI_ISP_AWB_GetAwbHwAvgStats exists,
+ * but its 128x90 grid is not the two global gains the field wants).
+ * Leaving them zero is what tells ric the photo trigger has nothing to
+ * work with -- see the zero convention below.
+ *
+ * ================================================================
+ * ZERO MEANS "NOT AVAILABLE", AND THAT IS A CONTRACT, NOT A HABIT
+ *
+ * The Ingenic backend already works this way: when GetAeStatistics
+ * fails it warns once and leaves ae_luma at 0 so that "day/night falls
+ * back to gain-only behavior" (src/hal_isp.c). A backend that cannot
+ * answer for a field leaves it zero, and the consumer must read zero as
+ * silence rather than as a reading.
+ *
+ * It matters most for luma, where the two readings sit at opposite ends:
+ * a live sensor never reports a mean luma of exactly 0, and ric's
+ * day->night test is `ae_luma < night_luma`. So a zero read as data is
+ * the darkest possible scene, and a backend with no luma source would
+ * pin the camera in night mode forever. ric was doing exactly that on
+ * this platform before phase 6.
+ * ================================================================
+ */
+
+/* Both gains are x1024 fixed point (1024 = 1.0x), so multiplying two of
+ * them needs the divide to get back to x1024 -- and 64-bit intermediates,
+ * since 32x/32x overflows u32 at gain 64x. */
+static uint32_t star_ae_total_gain(const i6_isp_ae_status *ae)
+{
+    uint64_t sensor = ae->sensorGain;
+    uint64_t isp = ae->ispGain ? ae->ispGain : 1024u;
+    uint64_t total = sensor * isp / 1024u;
+
+    return total > UINT32_MAX ? UINT32_MAX : (uint32_t)total;
+}
+
+/*
+ * Mean of the AE grid's Y lane, or 0 if the layout cannot be confirmed.
+ *
+ * The confirmation is the point. i6_isp.h derives a 128x90 grid of
+ * 4-byte cells from two wrappers' payload sizes but cannot place the
+ * eight spare bytes, so this reads the grid dimensions from the AE status
+ * (which has its own field offsets) and looks for them at both ends of
+ * the stats block. A match places the cells; no match means the layout
+ * guess is wrong, and then the honest answer is no luma -- averaging the
+ * wrong offset produces a number that looks like a reading and moves the
+ * IR-cut filter.
+ */
+static uint32_t star_ae_luma(star_state_t *st, const i6_isp_ae_status *ae)
+{
+    static bool layout_logged;
+    static bool layout_warned;
+    i6_isp_ae_hw_stats *stats;
+    const unsigned char *cell;
+    unsigned int blk_x = ae->avgBlkX;
+    unsigned int blk_y = ae->avgBlkY;
+    unsigned int cells;
+    uint64_t sum[I6_ISP_AE_CELL_SZ] = {0};
+    uint32_t luma;
+    int ret;
+
+    if (!st->isp.fnGetAeHwAvgStats)
+        return 0;
+
+    if (blk_x == 0 || blk_x > I6_ISP_AE_BLK_X || blk_y == 0 || blk_y > I6_ISP_AE_BLK_Y) {
+        if (!layout_warned) {
+            HAL_LOG_WARN("isp: AE grid dimensions %ux%u are outside the %ux%u block -- "
+                         "no scene luma, day/night falls back to gain only",
+                         blk_x, blk_y, I6_ISP_AE_BLK_X, I6_ISP_AE_BLK_Y);
+            layout_warned = true;
+        }
+        return 0;
+    }
+
+    /* 46KB, so off the stack. Same size every call, so the allocator
+     * hands back the same chunk; ric polls this once a second. */
+    stats = malloc(sizeof(*stats));
+    if (!stats)
+        return 0;
+
+    memset(stats, 0, sizeof(*stats));
+    ret = st->isp.fnGetAeHwAvgStats(STAR_ISP_CHN, stats);
+    if (ret) {
+        if (!layout_warned) {
+            HAL_LOG_WARN("isp: MI_ISP_AE_GetAeHwAvgStats failed: %d -- no scene luma", ret);
+            layout_warned = true;
+        }
+        free(stats);
+        return 0;
+    }
+
+    if (stats->lead.blkX == blk_x && stats->lead.blkY == blk_y) {
+        cell = stats->lead.cell;
+    } else if (stats->trail.blkX == blk_x && stats->trail.blkY == blk_y) {
+        cell = stats->trail.cell;
+    } else {
+        /*
+         * Both ends disagree with the AE status. One log line with the
+         * eight candidate bytes is enough to place them from a board
+         * log, which is the only place the answer exists.
+         */
+        if (!layout_warned) {
+            HAL_LOG_WARN("isp: AE stats layout unconfirmed for a %ux%u grid "
+                         "(lead %u,%u trail %u,%u) -- no scene luma, day/night "
+                         "falls back to gain only",
+                         blk_x, blk_y, stats->lead.blkX, stats->lead.blkY, stats->trail.blkX,
+                         stats->trail.blkY);
+            layout_warned = true;
+        }
+        free(stats);
+        return 0;
+    }
+
+    cells = blk_x * blk_y;
+    for (unsigned int i = 0; i < cells; i++)
+        for (unsigned int lane = 0; lane < I6_ISP_AE_CELL_SZ; lane++)
+            sum[lane] += cell[i * I6_ISP_AE_CELL_SZ + lane];
+
+    luma = (uint32_t)(sum[I6_ISP_AE_CELL_Y] / cells);
+
+    /*
+     * All four lane means, once. The cell layout is waybeam's r, g, b, y
+     * and nothing here proves which lane is Y; on a coloured scene the
+     * four means differ, and this line is what says whether lane 3 is
+     * behaving like luma. Cheap to compute in the same pass and worth
+     * far more than a debug build on a camera nobody is watching.
+     */
+    if (!layout_logged) {
+        HAL_LOG_INFO("isp: AE grid %ux%u, cells at offset %u, lane means "
+                     "r=%llu g=%llu b=%llu y=%llu (y is the one used)",
+                     blk_x, blk_y, cell == stats->lead.cell ? 8u : 0u,
+                     (unsigned long long)(sum[0] / cells), (unsigned long long)(sum[1] / cells),
+                     (unsigned long long)(sum[2] / cells), (unsigned long long)(sum[3] / cells));
+        layout_logged = true;
+    }
+
+    free(stats);
+    return luma;
+}
+
+int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
+{
+    star_state_t *st = star_state(ctx);
+    i6_isp_ae_status ae;
+    int ret;
+
+    if (!st || !st->isp_loaded)
+        return RSS_ERR_NOENT;
+    if (!exposure)
+        return RSS_ERR_INVAL;
+    if (!st->isp.fnGetAeStatus)
+        return RSS_ERR_NOTSUP;
+
+    memset(exposure, 0, sizeof(*exposure));
+
+    /*
+     * Before the tuning binary lands the ISP channel is not up and the
+     * call errors. That is a startup window, not a fault, and ric polls
+     * through it once a second -- so say "busy" and log nothing.
+     */
+    if (!st->isp_tuned)
+        return RSS_ERR_BUSY;
+
+    memset(&ae, 0, sizeof(ae));
+    ret = st->isp.fnGetAeStatus(STAR_ISP_CHN, &ae);
+    if (ret) {
+        static bool warned;
+
+        if (!warned) {
+            HAL_LOG_WARN("isp: MI_ISP_CUS3A_GetAeStatus failed: %d -- "
+                         "no exposure readback, ric will hold its current mode",
+                         ret);
+            warned = true;
+        }
+        return RSS_ERR_IO;
+    }
+
+    exposure->exposure_time = ae.shutterUs;
+    exposure->total_gain = star_ae_total_gain(&ae);
+    exposure->ae_luma = star_ae_luma(st, &ae);
+
+    return RSS_OK;
 }
 
 /*

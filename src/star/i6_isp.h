@@ -53,6 +53,91 @@ typedef struct {
 } i6_isp_exp;
 
 /*
+ * AE status. MI_ISP_CUS3A_GetAeStatus, command 0x2e05.
+ *
+ * The one MI call that answers "what did the AE converge on" -- shutter
+ * in microseconds and the two gains -- which is what day/night detection
+ * needs and what MI_ISP_AE_GetManualExpo (the manual *setting*) and
+ * GetExposureLimit (the bounds) cannot give. Field order is waybeam's
+ * (star6e_cus3a.c, "verified via hex dump" on Star6E); this file adds the
+ * size.
+ *
+ * That size is the reason not to copy waybeam's struct as it stands. The
+ * wrapper declares a 65-byte payload:
+ *
+ *   65d4: sub  sp, #32
+ *   65e4: movs r3, #65        @ 0x41   -- payload size
+ *   65e8: movw r3, #11781     @ 0x2e05 -- command
+ *   65fe: blx  _MI_ISP_GetIspApiData
+ *
+ * and _MI_ISP_GetIspApiData copies all 65 bytes into the caller's buffer.
+ * waybeam declares twelve u32s, 48 bytes, on the stack -- so the vendor
+ * library writes 17 bytes past it on every call. The tail below exists to
+ * hold that overrun, and the assert is what keeps it holding it. Anything
+ * past ispGainHdrShort is unread, not unwritten.
+ */
+typedef struct {
+    unsigned int reserved0[3];
+    unsigned int avgBlkX;
+    unsigned int avgBlkY;
+    unsigned int reserved1;
+    unsigned int shutterUs;
+    unsigned int sensorGain;
+    unsigned int ispGain;
+    unsigned int shutterHdrShortUs;
+    unsigned int sensorGainHdrShort;
+    unsigned int ispGainHdrShort;
+    unsigned char tail[20];
+} i6_isp_ae_status;
+
+_Static_assert(sizeof(i6_isp_ae_status) >= 65,
+               "AE status must hold the 65 bytes the wrapper copies into it");
+_Static_assert(offsetof(i6_isp_ae_status, shutterUs) == 24, "AE status shutter offset");
+_Static_assert(offsetof(i6_isp_ae_status, sensorGain) == 28, "AE status sensor gain offset");
+
+/*
+ * Hardware AE average statistics. MI_ISP_AE_GetAeHwAvgStats, command
+ * 0x2e01, payload 46088 bytes (0xb408 at that wrapper's `movw r3`).
+ *
+ * 46088 = 128 * 90 * 4 + 8, and the neighbouring
+ * MI_ISP_AWB_GetAwbHwAvgStats declares 34568 = 128 * 90 * 3 + 8. Two
+ * calls agreeing on a 128x90 grid at one byte per channel, plus the same
+ * eight spare bytes, is what fixes the cell width at four bytes here --
+ * so waybeam's `short r, g, b, y` (8 bytes a cell, a 92160-byte struct
+ * against a 46088-byte payload) cannot be the layout, and its avgY log
+ * line is averaging two cells per sample.
+ *
+ * What those eight spare bytes are, and whether they lead or trail, the
+ * sizes cannot say. Hence the union: hal_isp.c tries both placements
+ * against the grid dimensions MI_ISP_CUS3A_GetAeStatus reports and
+ * accepts the one that matches, rather than picking one and averaging
+ * whatever lands at that offset. Neither matching means no luma -- not a
+ * plausible-looking number derived from the wrong bytes.
+ */
+#define I6_ISP_AE_BLK_X 128
+#define I6_ISP_AE_BLK_Y 90
+#define I6_ISP_AE_BLK_MAX (I6_ISP_AE_BLK_X * I6_ISP_AE_BLK_Y)
+#define I6_ISP_AE_CELL_SZ 4
+
+/* Byte lane within a cell. Order is waybeam's r, g, b, y. */
+#define I6_ISP_AE_CELL_Y 3
+
+typedef union {
+    unsigned char raw[I6_ISP_AE_BLK_MAX * I6_ISP_AE_CELL_SZ + 8];
+    struct {
+        unsigned int blkX, blkY;
+        unsigned char cell[I6_ISP_AE_BLK_MAX * I6_ISP_AE_CELL_SZ];
+    } lead;
+    struct {
+        unsigned char cell[I6_ISP_AE_BLK_MAX * I6_ISP_AE_CELL_SZ];
+        unsigned int blkX, blkY;
+    } trail;
+} i6_isp_ae_hw_stats;
+
+_Static_assert(sizeof(i6_isp_ae_hw_stats) == 46088,
+               "AE HW stats must match the 46088-byte payload the wrapper declares");
+
+/*
  * CUS3A enable flags: three MI_BOOLs, one byte each.
  *
  * The byte width is the entire point of this comment. Both references
@@ -131,6 +216,15 @@ typedef struct {
     int (*fnGetParaInitStatus)(int channel, i6_isp_parainit *status);
     int (*fnGetExposureLimit)(int channel, i6_isp_exp *config);
     int (*fnSetExposureLimit)(int channel, i6_isp_exp *config);
+
+    /*
+     * Optional -- may be NULL, unlike everything above. Both are only
+     * wanted by isp_get_exposure, which is advisory (ric's day/night
+     * detection); a library without them should still bring the ISP up
+     * and stream, so the loader must not fail on their absence.
+     */
+    int (*fnGetAeStatus)(int channel, i6_isp_ae_status *status);
+    int (*fnGetAeHwAvgStats)(int channel, i6_isp_ae_hw_stats *stats);
 } i6_isp_impl;
 
 static inline int i6_isp_load(i6_isp_impl *isp_lib)
@@ -187,6 +281,20 @@ static inline int i6_isp_load(i6_isp_impl *isp_lib)
               (int (*)(int channel, i6_isp_exp *config))hal_symbol_load(
                   "i6_isp", isp_lib->handle, "MI_ISP_AE_SetExposureLimit")))
         return RSS_ERR_NOTSUP;
+
+    /*
+     * dlsym directly rather than hal_symbol_load: these two are optional
+     * (see the impl struct), and hal_symbol_load logs at error level, so
+     * routing an expected NULL through it would report a fault every boot
+     * on a library that simply predates the symbol.
+     */
+    isp_lib->fnGetAeStatus = (int (*)(int channel, i6_isp_ae_status *status))dlsym(
+        isp_lib->handle, "MI_ISP_CUS3A_GetAeStatus");
+    isp_lib->fnGetAeHwAvgStats = (int (*)(int channel, i6_isp_ae_hw_stats *stats))dlsym(
+        isp_lib->handle, "MI_ISP_AE_GetAeHwAvgStats");
+    if (!isp_lib->fnGetAeStatus)
+        HAL_LOG_WARN("i6_isp: no MI_ISP_CUS3A_GetAeStatus -- "
+                     "exposure readback unavailable, ric cannot detect day/night");
 
     return RSS_OK;
 }

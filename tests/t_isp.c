@@ -620,6 +620,230 @@ static void test_tuning_load_leaves_3a_alone_by_default(void)
         g_iq[i].has_pending = false;
 }
 
+/*
+ * ── isp_get_exposure ──────────────────────────────────────────────────
+ *
+ * The AE grid layout is derived, not documented: i6_isp.h gets the cell
+ * width from two wrappers' payload sizes and cannot place the eight spare
+ * bytes, so hal_isp.c decides at runtime by matching the grid dimensions
+ * from the AE status against both ends of the block. These tests cover
+ * both placements, the case where neither matches (which must yield no
+ * luma rather than a number from the wrong offset), and the fixed-point
+ * gain arithmetic.
+ */
+
+static i6_isp_ae_status g_ae_status;
+static int g_ae_status_ret;
+static unsigned g_ae_status_calls;
+static i6_isp_ae_hw_stats *g_ae_stats;
+static int g_ae_stats_ret;
+static unsigned g_ae_stats_calls;
+
+static int fake_get_ae_status(int channel, i6_isp_ae_status *out)
+{
+    (void)channel;
+    g_ae_status_calls++;
+    if (g_ae_status_ret)
+        return g_ae_status_ret;
+    *out = g_ae_status;
+    return 0;
+}
+
+static int fake_get_ae_hw_stats(int channel, i6_isp_ae_hw_stats *out)
+{
+    (void)channel;
+    g_ae_stats_calls++;
+    if (g_ae_stats_ret)
+        return g_ae_stats_ret;
+    *out = *g_ae_stats;
+    return 0;
+}
+
+/* Fill `cells` cells from `cell` with a known y ramp, and everything past
+ * them with a value the mean must not pick up. */
+static uint32_t fill_grid(unsigned char *cell, unsigned int cells)
+{
+    unsigned int i;
+    uint32_t sum = 0;
+
+    memset(g_ae_stats, 0xEE, sizeof(*g_ae_stats));
+
+    for (i = 0; i < cells; i++) {
+        unsigned char y = (unsigned char)(10 + i * 7);
+
+        cell[i * I6_ISP_AE_CELL_SZ + 0] = 1; /* r, g, b deliberately unlike y */
+        cell[i * I6_ISP_AE_CELL_SZ + 1] = 2;
+        cell[i * I6_ISP_AE_CELL_SZ + 2] = 3;
+        cell[i * I6_ISP_AE_CELL_SZ + I6_ISP_AE_CELL_Y] = y;
+        sum += y;
+    }
+
+    return sum / cells;
+}
+
+static void exposure_setup(rss_hal_ctx_t *ctx, star_state_t *st)
+{
+    memset(ctx, 0, sizeof(*ctx));
+    memset(st, 0, sizeof(*st));
+    ctx->platform = st;
+    st->isp_loaded = true;
+    st->isp_tuned = true;
+    st->isp.fnGetAeStatus = fake_get_ae_status;
+    st->isp.fnGetAeHwAvgStats = fake_get_ae_hw_stats;
+
+    memset(&g_ae_status, 0, sizeof(g_ae_status));
+    g_ae_status.shutterUs = 8333;
+    g_ae_status.sensorGain = 2048; /* 2.0x */
+    g_ae_status.ispGain = 1024;    /* 1.0x */
+    g_ae_status.avgBlkX = 4;
+    g_ae_status.avgBlkY = 2;
+    g_ae_status_ret = 0;
+    g_ae_stats_ret = 0;
+    g_ae_status_calls = g_ae_stats_calls = 0;
+}
+
+static void test_exposure_waits_for_the_isp(void)
+{
+    rss_hal_ctx_t ctx;
+    star_state_t st;
+    rss_exposure_t exp;
+
+    exposure_setup(&ctx, &st);
+
+    /* Untuned: the ISP channel does not exist yet, so no call and no
+     * fabricated reading -- ric polls through this window every second. */
+    st.isp_tuned = false;
+    CHECK(hal_isp_get_exposure(&ctx, &exp) == RSS_ERR_BUSY, "untuned ISP must report busy");
+    CHECK(g_ae_status_calls == 0, "untuned ISP must not be queried, got %u calls",
+          g_ae_status_calls);
+
+    /* A library without the symbol is unsupported, not broken. */
+    st.isp_tuned = true;
+    st.isp.fnGetAeStatus = NULL;
+    CHECK(hal_isp_get_exposure(&ctx, &exp) == RSS_ERR_NOTSUP,
+          "a missing AE status symbol must report notsup");
+
+    st.isp.fnGetAeStatus = fake_get_ae_status;
+    CHECK(hal_isp_get_exposure(&ctx, NULL) == RSS_ERR_INVAL, "a NULL exposure must report inval");
+
+    /* Checked after the state, as everywhere else in this file. */
+    st.isp_loaded = false;
+    CHECK(hal_isp_get_exposure(&ctx, &exp) == RSS_ERR_NOENT, "an unloaded ISP must report noent");
+}
+
+static void test_exposure_gain_is_x1024_fixed_point(void)
+{
+    rss_hal_ctx_t ctx;
+    star_state_t st;
+    rss_exposure_t exp;
+
+    exposure_setup(&ctx, &st);
+    st.isp.fnGetAeHwAvgStats = NULL; /* gain only, luma is separate */
+
+    /* 2.0x sensor by 4.0x ISP is 8.0x, and x1024 in means x1024 out. */
+    g_ae_status.sensorGain = 2048;
+    g_ae_status.ispGain = 4096;
+    CHECK(hal_isp_get_exposure(&ctx, &exp) == RSS_OK, "a healthy read must succeed");
+    CHECK(exp.total_gain == 8192, "2x by 4x is 8192 x1024, got %u", exp.total_gain);
+    CHECK(exp.exposure_time == 8333, "shutter must pass through, got %u", exp.exposure_time);
+    CHECK(exp.ae_luma == 0, "no stats call means no luma, got %u", exp.ae_luma);
+
+    /* An unreported ISP gain is unity, not zero: multiplying by zero
+     * would report no gain at all in the dark. */
+    g_ae_status.ispGain = 0;
+    CHECK(hal_isp_get_exposure(&ctx, &exp) == RSS_OK, "a zero ISP gain must still read");
+    CHECK(exp.total_gain == 2048, "a zero ISP gain is unity, got %u", exp.total_gain);
+
+    /* The product is 64-bit; u32 would wrap at 64x by 64x. */
+    g_ae_status.sensorGain = 0xFFFFFFFFu;
+    g_ae_status.ispGain = 2048;
+    CHECK(hal_isp_get_exposure(&ctx, &exp) == RSS_OK, "an extreme gain must still read");
+    CHECK(exp.total_gain == UINT32_MAX, "an overflowing product must clamp, got %u",
+          exp.total_gain);
+
+    /* A failed status read is a failed call, not a zeroed reading. */
+    g_ae_status_ret = -1;
+    CHECK(hal_isp_get_exposure(&ctx, &exp) == RSS_ERR_IO, "a failed AE status must report io");
+}
+
+static void test_exposure_luma_from_either_layout(void)
+{
+    rss_hal_ctx_t ctx;
+    star_state_t st;
+    rss_exposure_t exp;
+    uint32_t want;
+
+    g_ae_stats = malloc(sizeof(*g_ae_stats));
+    assert(g_ae_stats);
+
+    /* Cells after the two dimension words. */
+    exposure_setup(&ctx, &st);
+    want = fill_grid(g_ae_stats->lead.cell, 8);
+    g_ae_stats->lead.blkX = 4;
+    g_ae_stats->lead.blkY = 2;
+    CHECK(hal_isp_get_exposure(&ctx, &exp) == RSS_OK, "a lead-placed grid must read");
+    CHECK(exp.ae_luma == want, "lead layout luma is %u, got %u", want, exp.ae_luma);
+
+    /* Cells first, dimensions after. */
+    exposure_setup(&ctx, &st);
+    want = fill_grid(g_ae_stats->trail.cell, 8);
+    g_ae_stats->trail.blkX = 4;
+    g_ae_stats->trail.blkY = 2;
+    CHECK(hal_isp_get_exposure(&ctx, &exp) == RSS_OK, "a trail-placed grid must read");
+    CHECK(exp.ae_luma == want, "trail layout luma is %u, got %u", want, exp.ae_luma);
+
+    free(g_ae_stats);
+    g_ae_stats = NULL;
+}
+
+static void test_exposure_refuses_an_unconfirmed_layout(void)
+{
+    rss_hal_ctx_t ctx;
+    star_state_t st;
+    rss_exposure_t exp;
+
+    g_ae_stats = malloc(sizeof(*g_ae_stats));
+    assert(g_ae_stats);
+
+    /* Dimensions at neither end: the layout guess is wrong, so there is
+     * no luma to report. Averaging offset 0 regardless is what this test
+     * exists to prevent -- it would look like a reading and move the
+     * IR-cut filter. */
+    exposure_setup(&ctx, &st);
+    fill_grid(g_ae_stats->trail.cell, 8);
+    g_ae_stats->trail.blkX = 999;
+    g_ae_stats->trail.blkY = 999;
+    CHECK(hal_isp_get_exposure(&ctx, &exp) == RSS_OK, "the gain half must still be reported");
+    CHECK(exp.ae_luma == 0, "an unconfirmed layout must yield no luma, got %u", exp.ae_luma);
+    CHECK(exp.total_gain == 2048, "gain must survive a luma failure, got %u", exp.total_gain);
+
+    /* Dimensions the grid cannot hold are rejected before the stats call:
+     * blk_x * blk_y bounds the scan, so an oversized pair would read past
+     * the block. */
+    exposure_setup(&ctx, &st);
+    g_ae_status.avgBlkX = I6_ISP_AE_BLK_X + 1;
+    CHECK(hal_isp_get_exposure(&ctx, &exp) == RSS_OK, "impossible dimensions still read gain");
+    CHECK(exp.ae_luma == 0, "impossible dimensions must yield no luma, got %u", exp.ae_luma);
+    CHECK(g_ae_stats_calls == 0, "impossible dimensions must skip the stats call, got %u",
+          g_ae_stats_calls);
+
+    exposure_setup(&ctx, &st);
+    g_ae_status.avgBlkY = 0;
+    CHECK(hal_isp_get_exposure(&ctx, &exp) == RSS_OK, "a zero dimension still reads gain");
+    CHECK(exp.ae_luma == 0, "a zero dimension must yield no luma, got %u", exp.ae_luma);
+
+    /* A failed stats call loses the luma and keeps the rest. */
+    exposure_setup(&ctx, &st);
+    g_ae_stats_ret = -1;
+    CHECK(hal_isp_get_exposure(&ctx, &exp) == RSS_OK, "a failed stats call must not fail the read");
+    CHECK(exp.ae_luma == 0, "a failed stats call must yield no luma, got %u", exp.ae_luma);
+    CHECK(exp.exposure_time == 8333, "shutter must survive a luma failure, got %u",
+          exp.exposure_time);
+
+    free(g_ae_stats);
+    g_ae_stats = NULL;
+}
+
 int main(void)
 {
     test_table_bounds();
@@ -634,6 +858,10 @@ int main(void)
     test_recorded_values_survive_a_reload();
     test_cus3a_enables_awb_in_the_byte_mi_reads();
     test_tuning_load_leaves_3a_alone_by_default();
+    test_exposure_waits_for_the_isp();
+    test_exposure_gain_is_x1024_fixed_point();
+    test_exposure_luma_from_either_layout();
+    test_exposure_refuses_an_unconfirmed_layout();
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);

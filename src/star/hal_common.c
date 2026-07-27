@@ -1270,6 +1270,7 @@ static const rss_hal_ops_t g_ops = {
     .isp_get_max_dgain = hal_isp_get_max_dgain,
     .isp_get_running_mode = hal_isp_get_running_mode,
     .isp_get_hvflip = hal_isp_get_hvflip,
+    .isp_get_exposure = hal_isp_get_exposure,
 
     /* Framesource -- VPE output ports (src/star/hal_framesource.c).
      * The ops MI has no equivalent for are listed, with reasons, in

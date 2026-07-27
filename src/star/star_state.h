@@ -686,6 +686,7 @@ int hal_isp_get_max_again(void *ctx, uint32_t *gain);
 int hal_isp_get_max_dgain(void *ctx, uint32_t *gain);
 int hal_isp_get_running_mode(void *ctx, rss_isp_mode_t *mode);
 int hal_isp_get_hvflip(void *ctx, int *hflip, int *vflip);
+int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure);
 
 /*
  * Audio capture ops -- src/star/hal_audio.c.
