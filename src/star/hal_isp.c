@@ -2093,6 +2093,90 @@ static void star_isp_reassert_limits(star_state_t *st)
     (void)st->isp.fnSetExposureLimit(STAR_ISP_CHN, &limit);
 }
 
+/*
+ * Reload the tuning binary when the ISP is found back on its defaults.
+ *
+ * Board evidence, 2026-07-27, and this is the one that explains the rest.
+ * Loading the api bin plainly works: two different bins produce two
+ * different AE limit sets (24576/100000 and 131072/50000), read back from
+ * the AE immediately after the load. But `1024..8192` and `..14000` --
+ * where this board's AE actually sits, permanently -- are the limits the
+ * ISP reports with *no tuning file at all*, confirmed by watching a failed
+ * load report exactly those numbers.
+ *
+ * So the bin lands and is then wiped, and everything else follows from
+ * that: the AE ignoring limits widened underneath it, an OEM _night bin
+ * that forces monochrome under divinus doing nothing here, deleting the
+ * bin changing nothing, and white balance being wrong under artificial
+ * light. None of those were separate problems.
+ *
+ * What wipes it is not yet pinned down, but the shape is known: this port
+ * already documents that CUS3A re-auto-starts when a VPE channel's last
+ * output port goes down, and rvd tunes on the *first* framesource enable
+ * -- before the sub-stream, the OSD attach and the encoder start. divinus,
+ * which is fine on this board, loads at the end of sdk_init after its
+ * encoder thread is running (media.c:827). Loading before the pipeline
+ * has finished being built looks like the mistake.
+ *
+ * Rather than guess which later step does it, detect the state and repair
+ * it: the limits are a reliable witness, because the tuning's own values
+ * were snapshotted before anything could overwrite them.
+ *
+ * Skipped when a ceiling is configured, since then a difference from the
+ * snapshot is expected rather than evidence. Bounded, because a reload
+ * that does not stick must not turn into a loop -- and if the bound is
+ * reached, the log says so, which is a better failure than silence.
+ */
+#define STAR_IQ_RELOAD_MAX 5
+
+static void star_isp_reload_if_reset(star_state_t *st)
+{
+    i6_isp_exp limit;
+    static time_t last;
+    struct timespec now;
+
+    if (!st->iq_file[0] || !st->bin_max_sensor_gain)
+        return;
+    if (st->pend_max_again >= 1024 || st->pend_ae_it_max > 0)
+        return;
+    if (!st->isp.fnGetExposureLimit || !st->isp.fnLoadChannelConfig)
+        return;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &now))
+        return;
+    if (last && now.tv_sec - last < STAR_LIMIT_REASSERT_S)
+        return;
+    last = now.tv_sec;
+
+    memset(&limit, 0, sizeof(limit));
+    if (st->isp.fnGetExposureLimit(STAR_ISP_CHN, &limit))
+        return;
+    if (limit.maxSensorGain == st->bin_max_sensor_gain)
+        return;
+
+    if (st->iq_reloads >= STAR_IQ_RELOAD_MAX) {
+        static bool gave_up;
+
+        if (!gave_up) {
+            gave_up = true;
+            HAL_LOG_WARN("isp: AE still on sensor gain ..%u after %d reloads of %s (the tuning "
+                         "has ..%u); giving up rather than looping -- something is resetting "
+                         "the ISP after every load",
+                         limit.maxSensorGain, st->iq_reloads, st->iq_file,
+                         st->bin_max_sensor_gain);
+        }
+        return;
+    }
+
+    st->iq_reloads++;
+    HAL_LOG_INFO("isp: AE is on sensor gain ..%u but the tuning has ..%u -- the ISP was reset "
+                 "after the load; reloading %s (attempt %d)",
+                 limit.maxSensorGain, st->bin_max_sensor_gain, st->iq_file, st->iq_reloads);
+
+    if (st->isp.fnLoadChannelConfig(STAR_ISP_CHN, st->iq_file, STAR_IQ_LOAD_KEY))
+        HAL_LOG_WARN("isp: reloading %s failed", st->iq_file);
+}
+
 int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
 {
     star_state_t *st = star_state(ctx);
@@ -2134,6 +2218,7 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
     exposure->total_gain = star_ae_total_gain(&ae);
     exposure->ae_luma = star_ae_luma(st, &ae);
 
+    star_isp_reload_if_reset(st);
     star_isp_reassert_limits(st);
     star_ae_manual(st);
     star_ae_diag(st);

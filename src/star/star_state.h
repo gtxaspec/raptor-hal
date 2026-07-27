@@ -462,6 +462,11 @@ typedef struct {
     unsigned int bin_min_isp_gain;
     unsigned int bin_max_isp_gain;
 
+    /* How many times the tuning binary has been reloaded after finding the
+     * ISP back on its defaults. Bounded: a reload that does not stick must
+     * not become a loop. */
+    int iq_reloads;
+
     bool gray;
     bool hflip;
     bool vflip;
