@@ -459,12 +459,53 @@ static uint8_t star_iq_unscale(uint32_t mi, uint32_t unity, uint32_t max)
  * tuning binary disabled a module, re-enabling it behind the tuner's
  * back is not this layer's call.
  */
+/*
+ * RSS_ISP_MINIMAL -- suppress every write to an ISP module, leaving only
+ * the tuning binary load and sensor orientation.
+ *
+ * For bisecting a picture that is wrong in a way none of the readings
+ * explain. rvd applies its whole [image] block on every start, and while a
+ * knob left neutral is *meant* to mean "leave this module on auto", that
+ * intent is spread over the scaling code, the neutral checks and the
+ * defaults, and a bug anywhere in it silently pins an ISP module to a
+ * hardcoded midpoint. Rather than audit that reasoning again, remove the
+ * writes and see if the picture changes.
+ *
+ * Not every write here is even conditional. `antiflicker` is written
+ * unconditionally from rvd's default of 2, and divinus -- which looks
+ * better in the dark on this board -- defaults it to 0 and never sets it
+ * (app_config.c). Same for running mode. So "neutral means untouched" is
+ * not true of this path today, which is exactly why subtracting all of it
+ * at once is worth one flash.
+ *
+ * Both apply paths are gated rather than the ops, because these two
+ * functions are the only places an IQ value reaches MI -- gating the ops
+ * would mean finding all of them and getting it right.
+ */
+static bool star_iq_writes_suppressed(void)
+{
+    static int suppressed = -1;
+
+    if (suppressed < 0) {
+        suppressed = getenv("RSS_ISP_MINIMAL") != NULL;
+        if (suppressed)
+            HAL_LOG_INFO("isp: RSS_ISP_MINIMAL -- no ISP module writes, only the tuning "
+                         "binary and orientation");
+    }
+    return suppressed != 0;
+}
+
 static int star_iq_apply_scalar(star_state_t *st, int idx, int val)
 {
     star_iq_param_t *p = &g_iq[idx];
     uint8_t buf[STAR_IQ_PAYLOAD_MAX];
     uint32_t mi_val;
     int ret;
+
+    if (star_iq_writes_suppressed()) {
+        HAL_LOG_DBG("isp: %s = %d suppressed", p->name, val);
+        return RSS_OK;
+    }
 
     ret = star_iq_fetch(st, idx, buf);
     if (ret != RSS_OK)
@@ -560,6 +601,11 @@ static int star_iq_apply_raw(star_state_t *st, int idx, uint32_t raw)
     star_iq_param_t *p = &g_iq[idx];
     uint8_t buf[STAR_IQ_PAYLOAD_MAX];
     int ret;
+
+    if (star_iq_writes_suppressed()) {
+        HAL_LOG_DBG("isp: %s = %u suppressed", p->name, raw);
+        return RSS_OK;
+    }
 
     ret = star_iq_fetch(st, idx, buf);
     if (ret != RSS_OK)
@@ -1308,6 +1354,11 @@ static int star_isp_apply_gain_limit(star_state_t *st, bool sensor_gain, int gai
 {
     i6_isp_exp limit;
     int ret;
+
+    /* Part of the same subtraction: the gain ceilings live in the AE's
+     * limit struct rather than an IQ module, so the gate above misses them. */
+    if (star_iq_writes_suppressed())
+        return RSS_OK;
 
     /* Guarded like every other vendor pointer in this file. i6_isp_load
      * refuses to report success without these two, so a live pipeline
