@@ -775,6 +775,85 @@ static bool star_isp_resolve_iq(star_state_t *st, const rss_sensor_config_t *cfg
     return false;
 }
 
+/*
+ * Read the AE's exposure limits, waiting for it to publish them.
+ *
+ * A cold-booted AE has not processed enough frames to publish its limits
+ * and answers all zeros; capping or clamping against that would treat a
+ * garbage floor as calibration. waybeam polls for up to 500 ms here
+ * (pipeline_common.c:138-152). The bin load ahead of this already waited
+ * on the parameter store, so one retry window is enough.
+ */
+static int star_isp_read_limits(star_state_t *st, i6_isp_exp *limit)
+{
+    unsigned int waited;
+    int ret;
+
+    memset(limit, 0, sizeof(*limit));
+    ret = st->isp.fnGetExposureLimit(STAR_ISP_CHN, limit);
+    if (ret) {
+        HAL_LOG_WARN("isp: MI_ISP_AE_GetExposureLimit failed: %d", ret);
+        return RSS_ERR_IO;
+    }
+    if (limit->maxShutterUs || limit->maxSensorGain)
+        return RSS_OK;
+
+    for (waited = 0; waited < 500; waited += 10) {
+        star_isp_sleep_ms(10);
+        memset(limit, 0, sizeof(*limit));
+        if (st->isp.fnGetExposureLimit(STAR_ISP_CHN, limit) == 0 &&
+            (limit->maxShutterUs || limit->maxSensorGain))
+            return RSS_OK;
+    }
+
+    return RSS_ERR_TIMEOUT;
+}
+
+/*
+ * Record the tuning's own gain ceilings, once, before the config knobs
+ * land on top of them.
+ *
+ * The ordering is the whole point and it is easy to get wrong:
+ * star_isp_flush_pending runs before star_isp_cap_exposure, so by the time
+ * anything else reads this struct a requested ceiling is already in it --
+ * and because every writer here is a read-modify-write, one bad ceiling
+ * propagates into every later write. Snapshotting after the flush would
+ * record the overwrite and call it calibration.
+ */
+static void star_isp_snapshot_bin_limits(star_state_t *st)
+{
+    i6_isp_exp limit;
+
+    if (!st || !st->isp_loaded)
+        return;
+    if (!st->isp.fnGetExposureLimit || !st->isp.fnSetExposureLimit)
+        return;
+
+    if (star_isp_read_limits(st, &limit) != RSS_OK) {
+        HAL_LOG_WARN("isp: AE published no exposure limits; gain ceilings go on unchecked");
+        return;
+    }
+
+    st->bin_min_sensor_gain = limit.minSensorGain;
+    st->bin_max_sensor_gain = limit.maxSensorGain;
+    st->bin_min_isp_gain = limit.minIspGain;
+    st->bin_max_isp_gain = limit.maxIspGain;
+
+    /*
+     * INFO because this is the line every night-mode threshold gets
+     * calibrated against. total_gain cannot exceed maxSensorGain *
+     * maxIspGain / 1024, so this is what says whether a given night_gain
+     * is reachable on this board at all -- and a night_gain that is not
+     * reachable means auto night mode simply never triggers.
+     */
+    HAL_LOG_INFO("isp: AE tuning limits (x1024): sensor gain %u..%u, isp gain %u..%u, "
+                 "shutter %u..%u us -- so total_gain tops out at %llu",
+                 limit.minSensorGain, limit.maxSensorGain, limit.minIspGain, limit.maxIspGain,
+                 limit.minShutterUs, limit.maxShutterUs,
+                 (unsigned long long)limit.maxSensorGain *
+                         (limit.maxIspGain ? limit.maxIspGain : 1024u) / 1024u);
+}
+
 int star_isp_cap_exposure(star_state_t *st, unsigned int fps)
 {
     i6_isp_exp limit;
@@ -786,34 +865,12 @@ int star_isp_cap_exposure(star_state_t *st, unsigned int fps)
     if (!st->isp.fnGetExposureLimit || !st->isp.fnSetExposureLimit)
         return RSS_ERR_NOTSUP;
 
-    memset(&limit, 0, sizeof(limit));
-    ret = st->isp.fnGetExposureLimit(STAR_ISP_CHN, &limit);
-    if (ret) {
-        HAL_LOG_WARN("isp: MI_ISP_AE_GetExposureLimit failed: %d", ret);
-        return RSS_ERR_IO;
-    }
-
-    /*
-     * A cold-booted AE has not processed enough frames to publish its
-     * limits and answers all zeros; capping against that would write a
-     * garbage floor. waybeam polls for up to 500 ms here
-     * (pipeline_common.c:138-152). The bin load ahead of this already
-     * waited on the parameter store, so one retry window is enough.
-     */
-    if (limit.maxShutterUs == 0 && limit.maxSensorGain == 0) {
-        unsigned int waited;
-
-        for (waited = 0; waited < 500; waited += 10) {
-            star_isp_sleep_ms(10);
-            memset(&limit, 0, sizeof(limit));
-            if (st->isp.fnGetExposureLimit(STAR_ISP_CHN, &limit) == 0 &&
-                (limit.maxShutterUs || limit.maxSensorGain))
-                break;
-        }
-        if (limit.maxShutterUs == 0) {
-            HAL_LOG_WARN("isp: AE published no exposure limits; shutter left uncapped");
-            return RSS_ERR_TIMEOUT;
-        }
+    ret = star_isp_read_limits(st, &limit);
+    if (ret == RSS_ERR_IO)
+        return ret;
+    if (ret != RSS_OK || limit.maxShutterUs == 0) {
+        HAL_LOG_WARN("isp: AE published no exposure limits; shutter left uncapped");
+        return RSS_ERR_TIMEOUT;
     }
 
     frame_us = 1000000u / fps;
@@ -989,6 +1046,13 @@ void star_isp_tune_when_ready(star_state_t *st, bool verbose)
         if (handoff)
             star_isp_enable_3a(st);
     }
+
+    /*
+     * Snapshot the tuning's exposure limits before the knobs land on them,
+     * so a requested gain ceiling can be judged against the calibration
+     * rather than against whatever the previous write left behind.
+     */
+    star_isp_snapshot_bin_limits(st);
 
     /* Config knobs go on after the tuning file, never before. */
     star_isp_flush_pending(st);
@@ -1195,11 +1259,13 @@ int hal_isp_get_antiflicker(void *ctx, rss_antiflicker_t *mode)
  * which is the point: writing the struct wholesale here would undo that
  * shutter cap.
  *
- * The units are MI's own and are not raptor's 0..255: rvd's defaults
- * (max_again 160, max_dgain 80) are Ingenic gain codes. They are passed
- * through unscaled because there is no published conversion, and a
- * fabricated one would be worse than a documented pass-through -- so
- * treat these two keys as MI-native on this platform.
+ * The units are MI's own and are not raptor's 0..255: they are x1024
+ * fixed point, 1024 being unity. rvd's defaults (max_again 160, max_dgain
+ * 80) are Ingenic gain codes, and rvd applies them whether or not the
+ * config mentions the keys, so the pass-through this code used to do wrote
+ * sub-unity ceilings on every boot. Values below unity are now refused and
+ * values above the tuning's calibrated ceiling clamped to it -- see the
+ * reasoning inside. Treat these two keys as MI-native on this platform.
  */
 static int star_isp_apply_gain_limit(star_state_t *st, bool sensor_gain, int gain)
 {
@@ -1220,10 +1286,62 @@ static int star_isp_apply_gain_limit(star_state_t *st, bool sensor_gain, int gai
         return RSS_ERR_IO;
     }
 
-    if (sensor_gain)
-        limit.maxSensorGain = (unsigned int)gain;
-    else
-        limit.maxIspGain = (unsigned int)gain;
+    {
+        unsigned int want = (unsigned int)gain;
+        unsigned int bin_min = sensor_gain ? st->bin_min_sensor_gain : st->bin_min_isp_gain;
+        unsigned int bin_max = sensor_gain ? st->bin_max_sensor_gain : st->bin_max_isp_gain;
+        const char *which = sensor_gain ? "sensor" : "isp";
+
+        /*
+         * MI's ceilings are x1024 fixed point: 1024 is unity, and the
+         * vendor's own constant for a 32x cap is 32768 (waybeam's
+         * AE_GAIN_MAX_DEFAULT, "32x sensor cap"). raptor's max_again and
+         * max_dgain keys are Ingenic gain codes, and rvd applies its
+         * Ingenic defaults -- 160 and 80 -- on every platform whether or
+         * not the config mentions them. Written through unscaled those are
+         * ceilings of 0.16x and 0.08x: below unity, so not gain ceilings
+         * at all. maxIspGain = 80 is the damaging one, because it pins the
+         * ISP's digital gain at its floor and so removes all the headroom
+         * above the sensor's own ceiling -- which is why total_gain on
+         * this board stopped dead at 8192 (8x, the tuning's own
+         * maxSensorGain) instead of climbing through it as the light went.
+         *
+         * Refused rather than scaled: no conversion turns an Ingenic gain
+         * code into an MI one, so the only honest answer is to leave the
+         * tuning's calibrated ceiling alone and say why, once per load.
+         */
+        if (want < 1024u) {
+            HAL_LOG_WARN("isp: ignoring max %s gain %u -- MI wants x1024 units, so that "
+                         "reads as %u.%02ux, a ceiling below unity. The tuning's own limit "
+                         "stands. Set max_again/max_dgain in x1024 (1024 = 1.0x).",
+                         which, want, want / 1024u, (want % 1024u) * 100u / 1024u);
+            return RSS_ERR_INVAL;
+        }
+
+        /*
+         * MI validates against the calibrated range and quietly keeps its
+         * own value when a ceiling is out of it, so clamping here is only
+         * about the log: an unexplained ceiling that did not take is much
+         * harder to spot than one that says it was clamped. waybeam found
+         * the same wall -- gainMax 32000 against a bin ceiling of 8192.
+         */
+        if (bin_max && want > bin_max) {
+            HAL_LOG_INFO("isp: max %s gain %u is above the tuning's calibrated ceiling %u; "
+                         "clamping, because MI does not honour a higher one",
+                         which, want, bin_max);
+            want = bin_max;
+        }
+        if (bin_min && want < bin_min) {
+            HAL_LOG_INFO("isp: max %s gain %u is below the tuning's floor %u; raising to it",
+                         which, want, bin_min);
+            want = bin_min;
+        }
+
+        if (sensor_gain)
+            limit.maxSensorGain = want;
+        else
+            limit.maxIspGain = want;
+    }
 
     ret = st->isp.fnSetExposureLimit(STAR_ISP_CHN, &limit);
     if (ret) {

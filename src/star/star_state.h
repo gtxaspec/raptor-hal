@@ -442,6 +442,21 @@ typedef struct {
     int pend_max_again;
     int pend_max_dgain;
 
+    /*
+     * The AE's own gain ceilings, snapshotted from whichever tuning is in
+     * effect before any config knob overwrites them. These are the
+     * calibrated limits and MI treats them as authoritative: a ceiling
+     * above them does not stick. waybeam found the same thing the hard way
+     * -- "isp.gainMax above the bin ceiling never stuck (found with
+     * gainMax=32000 vs bin 8192)", maruko_cus3a.c -- so they are the range
+     * a requested ceiling has to be judged against rather than a hint.
+     * Zero for "the AE never published them".
+     */
+    unsigned int bin_min_sensor_gain;
+    unsigned int bin_max_sensor_gain;
+    unsigned int bin_min_isp_gain;
+    unsigned int bin_max_isp_gain;
+
     bool gray;
     bool hflip;
     bool vflip;

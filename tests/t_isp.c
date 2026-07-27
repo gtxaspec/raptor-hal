@@ -844,6 +844,167 @@ static void test_exposure_refuses_an_unconfirmed_layout(void)
     g_ae_stats = NULL;
 }
 
+/* ── AE exposure limits ── */
+
+static i6_isp_exp g_limit;
+static int g_limit_get_ret;
+static int g_limit_set_ret;
+static unsigned int g_limit_set_calls;
+
+static int fake_get_exposure_limit(int chn, i6_isp_exp *cfg)
+{
+    (void)chn;
+    if (g_limit_get_ret)
+        return g_limit_get_ret;
+    *cfg = g_limit;
+    return 0;
+}
+
+static int fake_set_exposure_limit(int chn, i6_isp_exp *cfg)
+{
+    (void)chn;
+    g_limit_set_calls++;
+    if (g_limit_set_ret)
+        return g_limit_set_ret;
+    g_limit = *cfg; /* MI keeps it, so the next read-modify-write sees it */
+    return 0;
+}
+
+/*
+ * A tuning that publishes an 8x sensor ceiling and no digital-gain
+ * headroom at all -- which is what the SSC30KQ's gc4653.bin actually
+ * does, and the reason total_gain on that board stopped dead at 8192.
+ */
+static void limit_setup(rss_hal_ctx_t *ctx, star_state_t *st)
+{
+    memset(ctx, 0, sizeof(*ctx));
+    memset(st, 0, sizeof(*st));
+    ctx->platform = st;
+    st->isp_loaded = true;
+    st->isp_tuned = true;
+    st->pend_max_again = -1;
+    st->pend_max_dgain = -1;
+    st->isp.fnGetExposureLimit = fake_get_exposure_limit;
+    st->isp.fnSetExposureLimit = fake_set_exposure_limit;
+
+    memset(&g_limit, 0, sizeof(g_limit));
+    g_limit.minShutterUs = 30;
+    g_limit.maxShutterUs = 40000;
+    g_limit.minSensorGain = 1024;
+    g_limit.minIspGain = 1024;
+    g_limit.maxSensorGain = 8192;
+    g_limit.maxIspGain = 1024;
+    g_limit_get_ret = g_limit_set_ret = 0;
+    g_limit_set_calls = 0;
+}
+
+static void test_bin_limits_snapshot_records_the_tuning(void)
+{
+    rss_hal_ctx_t ctx;
+    star_state_t st;
+
+    limit_setup(&ctx, &st);
+    star_isp_snapshot_bin_limits(&st);
+
+    CHECK(st.bin_min_sensor_gain == 1024, "sensor floor should be 1024, got %u",
+          st.bin_min_sensor_gain);
+    CHECK(st.bin_max_sensor_gain == 8192, "sensor ceiling should be 8192, got %u",
+          st.bin_max_sensor_gain);
+    CHECK(st.bin_max_isp_gain == 1024, "isp ceiling should be 1024, got %u", st.bin_max_isp_gain);
+    CHECK(g_limit_set_calls == 0, "a snapshot must only read, got %u writes", g_limit_set_calls);
+
+    /* An AE that has not published yet answers all zeros. Recording that
+     * would install a calibrated ceiling of zero and clamp every later
+     * request to it, so it has to stay unrecorded. */
+    limit_setup(&ctx, &st);
+    memset(&g_limit, 0, sizeof(g_limit));
+    star_isp_snapshot_bin_limits(&st);
+    CHECK(st.bin_max_sensor_gain == 0, "an unpublished ceiling must not be recorded, got %u",
+          st.bin_max_sensor_gain);
+}
+
+static void test_gain_ceiling_refuses_ingenic_units(void)
+{
+    rss_hal_ctx_t ctx;
+    star_state_t st;
+
+    limit_setup(&ctx, &st);
+    star_isp_snapshot_bin_limits(&st);
+    g_limit_set_calls = 0;
+
+    /*
+     * rvd's Ingenic defaults, which it applies on every platform whether
+     * or not the config mentions the keys. In MI's x1024 units 160 is
+     * 0.16x and 80 is 0.08x -- ceilings below unity, so not ceilings.
+     */
+    CHECK(star_isp_apply_gain_limit(&st, true, 160) == RSS_ERR_INVAL,
+          "an Ingenic max_again must be refused");
+    CHECK(star_isp_apply_gain_limit(&st, false, 80) == RSS_ERR_INVAL,
+          "an Ingenic max_dgain must be refused");
+    CHECK(g_limit_set_calls == 0, "a refused ceiling must not be written, got %u writes",
+          g_limit_set_calls);
+    CHECK(g_limit.maxSensorGain == 8192, "the tuning's sensor ceiling must stand, got %u",
+          g_limit.maxSensorGain);
+    CHECK(g_limit.maxIspGain == 1024,
+          "the tuning's isp ceiling must stand -- writing 80 here is what pinned digital gain "
+          "and capped total_gain at the sensor's 8192, got %u",
+          g_limit.maxIspGain);
+}
+
+static void test_gain_ceiling_clamps_to_the_tuning(void)
+{
+    rss_hal_ctx_t ctx;
+    star_state_t st;
+
+    limit_setup(&ctx, &st);
+    star_isp_snapshot_bin_limits(&st);
+
+    /* waybeam's wall: gainMax 32000 against a bin ceiling of 8192, which
+     * MI silently declines. Clamping makes it visible instead. */
+    CHECK(star_isp_apply_gain_limit(&st, true, 32000) == RSS_OK, "a high ceiling must apply");
+    CHECK(g_limit.maxSensorGain == 8192, "32000 must clamp to 8192, got %u",
+          g_limit.maxSensorGain);
+
+    CHECK(star_isp_apply_gain_limit(&st, true, 4096) == RSS_OK, "an in-range ceiling must apply");
+    CHECK(g_limit.maxSensorGain == 4096, "4096 must pass through, got %u", g_limit.maxSensorGain);
+
+    /* The gain writes share their struct with the shutter cap, which is
+     * why they are read-modify-write. */
+    CHECK(g_limit.maxShutterUs == 40000, "the shutter cap must survive a gain write, got %u",
+          g_limit.maxShutterUs);
+
+    /* A ceiling under the tuning's own floor is raised to it rather than
+     * written as a maximum below the AE's minimum. */
+    st.bin_min_sensor_gain = 2048;
+    CHECK(star_isp_apply_gain_limit(&st, true, 1024) == RSS_OK, "a low ceiling must apply");
+    CHECK(g_limit.maxSensorGain == 2048, "1024 must rise to the 2048 floor, got %u",
+          g_limit.maxSensorGain);
+}
+
+static void test_shutter_cap_holds_the_frame_period(void)
+{
+    rss_hal_ctx_t ctx;
+    star_state_t st;
+
+    limit_setup(&ctx, &st);
+
+    /* 25 fps is a 40000 us period and the tuning already sits there. */
+    CHECK(star_isp_cap_exposure(&st, 25) == RSS_OK, "an in-range shutter must succeed");
+    CHECK(g_limit_set_calls == 0, "nothing to cap means no write, got %u", g_limit_set_calls);
+
+    /* At 30 fps the tuning's 40000 us overruns the 33333 us period. */
+    CHECK(star_isp_cap_exposure(&st, 30) == RSS_OK, "an overrunning shutter must be capped");
+    CHECK(g_limit.maxShutterUs == 33333, "shutter must cap to 33333, got %u",
+          g_limit.maxShutterUs);
+    CHECK(g_limit.maxSensorGain == 8192, "capping the shutter must leave the gains alone, got %u",
+          g_limit.maxSensorGain);
+
+    /* A failed read is an IO error, not a silently uncapped shutter. */
+    limit_setup(&ctx, &st);
+    g_limit_get_ret = -1;
+    CHECK(star_isp_cap_exposure(&st, 25) == RSS_ERR_IO, "a failed limit read must report io");
+}
+
 int main(void)
 {
     test_table_bounds();
@@ -862,6 +1023,10 @@ int main(void)
     test_exposure_gain_is_x1024_fixed_point();
     test_exposure_luma_from_either_layout();
     test_exposure_refuses_an_unconfirmed_layout();
+    test_bin_limits_snapshot_records_the_tuning();
+    test_gain_ceiling_refuses_ingenic_units();
+    test_gain_ceiling_clamps_to_the_tuning();
+    test_shutter_cap_holds_the_frame_period();
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);
