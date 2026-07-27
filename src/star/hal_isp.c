@@ -1836,6 +1836,94 @@ static void star_ae_diag(star_state_t *st)
                  limit.maxSensorGain, limit.minIspGain, limit.maxIspGain);
 }
 
+/*
+ * Re-assert an explicitly configured exposure ceiling, because a single
+ * write does not hold.
+ *
+ * Board evidence, 2026-07-27. The tuning published `sensor gain
+ * 1024..131072, shutter 22..50000`; we clamped the shutter to 33333 for
+ * 30 fps and wrote nothing else. Ninety seconds later the AE was operating
+ * on `shutter 300..14000, sensor gain 1024..8192` -- a window 3.5x shorter
+ * and 16x less sensitive than the tuning allows, with the AE pinned on both
+ * ceilings (`boundary=1`) against a measured `avgY=0`. So CUS3A rewrites
+ * this struct while it runs, and our value lasted only until it did.
+ *
+ * waybeam already worked around this and the shape of its code says so:
+ * its cus3a_thread re-reads the limit struct and re-pushes any field that
+ * drifted, every AE tick, for the whole run (maruko_cus3a.c). A one-shot
+ * write at tuning-load time is simply not how this interface works.
+ *
+ * Deliberately only re-asserts what was *asked for*. With nothing
+ * configured this does nothing at all, because then CUS3A narrowing its own
+ * window is its business -- fighting an algorithm over values nobody
+ * requested is how you get an AE that oscillates. But a ceiling the config
+ * states is a ceiling the config should get, and the alternative is the
+ * failure this whole area keeps producing: a write that silently did not
+ * take.
+ *
+ * Hooked onto get_exposure rather than a thread of its own: ric already
+ * polls it once a second, which is an order of magnitude slower than
+ * waybeam's loop and plenty to hold a ceiling.
+ */
+#define STAR_LIMIT_REASSERT_S 2
+
+static void star_isp_reassert_limits(star_state_t *st)
+{
+    i6_isp_exp limit;
+    static time_t last;
+    static bool reported;
+    struct timespec now;
+    unsigned int want_shutter, want_gain;
+    bool fix_shutter, fix_gain;
+
+    if (st->pend_ae_it_max <= 0 && st->pend_max_again < 1024)
+        return;
+    if (!st->isp.fnGetExposureLimit || !st->isp.fnSetExposureLimit)
+        return;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &now))
+        return;
+    if (last && now.tv_sec - last < STAR_LIMIT_REASSERT_S)
+        return;
+    last = now.tv_sec;
+
+    memset(&limit, 0, sizeof(limit));
+    if (st->isp.fnGetExposureLimit(STAR_ISP_CHN, &limit))
+        return;
+
+    want_shutter = st->pend_ae_it_max > 0 ? (unsigned int)st->pend_ae_it_max : 0u;
+    want_gain = st->pend_max_again >= 1024 ? (unsigned int)st->pend_max_again : 0u;
+    if (want_gain && st->bin_max_sensor_gain && want_gain > st->bin_max_sensor_gain)
+        want_gain = st->bin_max_sensor_gain;
+
+    fix_shutter = want_shutter && limit.maxShutterUs != want_shutter;
+    fix_gain = want_gain && limit.maxSensorGain != want_gain;
+    if (!fix_shutter && !fix_gain)
+        return;
+
+    if (!reported) {
+        reported = true;
+        HAL_LOG_INFO("isp: AE narrowed its limits to shutter ..%u us / sensor gain ..%u; "
+                     "restoring the configured ..%u us / ..%u and holding them",
+                     limit.maxShutterUs, limit.maxSensorGain,
+                     want_shutter ? want_shutter : limit.maxShutterUs,
+                     want_gain ? want_gain : limit.maxSensorGain);
+    }
+
+    if (fix_shutter) {
+        limit.maxShutterUs = want_shutter;
+        if (limit.minShutterUs > want_shutter)
+            limit.minShutterUs = want_shutter;
+    }
+    if (fix_gain) {
+        limit.maxSensorGain = want_gain;
+        if (limit.minSensorGain > want_gain)
+            limit.minSensorGain = want_gain;
+    }
+
+    (void)st->isp.fnSetExposureLimit(STAR_ISP_CHN, &limit);
+}
+
 int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
 {
     star_state_t *st = star_state(ctx);
@@ -1877,6 +1965,7 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
     exposure->total_gain = star_ae_total_gain(&ae);
     exposure->ae_luma = star_ae_luma(st, &ae);
 
+    star_isp_reassert_limits(st);
     star_ae_diag(st);
 
     return RSS_OK;

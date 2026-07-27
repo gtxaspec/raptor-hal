@@ -1071,6 +1071,41 @@ static void test_max_exposure_can_raise_a_conservative_ceiling(void)
           g_limit.maxShutterUs);
 }
 
+static void test_limits_are_reasserted_when_configured(void)
+{
+    rss_hal_ctx_t ctx;
+    star_state_t st;
+
+    /*
+     * Nothing configured: CUS3A narrowing its own window is its business,
+     * and fighting an algorithm over values nobody asked for is how you
+     * get an AE that oscillates. Must be checked first -- the unconfigured
+     * path returns before the re-assert interval is armed.
+     */
+    limit_setup(&ctx, &st);
+    g_limit.maxShutterUs = 14000;
+    star_isp_reassert_limits(&st);
+    CHECK(g_limit_set_calls == 0, "an unconfigured ceiling must not be re-asserted, got %u writes",
+          g_limit_set_calls);
+    CHECK(g_limit.maxShutterUs == 14000, "the AE's own window must stand, got %u",
+          g_limit.maxShutterUs);
+
+    /*
+     * Configured and then narrowed behind our back, which is the board's
+     * actual failure: 33333 written at tuning load, 14000 live ninety
+     * seconds later with the AE pinned on it.
+     */
+    limit_setup(&ctx, &st);
+    st.pend_ae_it_max = 33333;
+    g_limit.maxShutterUs = 14000;
+    g_limit.minShutterUs = 300;
+    star_isp_reassert_limits(&st);
+    CHECK(g_limit.maxShutterUs == 33333, "a configured ceiling must be restored, got %u",
+          g_limit.maxShutterUs);
+    CHECK(g_limit.maxSensorGain == 8192, "restoring the shutter must not touch the gains, got %u",
+          g_limit.maxSensorGain);
+}
+
 int main(void)
 {
     test_table_bounds();
@@ -1094,6 +1129,7 @@ int main(void)
     test_gain_ceiling_clamps_to_the_tuning();
     test_shutter_cap_holds_the_frame_period();
     test_max_exposure_can_raise_a_conservative_ceiling();
+    test_limits_are_reasserted_when_configured();
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);
