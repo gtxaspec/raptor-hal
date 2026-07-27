@@ -96,69 +96,6 @@ _Static_assert(offsetof(i6_isp_ae_status, shutterUs) == 24, "AE status shutter o
 _Static_assert(offsetof(i6_isp_ae_status, sensorGain) == 28, "AE status sensor gain offset");
 
 /*
- * AE exposure info. MI_ISP_AE_QueryExposureInfo, command 0x1402.
- *
- * The diagnostic counterpart to the AE status above: status says what the
- * AE converged on, this says whether it is done converging and what it was
- * aiming at. `reachBoundary` is the field worth having -- it distinguishes
- * "the AE chose this exposure" from "the AE wanted more and something
- * stopped it", which no combination of the other readings can.
- *
- * Unlike CUS3A_GetAeStatus, waybeam's layout for this one is *correct*:
- * the wrapper declares 572 bytes (`mov.w r3, #572 @ 0x23c` at
- * MI_ISP_AE_QueryExposureInfo+0x12, size field at [r7,#12]) and their
- * struct sums to exactly that. Checked by disassembling the board's own
- * libmi_isp.so with the technique in i6_sys.h.
- *
- * Both exposure values are carried because reading only one is a trap: if
- * the AE is running a long/short pair, the short one is not the exposure
- * that determines image brightness, and reporting it would understate the
- * shutter by whatever the HDR ratio is.
- */
-typedef struct {
-    unsigned int fNx10;
-    unsigned int sensorGain;
-    unsigned int ispGain;
-    unsigned int us;
-} i6_isp_ae_expo_value;
-
-typedef struct {
-    int stable;
-    int reachBoundary;
-    i6_isp_ae_expo_value expoLong;
-    i6_isp_ae_expo_value expoShort;
-    unsigned int histLumY;
-    unsigned int histAvgY;
-    unsigned int histHits[128];
-    unsigned int lvX10;
-    int bv;
-    unsigned int sceneTarget;
-} i6_isp_ae_expo_info;
-
-_Static_assert(sizeof(i6_isp_ae_expo_info) == 572,
-               "AE exposure info must match the 572 bytes the wrapper declares");
-
-/*
- * Manual exposure. MI_ISP_AE_SetExpoMode (command 0x1404, 4-byte payload)
- * then MI_ISP_AE_SetManualExpo (command 0x1405, 16-byte payload), both
- * sizes read off the wrappers in the board's own libmi_isp.so.
- *
- * 16 bytes is exactly i6_isp_ae_expo_value, which is the same shape the
- * AE reports its converged values in -- so the manual setter takes back
- * what the query hands out, which is the arrangement that makes sense and
- * the one the sizes agree with.
- *
- * The mode enum only has waybeam's word for one member, AUTO = 0
- * (star6e_controls.c). MANUAL = 1 is the obvious reading and the call
- * returns a status, so a wrong guess is visible rather than silent.
- */
-_Static_assert(sizeof(i6_isp_ae_expo_value) == 16,
-               "manual exposure must match the 16 bytes the wrapper declares");
-
-#define I6_ISP_AE_MODE_AUTO   0
-#define I6_ISP_AE_MODE_MANUAL 1
-
-/*
  * Hardware AE average statistics. MI_ISP_AE_GetAeHwAvgStats, command
  * 0x2e01, payload 46088 bytes (0xb408 at that wrapper's `movw r3`).
  *
@@ -297,17 +234,6 @@ typedef struct {
      */
     int (*fnGetAeStatus)(int channel, i6_isp_ae_status *status);
     int (*fnGetAeHwAvgStats)(int channel, i6_isp_ae_hw_stats *stats);
-    int (*fnQueryExposureInfo)(int channel, i6_isp_ae_expo_info *info);
-    /*
-     * The actual inverse of MI_ISP_DisableUserspace3A. Present in the
-     * board's libmi_isp.so and, until now, never bound -- which is what
-     * left the old handoff unable to put the algorithms back, since
-     * MI_ISP_CUS3A_Enable only sets flags. Optional, because a library
-     * predating it should degrade rather than fail to load.
-     */
-    int (*fnEnableUserspace3A)(int channel);
-    int (*fnSetExpoMode)(int channel, unsigned int mode);
-    int (*fnSetManualExpo)(int channel, i6_isp_ae_expo_value *value);
 } i6_isp_impl;
 
 static inline int i6_isp_load(i6_isp_impl *isp_lib)
@@ -375,14 +301,6 @@ static inline int i6_isp_load(i6_isp_impl *isp_lib)
         isp_lib->handle, "MI_ISP_CUS3A_GetAeStatus");
     isp_lib->fnGetAeHwAvgStats = (int (*)(int channel, i6_isp_ae_hw_stats *stats))dlsym(
         isp_lib->handle, "MI_ISP_AE_GetAeHwAvgStats");
-    isp_lib->fnQueryExposureInfo = (int (*)(int channel, i6_isp_ae_expo_info *info))dlsym(
-        isp_lib->handle, "MI_ISP_AE_QueryExposureInfo");
-    isp_lib->fnEnableUserspace3A =
-        (int (*)(int channel))dlsym(isp_lib->handle, "MI_ISP_EnableUserspace3A");
-    isp_lib->fnSetExpoMode =
-        (int (*)(int channel, unsigned int mode))dlsym(isp_lib->handle, "MI_ISP_AE_SetExpoMode");
-    isp_lib->fnSetManualExpo = (int (*)(int channel, i6_isp_ae_expo_value *value))dlsym(
-        isp_lib->handle, "MI_ISP_AE_SetManualExpo");
     if (!isp_lib->fnGetAeStatus)
         HAL_LOG_WARN("i6_isp: no MI_ISP_CUS3A_GetAeStatus -- "
                      "exposure readback unavailable, ric cannot detect day/night");

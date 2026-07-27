@@ -459,53 +459,12 @@ static uint8_t star_iq_unscale(uint32_t mi, uint32_t unity, uint32_t max)
  * tuning binary disabled a module, re-enabling it behind the tuner's
  * back is not this layer's call.
  */
-/*
- * RSS_ISP_MINIMAL -- suppress every write to an ISP module, leaving only
- * the tuning binary load and sensor orientation.
- *
- * For bisecting a picture that is wrong in a way none of the readings
- * explain. rvd applies its whole [image] block on every start, and while a
- * knob left neutral is *meant* to mean "leave this module on auto", that
- * intent is spread over the scaling code, the neutral checks and the
- * defaults, and a bug anywhere in it silently pins an ISP module to a
- * hardcoded midpoint. Rather than audit that reasoning again, remove the
- * writes and see if the picture changes.
- *
- * Not every write here is even conditional. `antiflicker` is written
- * unconditionally from rvd's default of 2, and divinus -- which looks
- * better in the dark on this board -- defaults it to 0 and never sets it
- * (app_config.c). Same for running mode. So "neutral means untouched" is
- * not true of this path today, which is exactly why subtracting all of it
- * at once is worth one flash.
- *
- * Both apply paths are gated rather than the ops, because these two
- * functions are the only places an IQ value reaches MI -- gating the ops
- * would mean finding all of them and getting it right.
- */
-static bool star_iq_writes_suppressed(void)
-{
-    static int suppressed = -1;
-
-    if (suppressed < 0) {
-        suppressed = getenv("RSS_ISP_MINIMAL") != NULL;
-        if (suppressed)
-            HAL_LOG_INFO("isp: RSS_ISP_MINIMAL -- no ISP module writes, only the tuning "
-                         "binary and orientation");
-    }
-    return suppressed != 0;
-}
-
 static int star_iq_apply_scalar(star_state_t *st, int idx, int val)
 {
     star_iq_param_t *p = &g_iq[idx];
     uint8_t buf[STAR_IQ_PAYLOAD_MAX];
     uint32_t mi_val;
     int ret;
-
-    if (star_iq_writes_suppressed()) {
-        HAL_LOG_DBG("isp: %s = %d suppressed", p->name, val);
-        return RSS_OK;
-    }
 
     ret = star_iq_fetch(st, idx, buf);
     if (ret != RSS_OK)
@@ -601,11 +560,6 @@ static int star_iq_apply_raw(star_state_t *st, int idx, uint32_t raw)
     star_iq_param_t *p = &g_iq[idx];
     uint8_t buf[STAR_IQ_PAYLOAD_MAX];
     int ret;
-
-    if (star_iq_writes_suppressed()) {
-        HAL_LOG_DBG("isp: %s = %u suppressed", p->name, raw);
-        return RSS_OK;
-    }
 
     ret = star_iq_fetch(st, idx, buf);
     if (ret != RSS_OK)
@@ -912,40 +866,6 @@ int star_isp_cap_exposure(star_state_t *st, unsigned int fps)
         return RSS_ERR_NOTSUP;
 
     /*
-     * Divinus parity, for bisecting a dark picture.
-     *
-     * Writing this struct and calling MI_SNR_SetFps after the tuning load
-     * is the *only* thing raptor does here that divinus does not -- divinus
-     * defines i6_sensor_exposure and never calls it, so it runs on whatever
-     * the tuning and CUS3A settle on between themselves. When divinus looks
-     * better in the dark on the same board and bin, that difference is the
-     * first thing to remove, and removing it by rebuild-and-reflash costs a
-     * night. This makes it one env var.
-     *
-     * Not a config key: it exists to answer a question, not to be a
-     * supported way to run. If it turns out to be the answer, the fix is a
-     * considered change to what this function does by default, not this.
-     */
-    if (getenv("RSS_ISP_NO_EXPO_CAP")) {
-        static bool said;
-
-        if (!said) {
-            said = true;
-            HAL_LOG_INFO("isp: RSS_ISP_NO_EXPO_CAP -- leaving the AE's exposure limits and "
-                         "the sensor framerate entirely alone, as divinus does");
-        }
-        return RSS_OK;
-    }
-
-    ret = star_isp_read_limits(st, &limit);
-    if (ret == RSS_ERR_IO)
-        return ret;
-    if (ret != RSS_OK || limit.maxShutterUs == 0) {
-        HAL_LOG_WARN("isp: AE published no exposure limits; shutter left uncapped");
-        return RSS_ERR_TIMEOUT;
-    }
-
-    /*
      * An explicit max_exposure_us owns the ceiling. Without this the
      * framerate clamp below would immediately undo it, and a config key
      * that silently does nothing is worse than no key.
@@ -1122,23 +1042,8 @@ void star_isp_tune_when_ready(star_state_t *st, bool verbose)
          * RSS_ISP_3A_HANDOFF=1 restores the old sequence, so the two can
          * be compared on hardware from one binary.
          */
-        /*
-         * 1 is the old sequence, kept as it shipped. 2 adds the step it
-         * was missing: MI_ISP_EnableUserspace3A, the actual inverse of
-         * DisableUserspace3A, which is present in this library and was
-         * never bound. That omission is why mode 1 left AWB enabled with
-         * no algorithm behind it -- CUS3A_Enable sets flags and cannot
-         * re-register anything.
-         *
-         * Worth having both, because the working theory is that removing
-         * the handoff altogether is what left CUS3A running the generic
-         * /etc/firmware/iqfile0.bin instead of the per-sensor bin, and
-         * mode 1 is not a fair test of that theory while it is also
-         * breaking white balance.
-         */
         const char *want_handoff = getenv("RSS_ISP_3A_HANDOFF");
-        int handoff_mode = want_handoff ? atoi(want_handoff) : 0;
-        bool handoff = handoff_mode > 0;
+        bool handoff = want_handoff && want_handoff[0] == '1';
 
         if (handoff && st->isp.fnDisableUserspace3A &&
             st->isp.fnDisableUserspace3A(STAR_ISP_CHN))
@@ -1154,16 +1059,6 @@ void star_isp_tune_when_ready(star_state_t *st, bool verbose)
             HAL_LOG_INFO("isp: loaded tuning file %s (3A %s)", st->iq_file,
                          handoff ? "handed off and restarted (RSS_ISP_3A_HANDOFF)"
                                  : "left running, as divinus does");
-        }
-
-        if (handoff_mode >= 2 && st->isp.fnEnableUserspace3A) {
-            if (st->isp.fnEnableUserspace3A(STAR_ISP_CHN))
-                HAL_LOG_WARN("isp: MI_ISP_EnableUserspace3A failed");
-            else
-                HAL_LOG_INFO("isp: MI_ISP_EnableUserspace3A -- 3A algorithms re-registered");
-        } else if (handoff_mode >= 2) {
-            HAL_LOG_WARN("isp: no MI_ISP_EnableUserspace3A in this library; "
-                         "handoff mode 2 degrades to mode 1");
         }
 
         if (handoff)
@@ -1394,11 +1289,6 @@ static int star_isp_apply_gain_limit(star_state_t *st, bool sensor_gain, int gai
 {
     i6_isp_exp limit;
     int ret;
-
-    /* Part of the same subtraction: the gain ceilings live in the AE's
-     * limit struct rather than an IQ module, so the gate above misses them. */
-    if (star_iq_writes_suppressed())
-        return RSS_OK;
 
     /* Guarded like every other vendor pointer in this file. i6_isp_load
      * refuses to report success without these two, so a live pipeline
@@ -1898,164 +1788,6 @@ static uint32_t star_ae_luma(star_state_t *st, const i6_isp_ae_status *ae)
     return luma;
 }
 
-/*
- * Periodic AE diagnostic, off unless RSS_AE_DIAG is set.
- *
- * The question this exists to answer cannot be answered from the readings
- * ric already has. A dark picture with gain at its ceiling and shutter well
- * short of it looks like a bug, but the AE choosing that exposure and the
- * AE being prevented from going further are indistinguishable from outside
- * -- so this reports `boundary`, which says which it is, alongside the
- * target it was aiming at and the light value it measured.
- *
- * The long/short pair is printed because the difference matters: if the AE
- * is running an HDR pair, `exposure_us` in ric's status is whichever field
- * the AE status struct calls the primary one, and comparing it against
- * these two says whether that is the exposure setting image brightness.
- *
- * Env-gated and rate-limited rather than a build option, because it is
- * wanted on a board that is already flashed and already dark -- the same
- * reason RSS_OSD_PIXFMT and RSS_ISP_3A_HANDOFF are env hatches. At INFO
- * because HAL_LOG_DBG is compiled out of release builds.
- */
-#define STAR_AE_DIAG_INTERVAL_S 5
-
-static void star_ae_diag(star_state_t *st)
-{
-    static int enabled = -1;
-    static time_t last;
-    i6_isp_ae_expo_info info;
-    i6_isp_exp limit;
-    struct timespec now;
-
-    if (enabled < 0)
-        enabled = getenv("RSS_AE_DIAG") != NULL;
-    if (!enabled || !st->isp.fnQueryExposureInfo)
-        return;
-
-    if (clock_gettime(CLOCK_MONOTONIC, &now))
-        return;
-    if (last && now.tv_sec - last < STAR_AE_DIAG_INTERVAL_S)
-        return;
-    last = now.tv_sec;
-
-    memset(&info, 0, sizeof(info));
-    if (st->isp.fnQueryExposureInfo(STAR_ISP_CHN, &info)) {
-        HAL_LOG_WARN("isp: MI_ISP_AE_QueryExposureInfo failed");
-        return;
-    }
-
-    memset(&limit, 0, sizeof(limit));
-    if (st->isp.fnGetExposureLimit)
-        (void)st->isp.fnGetExposureLimit(STAR_ISP_CHN, &limit);
-
-    HAL_LOG_INFO("ae: stable=%d boundary=%d target=%u avgY=%u lumY=%u lv=%u.%u bv=%d",
-                 info.stable, info.reachBoundary, info.sceneTarget, info.histAvgY, info.histLumY,
-                 info.lvX10 / 10u, info.lvX10 % 10u, info.bv);
-    HAL_LOG_INFO("ae: long %uus gain %u/%u | short %uus gain %u/%u", info.expoLong.us,
-                 info.expoLong.sensorGain, info.expoLong.ispGain, info.expoShort.us,
-                 info.expoShort.sensorGain, info.expoShort.ispGain);
-    HAL_LOG_INFO("ae: limits shutter %u..%u us, sensor gain %u..%u, isp gain %u..%u",
-                 limit.minShutterUs, limit.maxShutterUs, limit.minSensorGain,
-                 limit.maxSensorGain, limit.minIspGain, limit.maxIspGain);
-}
-
-/*
- * Re-assert an explicitly configured exposure ceiling, because a single
- * write does not hold.
- *
- * Board evidence, 2026-07-27. The tuning published `sensor gain
- * 1024..131072, shutter 22..50000`; we clamped the shutter to 33333 for
- * 30 fps and wrote nothing else. Ninety seconds later the AE was operating
- * on `shutter 300..14000, sensor gain 1024..8192` -- a window 3.5x shorter
- * and 16x less sensitive than the tuning allows, with the AE pinned on both
- * ceilings (`boundary=1`) against a measured `avgY=0`. So CUS3A rewrites
- * this struct while it runs, and our value lasted only until it did.
- *
- * waybeam already worked around this and the shape of its code says so:
- * its cus3a_thread re-reads the limit struct and re-pushes any field that
- * drifted, every AE tick, for the whole run (maruko_cus3a.c). A one-shot
- * write at tuning-load time is simply not how this interface works.
- *
- * Deliberately only re-asserts what was *asked for*. With nothing
- * configured this does nothing at all, because then CUS3A narrowing its own
- * window is its business -- fighting an algorithm over values nobody
- * requested is how you get an AE that oscillates. But a ceiling the config
- * states is a ceiling the config should get, and the alternative is the
- * failure this whole area keeps producing: a write that silently did not
- * take.
- *
- * Hooked onto get_exposure rather than a thread of its own: ric already
- * polls it once a second, which is an order of magnitude slower than
- * waybeam's loop and plenty to hold a ceiling.
- */
-/*
- * RSS_AE_MANUAL_US / RSS_AE_MANUAL_GAIN -- drive the sensor directly and
- * take the AE out of the loop entirely.
- *
- * This is the bisection that ends the argument about a black picture. The
- * AE has been sitting immovably at 14000 us and 8192 gain while its own
- * limits allow 50000 and 131072 and gc4653's driver allows 200000 and
- * 77660. Two possibilities remain and they need different fixes:
- *
- *   - the sensor can deliver and the AE simply will not ask, in which case
- *     forcing the exposure brightens the picture and the problem is CUS3A's
- *     calibration;
- *   - or the exposure is not reaching the sensor at all, in which case
- *     forcing it changes nothing, and every AE number we have been reading
- *     is fiction.
- *
- * Nothing short of taking the AE out of the loop separates those, because
- * every reading available is the AE's own account of itself.
- *
- * Re-applied on a timer rather than set once: CUS3A is already proven to
- * take back a written exposure limit within ninety seconds, so a one-shot
- * manual exposure would be an experiment that quietly stops being true.
- */
-static void star_ae_manual(star_state_t *st)
-{
-    static int configured = -1;
-    static unsigned int want_us, want_gain;
-    static time_t last;
-    i6_isp_ae_expo_value expo;
-    struct timespec now;
-
-    if (configured < 0) {
-        const char *us = getenv("RSS_AE_MANUAL_US");
-        const char *gain = getenv("RSS_AE_MANUAL_GAIN");
-
-        want_us = us ? (unsigned int)strtoul(us, NULL, 10) : 0u;
-        /* 32x by default: past where the AE stalls, short of the noisiest
-         * end of the sensor's table. */
-        want_gain = gain ? (unsigned int)strtoul(gain, NULL, 10) : 32768u;
-        configured = want_us > 0;
-        if (configured)
-            HAL_LOG_INFO("isp: RSS_AE_MANUAL -- forcing %u us at gain %u, AE out of the loop",
-                         want_us, want_gain);
-    }
-    if (!configured || !st->isp.fnSetExpoMode || !st->isp.fnSetManualExpo)
-        return;
-
-    if (clock_gettime(CLOCK_MONOTONIC, &now))
-        return;
-    if (last && now.tv_sec - last < STAR_AE_DIAG_INTERVAL_S)
-        return;
-    last = now.tv_sec;
-
-    if (st->isp.fnSetExpoMode(STAR_ISP_CHN, I6_ISP_AE_MODE_MANUAL)) {
-        HAL_LOG_WARN("isp: MI_ISP_AE_SetExpoMode(manual) failed -- if the mode enum is not "
-                     "0=auto/1=manual this is where it shows");
-        return;
-    }
-
-    memset(&expo, 0, sizeof(expo));
-    expo.us = want_us;
-    expo.sensorGain = want_gain;
-    expo.ispGain = 1024; /* unity; this bin offers no digital gain anyway */
-    if (st->isp.fnSetManualExpo(STAR_ISP_CHN, &expo))
-        HAL_LOG_WARN("isp: MI_ISP_AE_SetManualExpo(%u us, gain %u) failed", want_us, want_gain);
-}
-
 #define STAR_LIMIT_REASSERT_S 2
 
 static void star_isp_reassert_limits(star_state_t *st)
@@ -2248,8 +1980,6 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
 
     star_isp_reload_if_reset(st, false);
     star_isp_reassert_limits(st);
-    star_ae_manual(st);
-    star_ae_diag(st);
 
     return RSS_OK;
 }
