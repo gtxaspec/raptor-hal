@@ -1062,13 +1062,28 @@ void star_isp_bringup(star_state_t *st, const rss_sensor_config_t *cfg)
  */
 static void star_isp_flush_pending(star_state_t *st);
 static int star_isp_set_orien(star_state_t *st);
+static void star_isp_reload_if_reset(star_state_t *st, bool force);
 
 void star_isp_tune_when_ready(star_state_t *st, bool verbose)
 {
     int ret;
 
-    if (!st || !st->isp_loaded || st->isp_tuned)
+    if (!st || !st->isp_loaded)
         return;
+
+    /*
+     * Already tuned is not the same as still tuned. Something in the
+     * bring-up after this function first runs tears the tuning down -- one
+     * reload, once, right at startup on the board -- so every later call
+     * checks instead of returning. This path is what makes the repair
+     * reliable: it is driven by the pipeline being built, whereas the
+     * check in hal_isp_get_exposure only happens because ric polls, and
+     * with ric disabled nothing would ever look.
+     */
+    if (st->isp_tuned) {
+        star_isp_reload_if_reset(st, true);
+        return;
+    }
 
     if (star_isp_wait_ready(st, verbose ? STAR_ISP_READY_TIMEOUT_MS : STAR_ISP_READY_QUICK_MS,
                             verbose) != RSS_OK)
@@ -1863,7 +1878,14 @@ static uint32_t star_ae_luma(star_state_t *st, const i6_isp_ae_status *ae)
      * behaving like luma. Cheap to compute in the same pass and worth
      * far more than a debug build on a camera nobody is watching.
      */
-    if (!layout_logged) {
+    /*
+     * An all-zero sample settles nothing and must not consume the one
+     * shot. That is not hypothetical: on this board the probe fired in the
+     * window where the ISP had been reset back to its defaults and logged
+     * r=0 g=0 b=0 y=0, spending the one line that was supposed to identify
+     * the lanes on a frame that had no statistics in it at all.
+     */
+    if (!layout_logged && (sum[0] || sum[1] || sum[2] || sum[3])) {
         HAL_LOG_INFO("isp: AE grid %ux%u, cells at offset %u, lane means "
                      "r=%llu g=%llu b=%llu y=%llu (y is the one used)",
                      blk_x, blk_y, cell == stats->lead.cell ? 8u : 0u,
@@ -2129,7 +2151,7 @@ static void star_isp_reassert_limits(star_state_t *st)
  */
 #define STAR_IQ_RELOAD_MAX 5
 
-static void star_isp_reload_if_reset(star_state_t *st)
+static void star_isp_reload_if_reset(star_state_t *st, bool force)
 {
     i6_isp_exp limit;
     static time_t last;
@@ -2142,9 +2164,15 @@ static void star_isp_reload_if_reset(star_state_t *st)
     if (!st->isp.fnGetExposureLimit || !st->isp.fnLoadChannelConfig)
         return;
 
+    /*
+     * The interval only paces the polled caller. The bring-up path forces
+     * the check, because its calls are seconds apart at most and the whole
+     * point there is to repair the tear-down before frames flow rather
+     * than a poll interval later.
+     */
     if (clock_gettime(CLOCK_MONOTONIC, &now))
         return;
-    if (last && now.tv_sec - last < STAR_LIMIT_REASSERT_S)
+    if (!force && last && now.tv_sec - last < STAR_LIMIT_REASSERT_S)
         return;
     last = now.tv_sec;
 
@@ -2218,7 +2246,7 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
     exposure->total_gain = star_ae_total_gain(&ae);
     exposure->ae_luma = star_ae_luma(st, &ae);
 
-    star_isp_reload_if_reset(st);
+    star_isp_reload_if_reset(st, false);
     star_isp_reassert_limits(st);
     star_ae_manual(st);
     star_ae_diag(st);
