@@ -113,6 +113,15 @@ _Static_assert(offsetof(i6_isp_ae_status, sensorGain) == 28, "AE status sensor g
  * accepts the one that matches, rather than picking one and averaging
  * whatever lands at that offset. Neither matching means no luma -- not a
  * plausible-looking number derived from the wrong bytes.
+ *
+ * Settled on an SSC30KQ + GC4653 board 2026-07-27: the probe reported
+ * "AE grid 32x32, cells at offset 8", so the eight bytes LEAD and they
+ * are the grid dimensions themselves. 128x90 is the payload's maximum,
+ * not the live grid -- the buffer stays sized for the declared 46088
+ * either way, and the grid actually averaged is whatever AE status
+ * reports. The lane order is still only waybeam's word: that scene came
+ * back r=46 g=46 b=44 y=46, which is consistent with r,g,b,y but too
+ * neutral to distinguish the lanes from each other.
  */
 #define I6_ISP_AE_BLK_X 128
 #define I6_ISP_AE_BLK_Y 90
