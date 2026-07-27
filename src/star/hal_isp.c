@@ -1107,8 +1107,23 @@ void star_isp_tune_when_ready(star_state_t *st, bool verbose)
          * RSS_ISP_3A_HANDOFF=1 restores the old sequence, so the two can
          * be compared on hardware from one binary.
          */
+        /*
+         * 1 is the old sequence, kept as it shipped. 2 adds the step it
+         * was missing: MI_ISP_EnableUserspace3A, the actual inverse of
+         * DisableUserspace3A, which is present in this library and was
+         * never bound. That omission is why mode 1 left AWB enabled with
+         * no algorithm behind it -- CUS3A_Enable sets flags and cannot
+         * re-register anything.
+         *
+         * Worth having both, because the working theory is that removing
+         * the handoff altogether is what left CUS3A running the generic
+         * /etc/firmware/iqfile0.bin instead of the per-sensor bin, and
+         * mode 1 is not a fair test of that theory while it is also
+         * breaking white balance.
+         */
         const char *want_handoff = getenv("RSS_ISP_3A_HANDOFF");
-        bool handoff = want_handoff && want_handoff[0] == '1';
+        int handoff_mode = want_handoff ? atoi(want_handoff) : 0;
+        bool handoff = handoff_mode > 0;
 
         if (handoff && st->isp.fnDisableUserspace3A &&
             st->isp.fnDisableUserspace3A(STAR_ISP_CHN))
@@ -1124,6 +1139,16 @@ void star_isp_tune_when_ready(star_state_t *st, bool verbose)
             HAL_LOG_INFO("isp: loaded tuning file %s (3A %s)", st->iq_file,
                          handoff ? "handed off and restarted (RSS_ISP_3A_HANDOFF)"
                                  : "left running, as divinus does");
+        }
+
+        if (handoff_mode >= 2 && st->isp.fnEnableUserspace3A) {
+            if (st->isp.fnEnableUserspace3A(STAR_ISP_CHN))
+                HAL_LOG_WARN("isp: MI_ISP_EnableUserspace3A failed");
+            else
+                HAL_LOG_INFO("isp: MI_ISP_EnableUserspace3A -- 3A algorithms re-registered");
+        } else if (handoff_mode >= 2) {
+            HAL_LOG_WARN("isp: no MI_ISP_EnableUserspace3A in this library; "
+                         "handoff mode 2 degrades to mode 1");
         }
 
         if (handoff)

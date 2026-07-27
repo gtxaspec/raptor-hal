@@ -298,6 +298,14 @@ typedef struct {
     int (*fnGetAeStatus)(int channel, i6_isp_ae_status *status);
     int (*fnGetAeHwAvgStats)(int channel, i6_isp_ae_hw_stats *stats);
     int (*fnQueryExposureInfo)(int channel, i6_isp_ae_expo_info *info);
+    /*
+     * The actual inverse of MI_ISP_DisableUserspace3A. Present in the
+     * board's libmi_isp.so and, until now, never bound -- which is what
+     * left the old handoff unable to put the algorithms back, since
+     * MI_ISP_CUS3A_Enable only sets flags. Optional, because a library
+     * predating it should degrade rather than fail to load.
+     */
+    int (*fnEnableUserspace3A)(int channel);
     int (*fnSetExpoMode)(int channel, unsigned int mode);
     int (*fnSetManualExpo)(int channel, i6_isp_ae_expo_value *value);
 } i6_isp_impl;
@@ -369,6 +377,8 @@ static inline int i6_isp_load(i6_isp_impl *isp_lib)
         isp_lib->handle, "MI_ISP_AE_GetAeHwAvgStats");
     isp_lib->fnQueryExposureInfo = (int (*)(int channel, i6_isp_ae_expo_info *info))dlsym(
         isp_lib->handle, "MI_ISP_AE_QueryExposureInfo");
+    isp_lib->fnEnableUserspace3A =
+        (int (*)(int channel))dlsym(isp_lib->handle, "MI_ISP_EnableUserspace3A");
     isp_lib->fnSetExpoMode =
         (int (*)(int channel, unsigned int mode))dlsym(isp_lib->handle, "MI_ISP_AE_SetExpoMode");
     isp_lib->fnSetManualExpo = (int (*)(int channel, i6_isp_ae_expo_value *value))dlsym(
