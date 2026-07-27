@@ -884,6 +884,8 @@ static void limit_setup(rss_hal_ctx_t *ctx, star_state_t *st)
     st->isp_tuned = true;
     st->pend_max_again = -1;
     st->pend_max_dgain = -1;
+    st->pend_ae_it_max = -1;
+    st->fps = 30;
     st->isp.fnGetExposureLimit = fake_get_exposure_limit;
     st->isp.fnSetExposureLimit = fake_set_exposure_limit;
 
@@ -1005,6 +1007,61 @@ static void test_shutter_cap_holds_the_frame_period(void)
     CHECK(star_isp_cap_exposure(&st, 25) == RSS_ERR_IO, "a failed limit read must report io");
 }
 
+static void test_max_exposure_can_raise_a_conservative_ceiling(void)
+{
+    rss_hal_ctx_t ctx;
+    star_state_t st;
+    uint32_t got = 0;
+
+    limit_setup(&ctx, &st);
+
+    /*
+     * The board's situation: the tuning publishes a 14 ms shutter ceiling
+     * while the 30 fps frame period allows 33.3 ms, and star_isp_cap_exposure
+     * only ever lowers -- so without this op that 14 ms is the ceiling and
+     * there is no lever left once gain is capped too.
+     */
+    g_limit.maxShutterUs = 14000;
+    CHECK(hal_isp_set_ae_it_max(&ctx, 33333) == RSS_OK, "raising the ceiling must succeed");
+    CHECK(g_limit.maxShutterUs == 33333, "14000 must rise to 33333, got %u",
+          g_limit.maxShutterUs);
+    CHECK(g_limit.maxSensorGain == 8192, "raising the shutter must leave the gains alone, got %u",
+          g_limit.maxSensorGain);
+
+    /* A longer exposure than the frame period would cost framerate, which
+     * is a surprising way to get a brighter picture. */
+    CHECK(hal_isp_set_ae_it_max(&ctx, 100000) == RSS_OK, "an over-long request must still apply");
+    CHECK(g_limit.maxShutterUs == 33333, "100000 must clamp to the frame period, got %u",
+          g_limit.maxShutterUs);
+
+    /* The getter reads the live ceiling, not the request. */
+    CHECK(hal_isp_get_ae_it_max(&ctx, &got) == RSS_OK, "get must succeed");
+    CHECK(got == 33333, "get must report the live ceiling, got %u", got);
+
+    /* 0 means "leave the tuning alone" and must clear the request rather
+     * than ask the AE for a zero-microsecond exposure. */
+    limit_setup(&ctx, &st);
+    g_limit.maxShutterUs = 14000;
+    CHECK(hal_isp_set_ae_it_max(&ctx, 0) == RSS_OK, "zero must be accepted");
+    CHECK(st.pend_ae_it_max == -1, "zero must clear the request, got %d", st.pend_ae_it_max);
+    CHECK(g_limit.maxShutterUs == 14000, "zero must not write a ceiling, got %u",
+          g_limit.maxShutterUs);
+
+    /* Queued while the ISP is still coming up, like the gain ceilings. */
+    limit_setup(&ctx, &st);
+    st.isp_tuned = false;
+    CHECK(hal_isp_set_ae_it_max(&ctx, 20000) == RSS_OK, "an untuned ISP must queue, not fail");
+    CHECK(g_limit_set_calls == 0, "queuing must not write, got %u", g_limit_set_calls);
+    CHECK(hal_isp_get_ae_it_max(&ctx, &got) == RSS_OK, "get must succeed while queued");
+    CHECK(got == 20000, "a queued request must read back, got %u", got);
+
+    /* And the flush applies it once the tuning is in. */
+    st.isp_tuned = true;
+    star_isp_flush_pending(&st);
+    CHECK(g_limit.maxShutterUs == 20000, "the flush must apply the queued ceiling, got %u",
+          g_limit.maxShutterUs);
+}
+
 int main(void)
 {
     test_table_bounds();
@@ -1027,6 +1084,7 @@ int main(void)
     test_gain_ceiling_refuses_ingenic_units();
     test_gain_ceiling_clamps_to_the_tuning();
     test_shutter_cap_holds_the_frame_period();
+    test_max_exposure_can_raise_a_conservative_ceiling();
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);

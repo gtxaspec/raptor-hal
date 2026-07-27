@@ -442,6 +442,11 @@ typedef struct {
     int pend_max_again;
     int pend_max_dgain;
 
+    /* Requested AE max integration time in microseconds, -1 for "leave
+     * the tuning's own ceiling alone". Queued like the gain ceilings and
+     * for the same reason. */
+    int pend_ae_it_max;
+
     /*
      * The AE's own gain ceilings, snapshotted from whichever tuning is in
      * effect before any config knob overwrites them. These are the
@@ -683,6 +688,8 @@ int hal_isp_set_temper_strength(void *ctx, int val);
 int hal_isp_set_ae_comp(void *ctx, int val);
 int hal_isp_set_defog(void *ctx, int enable);
 int hal_isp_set_antiflicker(void *ctx, rss_antiflicker_t mode);
+int hal_isp_set_ae_it_max(void *ctx, uint32_t it_max);
+int hal_isp_get_ae_it_max(void *ctx, uint32_t *it_max);
 int hal_isp_set_max_again(void *ctx, int gain);
 int hal_isp_set_max_dgain(void *ctx, int gain);
 int hal_isp_set_running_mode(void *ctx, rss_isp_mode_t mode);

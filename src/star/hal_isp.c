@@ -953,6 +953,7 @@ void star_isp_bringup(star_state_t *st, const rss_sensor_config_t *cfg)
      */
     st->pend_max_again = -1;
     st->pend_max_dgain = -1;
+    st->pend_ae_it_max = -1;
 
     ret = i6_isp_load(&st->isp);
     if (ret != RSS_OK) {
@@ -1418,6 +1419,8 @@ static int star_isp_set_gain_limit(void *ctx, bool sensor_gain, int gain)
  * binary's own state, so these values have to be re-applied after each
  * one, not drained once -- see the comment on has_pending.
  */
+static int star_isp_apply_ae_it_max(star_state_t *st, unsigned int it_max);
+
 static void star_isp_flush_pending(star_state_t *st)
 {
     size_t i;
@@ -1438,6 +1441,138 @@ static void star_isp_flush_pending(star_state_t *st)
         (void)star_isp_apply_gain_limit(st, true, st->pend_max_again);
     if (st->pend_max_dgain >= 0)
         (void)star_isp_apply_gain_limit(st, false, st->pend_max_dgain);
+
+    /* Before star_isp_cap_exposure, which only lowers, so a request at or
+     * under the frame period survives it untouched. */
+    if (st->pend_ae_it_max > 0)
+        (void)star_isp_apply_ae_it_max(st, (unsigned int)st->pend_ae_it_max);
+}
+
+/*
+ * AE max integration time, in microseconds.
+ *
+ * The unit is this platform's, like the gain ceilings above: MI states
+ * the shutter limit in microseconds, so that is what this op takes here.
+ * Ingenic's own isp_set_ae_it_max is a different quantity on a different
+ * scale; nothing converts between them.
+ *
+ * Why this op exists at all: star_isp_cap_exposure only ever *lowers* the
+ * ceiling, to hold the requested framerate, and both references do the
+ * same -- waybeam clamps with `want_shutter <= cur_limit.maxShutterUs`
+ * and divinus never calls SetExposureLimit at all (i6_sensor_exposure is
+ * defined with no caller). So a tuning file that publishes a conservative
+ * shutter ceiling is the ceiling, and on a sensor whose gain ceiling is
+ * also low -- gc4653.bin allows 8x sensor and no ISP gain at all -- there
+ * is no lever left for a dark scene. This is that lever, opt-in, because
+ * trading motion blur for light is a decision this code cannot make.
+ *
+ * Still bounded by the frame period: a longer exposure than the frame
+ * period cannot be honoured without dropping framerate, which is a
+ * surprising way to get a brighter picture.
+ */
+static int star_isp_apply_ae_it_max(star_state_t *st, unsigned int it_max)
+{
+    i6_isp_exp limit;
+    unsigned int frame_us;
+    int ret;
+
+    if (!st->isp.fnGetExposureLimit || !st->isp.fnSetExposureLimit)
+        return RSS_ERR_NOTSUP;
+
+    ret = st->isp.fnGetExposureLimit(STAR_ISP_CHN, &limit);
+    if (ret) {
+        HAL_LOG_WARN("isp: MI_ISP_AE_GetExposureLimit failed: %d", ret);
+        return RSS_ERR_IO;
+    }
+
+    if (st->fps) {
+        frame_us = 1000000u / st->fps;
+        if (it_max > frame_us) {
+            HAL_LOG_INFO("isp: max exposure %u us exceeds the %u us frame period at %u fps; "
+                         "using %u",
+                         it_max, frame_us, st->fps, frame_us);
+            it_max = frame_us;
+        }
+    }
+
+    if (limit.maxShutterUs == it_max) {
+        HAL_LOG_DBG("isp: max exposure already %u us", it_max);
+        return RSS_OK;
+    }
+
+    HAL_LOG_INFO("isp: max exposure %u -> %u us", limit.maxShutterUs, it_max);
+    limit.maxShutterUs = it_max;
+    if (limit.minShutterUs > it_max)
+        limit.minShutterUs = it_max;
+
+    ret = st->isp.fnSetExposureLimit(STAR_ISP_CHN, &limit);
+    if (ret) {
+        HAL_LOG_WARN("isp: MI_ISP_AE_SetExposureLimit failed: %d", ret);
+        return RSS_ERR_IO;
+    }
+
+    /*
+     * Read back and say what stuck. MI validates a gain ceiling against
+     * the tuning's and quietly keeps its own, and there is no reason to
+     * assume the shutter ceiling is treated differently -- so a silent
+     * success here would be indistinguishable from a write that MI threw
+     * away, which is exactly the failure that made the gain ceiling take
+     * a board run to understand.
+     */
+    memset(&limit, 0, sizeof(limit));
+    if (st->isp.fnGetExposureLimit(STAR_ISP_CHN, &limit) == 0 && limit.maxShutterUs != it_max)
+        HAL_LOG_WARN("isp: max exposure did not take -- asked %u us, AE reports %u; the tuning's "
+                     "ceiling is likely authoritative",
+                     it_max, limit.maxShutterUs);
+
+    return RSS_OK;
+}
+
+int hal_isp_set_ae_it_max(void *ctx, uint32_t it_max)
+{
+    star_state_t *st = star_state(ctx);
+
+    if (!st || !st->isp_loaded)
+        return RSS_ERR_NOENT;
+
+    /* 0 means "leave the tuning's ceiling alone", which is also the
+     * default, so it must clear a previous request rather than ask for a
+     * zero-microsecond exposure. */
+    st->pend_ae_it_max = it_max ? (int)it_max : -1;
+
+    if (!st->isp_tuned || !it_max) {
+        HAL_LOG_DBG("isp: max exposure %u us queued until the ISP is up", it_max);
+        return RSS_OK;
+    }
+
+    return star_isp_apply_ae_it_max(st, it_max);
+}
+
+int hal_isp_get_ae_it_max(void *ctx, uint32_t *it_max)
+{
+    star_state_t *st = star_state(ctx);
+    i6_isp_exp limit;
+
+    if (!st || !st->isp_loaded)
+        return RSS_ERR_NOENT;
+    if (!it_max)
+        return RSS_ERR_INVAL;
+
+    if (!st->isp_tuned) {
+        *it_max = st->pend_ae_it_max >= 0 ? (uint32_t)st->pend_ae_it_max : 0u;
+        return RSS_OK;
+    }
+    if (!st->isp.fnGetExposureLimit)
+        return RSS_ERR_NOTSUP;
+
+    memset(&limit, 0, sizeof(limit));
+    if (st->isp.fnGetExposureLimit(STAR_ISP_CHN, &limit)) {
+        HAL_LOG_WARN("isp: MI_ISP_AE_GetExposureLimit failed");
+        return RSS_ERR_IO;
+    }
+
+    *it_max = limit.maxShutterUs;
+    return RSS_OK;
 }
 
 int hal_isp_set_max_again(void *ctx, int gain)
