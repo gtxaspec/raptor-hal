@@ -139,6 +139,26 @@ _Static_assert(sizeof(i6_isp_ae_expo_info) == 572,
                "AE exposure info must match the 572 bytes the wrapper declares");
 
 /*
+ * Manual exposure. MI_ISP_AE_SetExpoMode (command 0x1404, 4-byte payload)
+ * then MI_ISP_AE_SetManualExpo (command 0x1405, 16-byte payload), both
+ * sizes read off the wrappers in the board's own libmi_isp.so.
+ *
+ * 16 bytes is exactly i6_isp_ae_expo_value, which is the same shape the
+ * AE reports its converged values in -- so the manual setter takes back
+ * what the query hands out, which is the arrangement that makes sense and
+ * the one the sizes agree with.
+ *
+ * The mode enum only has waybeam's word for one member, AUTO = 0
+ * (star6e_controls.c). MANUAL = 1 is the obvious reading and the call
+ * returns a status, so a wrong guess is visible rather than silent.
+ */
+_Static_assert(sizeof(i6_isp_ae_expo_value) == 16,
+               "manual exposure must match the 16 bytes the wrapper declares");
+
+#define I6_ISP_AE_MODE_AUTO   0
+#define I6_ISP_AE_MODE_MANUAL 1
+
+/*
  * Hardware AE average statistics. MI_ISP_AE_GetAeHwAvgStats, command
  * 0x2e01, payload 46088 bytes (0xb408 at that wrapper's `movw r3`).
  *
@@ -278,6 +298,8 @@ typedef struct {
     int (*fnGetAeStatus)(int channel, i6_isp_ae_status *status);
     int (*fnGetAeHwAvgStats)(int channel, i6_isp_ae_hw_stats *stats);
     int (*fnQueryExposureInfo)(int channel, i6_isp_ae_expo_info *info);
+    int (*fnSetExpoMode)(int channel, unsigned int mode);
+    int (*fnSetManualExpo)(int channel, i6_isp_ae_expo_value *value);
 } i6_isp_impl;
 
 static inline int i6_isp_load(i6_isp_impl *isp_lib)
@@ -347,6 +369,10 @@ static inline int i6_isp_load(i6_isp_impl *isp_lib)
         isp_lib->handle, "MI_ISP_AE_GetAeHwAvgStats");
     isp_lib->fnQueryExposureInfo = (int (*)(int channel, i6_isp_ae_expo_info *info))dlsym(
         isp_lib->handle, "MI_ISP_AE_QueryExposureInfo");
+    isp_lib->fnSetExpoMode =
+        (int (*)(int channel, unsigned int mode))dlsym(isp_lib->handle, "MI_ISP_AE_SetExpoMode");
+    isp_lib->fnSetManualExpo = (int (*)(int channel, i6_isp_ae_expo_value *value))dlsym(
+        isp_lib->handle, "MI_ISP_AE_SetManualExpo");
     if (!isp_lib->fnGetAeStatus)
         HAL_LOG_WARN("i6_isp: no MI_ISP_CUS3A_GetAeStatus -- "
                      "exposure readback unavailable, ric cannot detect day/night");

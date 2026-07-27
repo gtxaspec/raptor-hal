@@ -1942,6 +1942,73 @@ static void star_ae_diag(star_state_t *st)
  * polls it once a second, which is an order of magnitude slower than
  * waybeam's loop and plenty to hold a ceiling.
  */
+/*
+ * RSS_AE_MANUAL_US / RSS_AE_MANUAL_GAIN -- drive the sensor directly and
+ * take the AE out of the loop entirely.
+ *
+ * This is the bisection that ends the argument about a black picture. The
+ * AE has been sitting immovably at 14000 us and 8192 gain while its own
+ * limits allow 50000 and 131072 and gc4653's driver allows 200000 and
+ * 77660. Two possibilities remain and they need different fixes:
+ *
+ *   - the sensor can deliver and the AE simply will not ask, in which case
+ *     forcing the exposure brightens the picture and the problem is CUS3A's
+ *     calibration;
+ *   - or the exposure is not reaching the sensor at all, in which case
+ *     forcing it changes nothing, and every AE number we have been reading
+ *     is fiction.
+ *
+ * Nothing short of taking the AE out of the loop separates those, because
+ * every reading available is the AE's own account of itself.
+ *
+ * Re-applied on a timer rather than set once: CUS3A is already proven to
+ * take back a written exposure limit within ninety seconds, so a one-shot
+ * manual exposure would be an experiment that quietly stops being true.
+ */
+static void star_ae_manual(star_state_t *st)
+{
+    static int configured = -1;
+    static unsigned int want_us, want_gain;
+    static time_t last;
+    i6_isp_ae_expo_value expo;
+    struct timespec now;
+
+    if (configured < 0) {
+        const char *us = getenv("RSS_AE_MANUAL_US");
+        const char *gain = getenv("RSS_AE_MANUAL_GAIN");
+
+        want_us = us ? (unsigned int)strtoul(us, NULL, 10) : 0u;
+        /* 32x by default: past where the AE stalls, short of the noisiest
+         * end of the sensor's table. */
+        want_gain = gain ? (unsigned int)strtoul(gain, NULL, 10) : 32768u;
+        configured = want_us > 0;
+        if (configured)
+            HAL_LOG_INFO("isp: RSS_AE_MANUAL -- forcing %u us at gain %u, AE out of the loop",
+                         want_us, want_gain);
+    }
+    if (!configured || !st->isp.fnSetExpoMode || !st->isp.fnSetManualExpo)
+        return;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &now))
+        return;
+    if (last && now.tv_sec - last < STAR_AE_DIAG_INTERVAL_S)
+        return;
+    last = now.tv_sec;
+
+    if (st->isp.fnSetExpoMode(STAR_ISP_CHN, I6_ISP_AE_MODE_MANUAL)) {
+        HAL_LOG_WARN("isp: MI_ISP_AE_SetExpoMode(manual) failed -- if the mode enum is not "
+                     "0=auto/1=manual this is where it shows");
+        return;
+    }
+
+    memset(&expo, 0, sizeof(expo));
+    expo.us = want_us;
+    expo.sensorGain = want_gain;
+    expo.ispGain = 1024; /* unity; this bin offers no digital gain anyway */
+    if (st->isp.fnSetManualExpo(STAR_ISP_CHN, &expo))
+        HAL_LOG_WARN("isp: MI_ISP_AE_SetManualExpo(%u us, gain %u) failed", want_us, want_gain);
+}
+
 #define STAR_LIMIT_REASSERT_S 2
 
 static void star_isp_reassert_limits(star_state_t *st)
@@ -2043,6 +2110,7 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
     exposure->ae_luma = star_ae_luma(st, &ae);
 
     star_isp_reassert_limits(st);
+    star_ae_manual(st);
     star_ae_diag(st);
 
     return RSS_OK;
