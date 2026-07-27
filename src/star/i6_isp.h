@@ -96,6 +96,49 @@ _Static_assert(offsetof(i6_isp_ae_status, shutterUs) == 24, "AE status shutter o
 _Static_assert(offsetof(i6_isp_ae_status, sensorGain) == 28, "AE status sensor gain offset");
 
 /*
+ * AE exposure info. MI_ISP_AE_QueryExposureInfo, command 0x1402.
+ *
+ * The diagnostic counterpart to the AE status above: status says what the
+ * AE converged on, this says whether it is done converging and what it was
+ * aiming at. `reachBoundary` is the field worth having -- it distinguishes
+ * "the AE chose this exposure" from "the AE wanted more and something
+ * stopped it", which no combination of the other readings can.
+ *
+ * Unlike CUS3A_GetAeStatus, waybeam's layout for this one is *correct*:
+ * the wrapper declares 572 bytes (`mov.w r3, #572 @ 0x23c` at
+ * MI_ISP_AE_QueryExposureInfo+0x12, size field at [r7,#12]) and their
+ * struct sums to exactly that. Checked by disassembling the board's own
+ * libmi_isp.so with the technique in i6_sys.h.
+ *
+ * Both exposure values are carried because reading only one is a trap: if
+ * the AE is running a long/short pair, the short one is not the exposure
+ * that determines image brightness, and reporting it would understate the
+ * shutter by whatever the HDR ratio is.
+ */
+typedef struct {
+    unsigned int fNx10;
+    unsigned int sensorGain;
+    unsigned int ispGain;
+    unsigned int us;
+} i6_isp_ae_expo_value;
+
+typedef struct {
+    int stable;
+    int reachBoundary;
+    i6_isp_ae_expo_value expoLong;
+    i6_isp_ae_expo_value expoShort;
+    unsigned int histLumY;
+    unsigned int histAvgY;
+    unsigned int histHits[128];
+    unsigned int lvX10;
+    int bv;
+    unsigned int sceneTarget;
+} i6_isp_ae_expo_info;
+
+_Static_assert(sizeof(i6_isp_ae_expo_info) == 572,
+               "AE exposure info must match the 572 bytes the wrapper declares");
+
+/*
  * Hardware AE average statistics. MI_ISP_AE_GetAeHwAvgStats, command
  * 0x2e01, payload 46088 bytes (0xb408 at that wrapper's `movw r3`).
  *
@@ -234,6 +277,7 @@ typedef struct {
      */
     int (*fnGetAeStatus)(int channel, i6_isp_ae_status *status);
     int (*fnGetAeHwAvgStats)(int channel, i6_isp_ae_hw_stats *stats);
+    int (*fnQueryExposureInfo)(int channel, i6_isp_ae_expo_info *info);
 } i6_isp_impl;
 
 static inline int i6_isp_load(i6_isp_impl *isp_lib)
@@ -301,6 +345,8 @@ static inline int i6_isp_load(i6_isp_impl *isp_lib)
         isp_lib->handle, "MI_ISP_CUS3A_GetAeStatus");
     isp_lib->fnGetAeHwAvgStats = (int (*)(int channel, i6_isp_ae_hw_stats *stats))dlsym(
         isp_lib->handle, "MI_ISP_AE_GetAeHwAvgStats");
+    isp_lib->fnQueryExposureInfo = (int (*)(int channel, i6_isp_ae_expo_info *info))dlsym(
+        isp_lib->handle, "MI_ISP_AE_QueryExposureInfo");
     if (!isp_lib->fnGetAeStatus)
         HAL_LOG_WARN("i6_isp: no MI_ISP_CUS3A_GetAeStatus -- "
                      "exposure readback unavailable, ric cannot detect day/night");

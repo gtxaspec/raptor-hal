@@ -1028,15 +1028,24 @@ static void test_max_exposure_can_raise_a_conservative_ceiling(void)
     CHECK(g_limit.maxSensorGain == 8192, "raising the shutter must leave the gains alone, got %u",
           g_limit.maxSensorGain);
 
-    /* A longer exposure than the frame period would cost framerate, which
-     * is a surprising way to get a brighter picture. */
-    CHECK(hal_isp_set_ae_it_max(&ctx, 100000) == RSS_OK, "an over-long request must still apply");
-    CHECK(g_limit.maxShutterUs == 33333, "100000 must clamp to the frame period, got %u",
+    /*
+     * An explicit request past the frame period is honoured, not clamped:
+     * a tuning ceiling longer than the frame period is permission to trade
+     * framerate for light, and undoing that is what this key exists to
+     * stop. gc4653.bin asks for 50000 against a 33333 us period.
+     */
+    CHECK(hal_isp_set_ae_it_max(&ctx, 50000) == RSS_OK, "an over-long request must apply");
+    CHECK(g_limit.maxShutterUs == 50000, "50000 must be honoured, not clamped, got %u",
+          g_limit.maxShutterUs);
+
+    /* ...and the framerate clamp must not then undo it. */
+    CHECK(star_isp_cap_exposure(&st, 30) == RSS_OK, "the cap must succeed");
+    CHECK(g_limit.maxShutterUs == 50000, "the fps clamp must not undo an explicit ceiling, got %u",
           g_limit.maxShutterUs);
 
     /* The getter reads the live ceiling, not the request. */
     CHECK(hal_isp_get_ae_it_max(&ctx, &got) == RSS_OK, "get must succeed");
-    CHECK(got == 33333, "get must report the live ceiling, got %u", got);
+    CHECK(got == 50000, "get must report the live ceiling, got %u", got);
 
     /* 0 means "leave the tuning alone" and must clear the request rather
      * than ask the AE for a zero-microsecond exposure. */

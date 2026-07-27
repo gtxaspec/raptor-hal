@@ -873,6 +873,16 @@ int star_isp_cap_exposure(star_state_t *st, unsigned int fps)
         return RSS_ERR_TIMEOUT;
     }
 
+    /*
+     * An explicit max_exposure_us owns the ceiling. Without this the
+     * framerate clamp below would immediately undo it, and a config key
+     * that silently does nothing is worse than no key.
+     */
+    if (st->pend_ae_it_max > 0) {
+        HAL_LOG_DBG("isp: max shutter left at the configured %d us", st->pend_ae_it_max);
+        return RSS_OK;
+    }
+
     frame_us = 1000000u / fps;
     if (limit.maxShutterUs <= frame_us) {
         HAL_LOG_DBG("isp: AE max shutter %u us already within the %u us frame period",
@@ -1485,14 +1495,25 @@ static int star_isp_apply_ae_it_max(star_state_t *st, unsigned int it_max)
         return RSS_ERR_IO;
     }
 
+    /*
+     * An explicit request is honoured even past the frame period, because
+     * that is the whole point of having it: a tuning that publishes a
+     * ceiling *longer* than the frame period is telling the AE it may
+     * trade framerate for light in the dark, and clamping that away is
+     * exactly what this key exists to undo. gc4653.bin asks for 50000 us
+     * against a 33333 us period at 30 fps, and divinus -- which never
+     * writes the limit at all -- lets it have that.
+     *
+     * Warned rather than clamped, because a silently variable framerate is
+     * a surprise worth one log line.
+     */
     if (st->fps) {
         frame_us = 1000000u / st->fps;
-        if (it_max > frame_us) {
-            HAL_LOG_INFO("isp: max exposure %u us exceeds the %u us frame period at %u fps; "
-                         "using %u",
-                         it_max, frame_us, st->fps, frame_us);
-            it_max = frame_us;
-        }
+        if (it_max > frame_us)
+            HAL_LOG_WARN("isp: max exposure %u us is longer than the %u us frame period at "
+                         "%u fps -- the AE may drop below %u fps in low light, which is the "
+                         "trade this asks for",
+                         it_max, frame_us, st->fps, st->fps);
     }
 
     if (limit.maxShutterUs == it_max) {
@@ -1753,6 +1774,68 @@ static uint32_t star_ae_luma(star_state_t *st, const i6_isp_ae_status *ae)
     return luma;
 }
 
+/*
+ * Periodic AE diagnostic, off unless RSS_AE_DIAG is set.
+ *
+ * The question this exists to answer cannot be answered from the readings
+ * ric already has. A dark picture with gain at its ceiling and shutter well
+ * short of it looks like a bug, but the AE choosing that exposure and the
+ * AE being prevented from going further are indistinguishable from outside
+ * -- so this reports `boundary`, which says which it is, alongside the
+ * target it was aiming at and the light value it measured.
+ *
+ * The long/short pair is printed because the difference matters: if the AE
+ * is running an HDR pair, `exposure_us` in ric's status is whichever field
+ * the AE status struct calls the primary one, and comparing it against
+ * these two says whether that is the exposure setting image brightness.
+ *
+ * Env-gated and rate-limited rather than a build option, because it is
+ * wanted on a board that is already flashed and already dark -- the same
+ * reason RSS_OSD_PIXFMT and RSS_ISP_3A_HANDOFF are env hatches. At INFO
+ * because HAL_LOG_DBG is compiled out of release builds.
+ */
+#define STAR_AE_DIAG_INTERVAL_S 5
+
+static void star_ae_diag(star_state_t *st)
+{
+    static int enabled = -1;
+    static time_t last;
+    i6_isp_ae_expo_info info;
+    i6_isp_exp limit;
+    struct timespec now;
+
+    if (enabled < 0)
+        enabled = getenv("RSS_AE_DIAG") != NULL;
+    if (!enabled || !st->isp.fnQueryExposureInfo)
+        return;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &now))
+        return;
+    if (last && now.tv_sec - last < STAR_AE_DIAG_INTERVAL_S)
+        return;
+    last = now.tv_sec;
+
+    memset(&info, 0, sizeof(info));
+    if (st->isp.fnQueryExposureInfo(STAR_ISP_CHN, &info)) {
+        HAL_LOG_WARN("isp: MI_ISP_AE_QueryExposureInfo failed");
+        return;
+    }
+
+    memset(&limit, 0, sizeof(limit));
+    if (st->isp.fnGetExposureLimit)
+        (void)st->isp.fnGetExposureLimit(STAR_ISP_CHN, &limit);
+
+    HAL_LOG_INFO("ae: stable=%d boundary=%d target=%u avgY=%u lumY=%u lv=%u.%u bv=%d",
+                 info.stable, info.reachBoundary, info.sceneTarget, info.histAvgY, info.histLumY,
+                 info.lvX10 / 10u, info.lvX10 % 10u, info.bv);
+    HAL_LOG_INFO("ae: long %uus gain %u/%u | short %uus gain %u/%u", info.expoLong.us,
+                 info.expoLong.sensorGain, info.expoLong.ispGain, info.expoShort.us,
+                 info.expoShort.sensorGain, info.expoShort.ispGain);
+    HAL_LOG_INFO("ae: limits shutter %u..%u us, sensor gain %u..%u, isp gain %u..%u",
+                 limit.minShutterUs, limit.maxShutterUs, limit.minSensorGain,
+                 limit.maxSensorGain, limit.minIspGain, limit.maxIspGain);
+}
+
 int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
 {
     star_state_t *st = star_state(ctx);
@@ -1793,6 +1876,8 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
     exposure->exposure_time = ae.shutterUs;
     exposure->total_gain = star_ae_total_gain(&ae);
     exposure->ae_luma = star_ae_luma(st, &ae);
+
+    star_ae_diag(st);
 
     return RSS_OK;
 }
