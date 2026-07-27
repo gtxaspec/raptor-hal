@@ -865,6 +865,32 @@ int star_isp_cap_exposure(star_state_t *st, unsigned int fps)
     if (!st->isp.fnGetExposureLimit || !st->isp.fnSetExposureLimit)
         return RSS_ERR_NOTSUP;
 
+    /*
+     * Divinus parity, for bisecting a dark picture.
+     *
+     * Writing this struct and calling MI_SNR_SetFps after the tuning load
+     * is the *only* thing raptor does here that divinus does not -- divinus
+     * defines i6_sensor_exposure and never calls it, so it runs on whatever
+     * the tuning and CUS3A settle on between themselves. When divinus looks
+     * better in the dark on the same board and bin, that difference is the
+     * first thing to remove, and removing it by rebuild-and-reflash costs a
+     * night. This makes it one env var.
+     *
+     * Not a config key: it exists to answer a question, not to be a
+     * supported way to run. If it turns out to be the answer, the fix is a
+     * considered change to what this function does by default, not this.
+     */
+    if (getenv("RSS_ISP_NO_EXPO_CAP")) {
+        static bool said;
+
+        if (!said) {
+            said = true;
+            HAL_LOG_INFO("isp: RSS_ISP_NO_EXPO_CAP -- leaving the AE's exposure limits and "
+                         "the sensor framerate entirely alone, as divinus does");
+        }
+        return RSS_OK;
+    }
+
     ret = star_isp_read_limits(st, &limit);
     if (ret == RSS_ERR_IO)
         return ret;
