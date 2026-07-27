@@ -42,7 +42,17 @@ test: $(addprefix test-,$(SUITES))
 $(addprefix test-,$(SUITES)): test-%: t_%
 	@./$<
 
-t_%: t_%.c
+# The suites #include the sources they test, so those are prerequisites --
+# without this a change to src/star leaves make thinking the binary is up
+# to date, and the suite reports on code that is no longer there. That is
+# not a hypothetical: it produced a pass on a version of hal_isp.c that had
+# already been edited, and then a failure that looked like the edit's fault.
+# Wildcarded deliberately -- an over-broad prerequisite costs a rebuild of
+# four small files, a missing one costs a wrong answer.
+DEPS = $(wildcard ../src/star/*.c ../src/star/*.h ../src/*.c ../src/*.h \
+		  ../include/*.h ../../raptor-common/include/*.h)
+
+t_%: t_%.c $(DEPS)
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
 clean:

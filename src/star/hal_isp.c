@@ -875,6 +875,22 @@ int star_isp_cap_exposure(star_state_t *st, unsigned int fps)
         return RSS_OK;
     }
 
+    /*
+     * Read before write, and the compiler is the backstop: a previous
+     * cleanup deleted the env-var block that used to sit here and took
+     * this call with it, leaving the read-modify-write below modifying an
+     * uninitialised struct and writing stack contents into the AE's
+     * limits. It never reached hardware, but only because the host suite
+     * caught it -- the ARM -Werror build did not.
+     */
+    ret = star_isp_read_limits(st, &limit);
+    if (ret == RSS_ERR_IO)
+        return ret;
+    if (ret != RSS_OK || limit.maxShutterUs == 0) {
+        HAL_LOG_WARN("isp: AE published no exposure limits; shutter left uncapped");
+        return RSS_ERR_TIMEOUT;
+    }
+
     frame_us = 1000000u / fps;
     if (limit.maxShutterUs <= frame_us) {
         HAL_LOG_DBG("isp: AE max shutter %u us already within the %u us frame period",
@@ -1790,6 +1806,27 @@ static uint32_t star_ae_luma(star_state_t *st, const i6_isp_ae_status *ae)
 
 #define STAR_LIMIT_REASSERT_S 2
 
+/*
+ * What the AE's ceilings should currently read: whatever the config asked
+ * for, clamped the same way star_isp_apply_gain_limit clamps it, and zero
+ * for "this config says nothing, so the tuning's own value stands".
+ *
+ * Shared by the two functions below because they have to agree. They ask
+ * opposite questions of the same numbers -- one wants to know whether a
+ * configured ceiling has been lost, the other whether the tuning itself
+ * has -- and a ceiling one of them considered legitimate while the other
+ * read it as a wiped ISP would have them undoing each other every couple
+ * of seconds.
+ */
+static void star_isp_wanted_limits(const star_state_t *st, unsigned int *want_shutter,
+                                   unsigned int *want_gain)
+{
+    *want_shutter = st->pend_ae_it_max > 0 ? (unsigned int)st->pend_ae_it_max : 0u;
+    *want_gain = st->pend_max_again >= 1024 ? (unsigned int)st->pend_max_again : 0u;
+    if (*want_gain && st->bin_max_sensor_gain && *want_gain > st->bin_max_sensor_gain)
+        *want_gain = st->bin_max_sensor_gain;
+}
+
 static void star_isp_reassert_limits(star_state_t *st)
 {
     i6_isp_exp limit;
@@ -1814,10 +1851,7 @@ static void star_isp_reassert_limits(star_state_t *st)
     if (st->isp.fnGetExposureLimit(STAR_ISP_CHN, &limit))
         return;
 
-    want_shutter = st->pend_ae_it_max > 0 ? (unsigned int)st->pend_ae_it_max : 0u;
-    want_gain = st->pend_max_again >= 1024 ? (unsigned int)st->pend_max_again : 0u;
-    if (want_gain && st->bin_max_sensor_gain && want_gain > st->bin_max_sensor_gain)
-        want_gain = st->bin_max_sensor_gain;
+    star_isp_wanted_limits(st, &want_shutter, &want_gain);
 
     fix_shutter = want_shutter && limit.maxShutterUs != want_shutter;
     fix_gain = want_gain && limit.maxSensorGain != want_gain;
@@ -1864,22 +1898,30 @@ static void star_isp_reassert_limits(star_state_t *st)
  * bin changing nothing, and white balance being wrong under artificial
  * light. None of those were separate problems.
  *
- * What wipes it is not yet pinned down, but the shape is known: this port
- * already documents that CUS3A re-auto-starts when a VPE channel's last
- * output port goes down, and rvd tunes on the *first* framesource enable
- * -- before the sub-stream, the OSD attach and the encoder start. divinus,
- * which is fine on this board, loads at the end of sdk_init after its
- * encoder thread is running (media.c:827). Loading before the pipeline
- * has finished being built looks like the mistake.
+ * What wipes it is deliberately not chased any further. The shape is
+ * known -- this port already documents that CUS3A re-auto-starts when a
+ * VPE channel's last output port goes down, and rvd tunes on the *first*
+ * framesource enable, before the sub-stream, the OSD attach and the
+ * encoder start, whereas divinus loads at the end of sdk_init once its
+ * encoder thread is running (media.c:827) and is fine on the same board
+ * and bin. But naming the exact step means bisecting vendor library
+ * behaviour that no documentation describes, and the answer would only
+ * hold for this SDK build: any *other* step MI resets the ISP from, on
+ * another board or another release, would put the tuning back where it
+ * started. Detecting the state and repairing it covers all of them.
  *
- * Rather than guess which later step does it, detect the state and repair
- * it: the limits are a reliable witness, because the tuning's own values
- * were snapshotted before anything could overwrite them.
+ * The limits are a reliable witness because the tuning's own values were
+ * snapshotted before anything could overwrite them, and because the only
+ * other thing that writes them is this file -- so "neither what the
+ * tuning published nor what the config asked for" means the ISP went back
+ * to its defaults underneath us.
  *
- * Skipped when a ceiling is configured, since then a difference from the
- * snapshot is expected rather than evidence. Bounded, because a reload
- * that does not stick must not turn into a loop -- and if the bound is
- * reached, the log says so, which is a better failure than silence.
+ * A reload restores the tuning's own state, config knobs and all, which
+ * is exactly what star_isp_flush_pending exists to put back; without that
+ * call a repair would silently drop a configured ceiling. Bounded,
+ * because a reload that does not stick must not turn into a loop -- and
+ * if the bound is reached, the log says so, which is a better failure
+ * than silence.
  */
 #define STAR_IQ_RELOAD_MAX 5
 
@@ -1888,10 +1930,9 @@ static void star_isp_reload_if_reset(star_state_t *st, bool force)
     i6_isp_exp limit;
     static time_t last;
     struct timespec now;
+    unsigned int want_shutter, want_gain;
 
     if (!st->iq_file[0] || !st->bin_max_sensor_gain)
-        return;
-    if (st->pend_max_again >= 1024 || st->pend_ae_it_max > 0)
         return;
     if (!st->isp.fnGetExposureLimit || !st->isp.fnLoadChannelConfig)
         return;
@@ -1911,7 +1952,24 @@ static void star_isp_reload_if_reset(star_state_t *st, bool force)
     memset(&limit, 0, sizeof(limit));
     if (st->isp.fnGetExposureLimit(STAR_ISP_CHN, &limit))
         return;
-    if (limit.maxSensorGain == st->bin_max_sensor_gain)
+
+    /*
+     * Either reading means the tuning is in effect: the value it published,
+     * or the narrower one this config deliberately asked for. Treating a
+     * configured ceiling as evidence of a reset would have this reload on
+     * every poll; ignoring it -- which is what the first version of this
+     * did -- turns setting max_again into a way to switch the repair off,
+     * and the config used to recommend setting max_again.
+     *
+     * The blind spot is a max_again that happens to equal the untuned
+     * default, 8192 on this board: a reset then looks like the config
+     * being honoured. Left alone rather than special-cased, because the
+     * tuning's ceiling is the one worth having here and the config now
+     * says to leave max_again unset.
+     */
+    star_isp_wanted_limits(st, &want_shutter, &want_gain);
+    if (limit.maxSensorGain == st->bin_max_sensor_gain ||
+        (want_gain && limit.maxSensorGain == want_gain))
         return;
 
     if (st->iq_reloads >= STAR_IQ_RELOAD_MAX) {
@@ -1933,8 +1991,15 @@ static void star_isp_reload_if_reset(star_state_t *st, bool force)
                  "after the load; reloading %s (attempt %d)",
                  limit.maxSensorGain, st->bin_max_sensor_gain, st->iq_file, st->iq_reloads);
 
-    if (st->isp.fnLoadChannelConfig(STAR_ISP_CHN, st->iq_file, STAR_IQ_LOAD_KEY))
+    if (st->isp.fnLoadChannelConfig(STAR_ISP_CHN, st->iq_file, STAR_IQ_LOAD_KEY)) {
         HAL_LOG_WARN("isp: reloading %s failed", st->iq_file);
+        return;
+    }
+
+    /* The load replaced the ISP's state with the binary's own, so anything
+     * the config asked for has to go back on -- same reason the first load
+     * is followed by this call. */
+    star_isp_flush_pending(st);
 }
 
 int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)

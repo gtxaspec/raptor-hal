@@ -871,9 +871,15 @@ static int fake_set_exposure_limit(int chn, i6_isp_exp *cfg)
 }
 
 /*
- * A tuning that publishes an 8x sensor ceiling and no digital-gain
- * headroom at all -- which is what the SSC30KQ's gc4653.bin actually
- * does, and the reason total_gain on that board stopped dead at 8192.
+ * A deliberately tight tuning fixture: an 8x sensor ceiling and no
+ * digital-gain headroom, so a clamp is easy to provoke.
+ *
+ * 8192 is not what gc4653.bin publishes -- that is 131072 -- it is what
+ * the SSC30KQ's ISP reports with *no* tuning loaded. waybeam's board
+ * happens to have a real bin ceiling of exactly 8192, and that
+ * coincidence made a torn-down tuning look like a calibrated limit for a
+ * whole night, so the reload test below states its own ceiling instead of
+ * reusing this one.
  */
 static void limit_setup(rss_hal_ctx_t *ctx, star_state_t *st)
 {
@@ -1106,6 +1112,96 @@ static void test_limits_are_reasserted_when_configured(void)
           g_limit.maxSensorGain);
 }
 
+/*
+ * The tear-down repair: something puts this ISP back on its defaults after
+ * the tuning loads, and the AE's own ceilings are the witness.
+ *
+ * The board numbers are the fixture here -- a bin that publishes 131072
+ * against an untuned default of 8192 -- because the whole mechanism rests
+ * on those two being distinguishable.
+ */
+static void reload_setup(rss_hal_ctx_t *ctx, star_state_t *st)
+{
+    size_t i;
+
+    limit_setup(ctx, st);
+    snprintf(st->iq_file, sizeof(st->iq_file), "/etc/sensors/gc4653.bin");
+    st->isp.fnLoadChannelConfig = fake_loadcfg;
+    st->bin_min_sensor_gain = 1024;
+    st->bin_max_sensor_gain = 131072;
+    st->bin_min_isp_gain = 1024;
+    st->bin_max_isp_gain = 1024;
+    g_limit.maxSensorGain = 131072;
+    loadcfg_calls = 0;
+
+    for (i = 0; i < IQ_PARAM_COUNT; i++)
+        g_iq[i].has_pending = false;
+}
+
+static void test_the_tuning_is_reloaded_when_the_isp_resets(void)
+{
+    rss_hal_ctx_t ctx;
+    star_state_t st;
+    int i;
+
+    /* The tuning's own ceiling is in effect: nothing to repair. */
+    reload_setup(&ctx, &st);
+    star_isp_reload_if_reset(&st, true);
+    CHECK(loadcfg_calls == 0, "an intact tuning must not be reloaded, got %u", loadcfg_calls);
+
+    /* Back on the untuned default, which is the observed failure. */
+    reload_setup(&ctx, &st);
+    g_limit.maxSensorGain = 8192;
+    star_isp_reload_if_reset(&st, true);
+    CHECK(loadcfg_calls == 1, "a reset ISP must be reloaded once, got %u", loadcfg_calls);
+    CHECK(st.iq_reloads == 1, "the attempt must be counted, got %d", st.iq_reloads);
+
+    /*
+     * A configured ceiling is a legitimate reading, not evidence of a
+     * reset. The first version of this bailed out entirely whenever one
+     * was set, which quietly turned max_again into a switch that disabled
+     * the repair -- while the config was recommending max_again be set.
+     */
+    reload_setup(&ctx, &st);
+    st.pend_max_again = 32768;
+    g_limit.maxSensorGain = 32768;
+    star_isp_reload_if_reset(&st, true);
+    CHECK(loadcfg_calls == 0, "a configured ceiling must not read as a reset, got %u",
+          loadcfg_calls);
+
+    /* ...and with one configured, a reset is still repaired, and the
+     * ceiling the load just wiped goes back on. */
+    reload_setup(&ctx, &st);
+    st.pend_max_again = 32768;
+    g_limit.maxSensorGain = 8192;
+    star_isp_reload_if_reset(&st, true);
+    CHECK(loadcfg_calls == 1, "a reset must be repaired even with a ceiling set, got %u",
+          loadcfg_calls);
+    CHECK(g_limit.maxSensorGain == 32768, "the reload must re-apply the configured ceiling, got %u",
+          g_limit.maxSensorGain);
+
+    /* No snapshot means no witness, so no reload -- guessing would reload
+     * the binary on every poll of an AE that never published limits. */
+    reload_setup(&ctx, &st);
+    st.bin_max_sensor_gain = 0;
+    g_limit.maxSensorGain = 8192;
+    star_isp_reload_if_reset(&st, true);
+    CHECK(loadcfg_calls == 0, "no snapshot must mean no reload, got %u", loadcfg_calls);
+
+    /*
+     * Bounded. Last, because giving up is reported once per process and
+     * the latch is deliberately not resettable.
+     */
+    reload_setup(&ctx, &st);
+    g_limit.maxSensorGain = 8192;
+    for (i = 0; i < 8; i++) {
+        star_isp_reload_if_reset(&st, true);
+        g_limit.maxSensorGain = 8192; /* the reset keeps winning */
+    }
+    CHECK(loadcfg_calls == 5, "reloads must stop at 5, got %u", loadcfg_calls);
+    CHECK(st.iq_reloads == 5, "the counter must stop at 5, got %d", st.iq_reloads);
+}
+
 int main(void)
 {
     test_table_bounds();
@@ -1130,6 +1226,7 @@ int main(void)
     test_shutter_cap_holds_the_frame_period();
     test_max_exposure_can_raise_a_conservative_ceiling();
     test_limits_are_reasserted_when_configured();
+    test_the_tuning_is_reloaded_when_the_isp_resets();
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);
