@@ -71,6 +71,13 @@
  * documented-by-use bound. star_probe -v reports which ports actually
  * accept MI_VPE_SetPortMode on this silicon; hal_caps.c's
  * max_fs_channels quotes that result.
+ *
+ * Treat this as an upper bound to size arrays with, not a count of ports
+ * that will work. divinus's teardown loop is defensive -- it disables
+ * ports it never configured -- so it evidences the ceiling and nothing
+ * about how many MI_VPE_SetPortMode accepts here. Anything that wants a
+ * port beyond the ones rvd configures must handle not getting one; see
+ * hal_enc_register_channel.
  */
 #define STAR_VPE_PORT_NUM 4
 

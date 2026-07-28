@@ -556,31 +556,34 @@ static int star_enc_spare_port(const star_state_t *st)
  * showing two binds on a two-video-plus-two-JPEG pipeline instead of
  * four. That grep is the standing check that this function did its job.
  *
- * So this has to satisfy the group/register contract in MI's own terms,
- * which means giving the JPEG channel a VPE output port of its own.
- * Sharing the paired stream's port would be fewer lines, but the vendor
- * rules it out twice: MI_SYS_BindChnPort2's Note says "the source and
- * destination ports must not have been previously bound", and MI_SYS's
- * architecture section says VPE "has one InputPort and multiple
- * OutputPorts ... Vpe shares the same data source, but must have
+ * So this has to satisfy the group/register contract in MI's own terms.
+ * Preferred shape is a VPE output port of the JPEG channel's own, because
+ * that is the vendor's model twice over: MI_SYS_BindChnPort2's Note says
+ * "the source and destination ports must not have been previously bound",
+ * and MI_SYS's architecture section says VPE "has one InputPort and
+ * multiple OutputPorts ... Vpe shares the same data source, but must have
  * different output formats of different specifications" -- one output
- * port per consumer is the model, not an optimisation of it.
+ * port per consumer, not an optimisation of one.
  *
- * The dedicated port also buys the rate pacing. MI_SYS_BindChnPort2
- * takes separate source and destination frame rates, so the port is
- * bound at the JPEG stream's fps (1 by default) against a source running
- * at 30 and MI drops the other 29 frames in hardware. That matters here
- * because INFINITY6E's caps block does not set .jpeg_pulse, so rvd's
- * duty-cycling -- the thing that stops an Ingenic JPEG channel encoding
- * 30 frames a second and throwing 29 away -- is off. On a shared port
- * there would be nothing pacing the channel at all.
+ * A dedicated port also buys the rate pacing. MI_SYS_BindChnPort2 takes
+ * separate source and destination frame rates, so the port is bound at
+ * the JPEG stream's fps (1 by default) against a source running at the
+ * sensor's, and MI drops the rest in hardware. That matters because
+ * INFINITY6E's caps block does not set .jpeg_pulse, so rvd's duty-cycling
+ * -- the thing that stops an Ingenic JPEG channel encoding at full rate
+ * and discarding almost all of it -- is off here.
  *
- * Failures below warn and return RSS_OK rather than propagating. rvd
- * treats a register failure as fatal to the stream, and a board that
- * cannot spare a VPE port should lose its snapshots, not its video.
- * Every such exit says so in the log, which is the part that was missing
- * before: a JPEG path that quietly does nothing is indistinguishable
- * from one that works until someone asks it for a picture.
+ * Preferred, but not required: STAR_VPE_PORT_NUM ports are not guaranteed
+ * to exist, and two video streams with JPEG on both want every one of
+ * them, so the code falls back to sharing the paired stream's port rather
+ * than giving up. See the fallback below for what that trades away.
+ *
+ * Failures warn and return RSS_OK rather than propagating. rvd treats a
+ * register failure as fatal to the stream, and a board that cannot feed
+ * its JPEG channel should lose its snapshots, not its video. Every such
+ * exit says so in the log: a JPEG path that quietly does nothing is
+ * indistinguishable from one that works until someone asks it for a
+ * picture, and telling those apart from a log is the whole point.
  */
 int hal_enc_register_channel(void *ctx, int grp, int chn)
 {
@@ -616,37 +619,60 @@ int hal_enc_register_channel(void *ctx, int grp, int chn)
         return RSS_OK;
     }
 
-    port = star_enc_spare_port(st);
-    if (port < 0) {
-        HAL_LOG_WARN("venc chn %d: all %d VPE output ports are in use, "
-                     "so there is none left to feed it -- no snapshots on this stream",
-                     chn, STAR_VPE_PORT_NUM);
-        return RSS_OK;
-    }
-
-    ret = star_fs_clone_port(st, src_port, port);
-    if (ret) {
-        HAL_LOG_WARN("venc chn %d: could not bring up VPE port %d from port %d: %d "
-                     "-- no snapshots on this stream",
-                     chn, port, src_port, ret);
-        return RSS_OK;
-    }
-
     snap_fps = enc->fps_num / (enc->fps_den ? enc->fps_den : 1);
 
-    ret = star_enc_bind_port_rate(st, port, chn, snap_fps);
+    port = star_enc_spare_port(st);
+    if (port >= 0) {
+        ret = star_fs_clone_port(st, src_port, port);
+        if (ret == RSS_OK) {
+            ret = star_enc_bind_port_rate(st, port, chn, snap_fps);
+            if (ret == RSS_OK) {
+                enc->owns_port = true;
+                HAL_LOG_INFO("venc chn %d: snapshot channel attached on VPE port %d, "
+                             "cloned from chn %d's port %d",
+                             chn, port, grp, src_port);
+                return RSS_OK;
+            }
+            HAL_LOG_WARN("venc chn %d: VPE port %d bind failed: %d", chn, port, ret);
+            star_fs_release_port(st, port);
+        } else {
+            HAL_LOG_WARN("venc chn %d: could not bring up VPE port %d from port %d: %d", chn, port,
+                         src_port, ret);
+        }
+    } else {
+        HAL_LOG_WARN("venc chn %d: no spare VPE output port (of %d)", chn, STAR_VPE_PORT_NUM);
+    }
+
+    /*
+     * Fall back to sharing the paired video stream's port.
+     *
+     * STAR_VPE_PORT_NUM is an upper bound inferred from a reference's
+     * defensive teardown loop, not a count of ports this silicon will
+     * actually accept MI_VPE_SetPortMode on, and a two-video-plus-two-JPEG
+     * pipeline needs every one of them. So "no port of its own" is a state
+     * that has to be survivable, not an error.
+     *
+     * The vendor discourages this -- MI_SYS_BindChnPort2's Note says the
+     * source and destination ports must not have been previously bound, and
+     * the source here already feeds the video channel -- so it is the
+     * fallback rather than the design. But the alternative is no snapshots
+     * at all, and the cost of finding out is one error line from MI. If it
+     * takes, the JPEG channel is fed from a port it does not control: the
+     * destination rate below still asks MI to drop frames, but whether a
+     * second bind on one source honours its own rate is the vendor's
+     * business, so the log distinguishes the two paths for whoever reads it.
+     */
+    ret = star_enc_bind_port_rate(st, src_port, chn, snap_fps);
     if (ret) {
-        HAL_LOG_WARN("venc chn %d: VPE port %d bind failed: %d -- no snapshots on this stream", chn,
-                     port, ret);
-        star_fs_release_port(st, port);
+        HAL_LOG_WARN("venc chn %d: sharing chn %d's VPE port %d failed too: %d "
+                     "-- no snapshots on this stream",
+                     chn, grp, src_port, ret);
         return RSS_OK;
     }
 
-    enc->owns_port = true;
-
-    HAL_LOG_INFO("venc chn %d: snapshot channel attached on VPE port %d, cloned from "
-                 "chn %d's port %d",
-                 chn, port, grp, src_port);
+    HAL_LOG_INFO("venc chn %d: snapshot channel sharing chn %d's VPE port %d "
+                 "(no port of its own); frame pacing is MI's to honour here",
+                 chn, grp, src_port);
 
     return RSS_OK;
 }
