@@ -439,6 +439,152 @@ int hal_fs_destroy_channel(void *ctx, int chn)
     return ret;
 }
 
+/*
+ * star_fs_clone_port -- give a second VPE output port the same picture.
+ *
+ * A JPEG snapshot channel needs its own VPE port, and rvd will not
+ * configure one: it points the JPEG stream's fs_chn at the *video*
+ * stream's channel and never calls fs_create_channel for it, because on
+ * Ingenic a JPEG channel rides its paired video stream's encoder group
+ * instead of having a source of its own. hal_enc_register_channel is
+ * where that difference is absorbed, and this is the half of it that
+ * belongs to the framesource: build the port MI needs from the geometry
+ * of the one already running.
+ *
+ * Cloning rather than deriving from the stream config is deliberate. The
+ * snapshot must show what the stream shows, and the video port has
+ * already had rvd's scaler decision applied to it (star_fs_configure
+ * resolves cfg->scaler before storing width/height), so the port that
+ * exists is a better statement of the intended picture than the config
+ * that produced it.
+ *
+ * The port is left enabled: unlike rvd's ports, whose enable is a
+ * separate fs_enable_channel call at stream start, nothing downstream
+ * will ever call one for this port. Enabling here also gets the depth
+ * applied, since star_fs_apply_depth defers while a port is down.
+ */
+int star_fs_clone_port(star_state_t *st, int src, int dst)
+{
+    i6_vpe_port attr;
+    star_vpe_port_t *s;
+    star_vpe_port_t *d;
+    int ret;
+
+    if (!st || src < 0 || src >= STAR_VPE_PORT_NUM || dst < 0 || dst >= STAR_VPE_PORT_NUM)
+        return RSS_ERR_INVAL;
+    if (src == dst)
+        return RSS_ERR_INVAL;
+    if (!st->vpe_chn_started)
+        return RSS_ERR_NOENT;
+
+    s = &st->port[src];
+    d = &st->port[dst];
+
+    if (!s->configured) {
+        HAL_LOG_ERR("vpe port %d: cannot clone from port %d, which is not configured", dst, src);
+        return RSS_ERR_NOENT;
+    }
+    if (d->configured) {
+        HAL_LOG_ERR("vpe port %d: already configured, refusing to clone port %d over it", dst, src);
+        return RSS_ERR_BUSY;
+    }
+
+    memset(&attr, 0, sizeof(attr));
+    attr.output.width = s->width;
+    attr.output.height = s->height;
+    /* Orientation is applied at the sensor, so both ports already see a
+     * correctly oriented picture -- see star_fs_configure. */
+    attr.mirror = 0;
+    attr.flip = 0;
+    attr.pixFmt = s->pixFmt;
+    attr.compress = I6_COMPR_NONE;
+
+    ret = st->vpe.fnSetPortConfig(STAR_VPE_CHN, dst, &attr);
+    if (ret) {
+        HAL_LOG_ERR("MI_VPE_SetPortMode(%d, %d) %ux%u pixFmt %d failed: %d", STAR_VPE_CHN, dst,
+                    s->width, s->height, s->pixFmt, ret);
+        return RSS_ERR_IO;
+    }
+
+    d->configured = true;
+    d->width = s->width;
+    d->height = s->height;
+    d->pixFmt = s->pixFmt;
+    /*
+     * The *source* rate, not the snapshot rate. This is what the VPE
+     * channel actually produces, and star_enc_bind_port reads it as the
+     * bind's srcFps; the reduction to the JPEG stream's own rate is the
+     * bind's dstFps, which is where MI does the dropping.
+     */
+    d->fps_num = s->fps_num;
+    d->fps_den = s->fps_den;
+    /* Nothing calls fs_get_frame on this port -- it feeds VENC directly --
+     * so the user depth stays 0, which is also MI's "no user holds
+     * buffers" value. */
+    d->user_depth = 0;
+    d->queue_depth = STAR_VPE_SNAP_QUEUE_DEPTH;
+
+    ret = st->vpe.fnEnablePort(STAR_VPE_CHN, dst);
+    if (ret) {
+        HAL_LOG_ERR("MI_VPE_EnablePort(%d, %d) failed: %d", STAR_VPE_CHN, dst, ret);
+        d->configured = false;
+        return RSS_ERR_IO;
+    }
+    d->enabled = true;
+
+    HAL_LOG_INFO("vpe port %d: snapshot port cloned from port %d, %ux%u pixFmt %d, queue depth %u",
+                 dst, src, d->width, d->height, d->pixFmt, d->queue_depth);
+
+    return star_fs_apply_depth(st, dst, d);
+}
+
+/*
+ * Undo star_fs_clone_port. Deliberately quiet about a port that is
+ * already down: this runs on the failure path of the bind that follows
+ * the clone as well as on teardown.
+ */
+void star_fs_release_port(star_state_t *st, int port)
+{
+    star_vpe_port_t *p;
+    int ret;
+
+    if (!st || port < 0 || port >= STAR_VPE_PORT_NUM)
+        return;
+
+    p = &st->port[port];
+    if (!p->configured && !p->enabled)
+        return;
+
+    star_fs_drop_frame(st, p);
+    star_fs_close_fd(st, p);
+
+    if (p->enabled) {
+        ret = st->vpe.fnDisablePort(STAR_VPE_CHN, port);
+        if (ret)
+            HAL_LOG_WARN("MI_VPE_DisablePort(%d, %d) failed: %d", STAR_VPE_CHN, port, ret);
+        p->enabled = false;
+
+        /*
+         * Same last-port-down rule as hal_fs_disable_channel, and it has
+         * to be here too rather than only there: rvd tears a stream down
+         * encoder-first, so a snapshot port is released *after* the video
+         * ports it was cloned from are already disabled. Without this the
+         * final port could go down leaving the tuning latched live while
+         * the VPE channel -- and with it CUS3A -- has actually stopped,
+         * and the next bring-up would trust a latch that outlived what it
+         * described.
+         */
+        if (!star_fs_any_port_enabled(st))
+            star_isp_untune(st);
+    }
+
+    p->configured = false;
+    p->width = 0;
+    p->height = 0;
+    p->user_depth = 0;
+    p->queue_depth = 0;
+}
+
 /* ================================================================
  * DEPTHS
  *

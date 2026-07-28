@@ -259,6 +259,21 @@ typedef struct {
 #define STAR_FRAME_TIMEOUT_MS 2000
 
 /*
+ * Queue depth for a snapshot port -- a VPE port this backend allocates
+ * for itself to feed a JPEG encoder channel. See star_fs_clone_port.
+ *
+ * Shallower than STAR_VPE_QUEUE_DEPTH on purpose. The queue exists to
+ * absorb bursts, and there are none here: the port is bound with a
+ * destination rate of the JPEG stream's fps (1 by default) against a
+ * source running at the sensor's, so MI drops 29 of every 30 frames at
+ * the bind and never has more than one frame in flight. Two rather than
+ * one because these buffers are full-resolution -- the snapshot matches
+ * its paired video stream -- and a 2560x1440 NV12 frame is 5.5 MB, so
+ * every slot is worth arguing about on a 64 MB board.
+ */
+#define STAR_VPE_SNAP_QUEUE_DEPTH 2
+
+/*
  * VENC channels have one input port, always 0 -- divinus keeps it in a
  * variable (_i6_venc_port) only because it shares this file across four
  * SoC families.
@@ -339,6 +354,15 @@ typedef struct {
     bool created;   /* MI_VENC_CreateChn has succeeded */
     bool receiving; /* MI_VENC_StartRecvPic has succeeded */
     bool bound;     /* a VPE port is bound to this channel */
+
+    /*
+     * True when this backend configured src_port itself rather than
+     * rvd configuring it through fs_create_channel -- the snapshot port
+     * of a JPEG channel. It is the flag that says who has to release the
+     * port again: rvd never learned this port exists, so nothing will
+     * call fs_destroy_channel for it. See hal_enc_register_channel.
+     */
+    bool owns_port;
 
     /*
      * MI_VENC_GetChnDevid's answer, cached at create time. The bind
@@ -596,6 +620,16 @@ int hal_fs_release_frame(void *ctx, int chn, void *frame_data);
 /* Called from star_teardown so a port's frame, fd and enable state do
  * not outlive the VPE channel. */
 void star_fs_release_all(star_state_t *st);
+
+/*
+ * Bring up a second VPE output port carrying the same picture as an
+ * existing one, and tear it down again. Used for JPEG snapshot channels,
+ * which rvd never configures a framesource for -- see
+ * hal_enc_register_channel. Not part of the HAL vtable: nothing outside
+ * this backend knows these ports exist.
+ */
+int star_fs_clone_port(star_state_t *st, int src, int dst);
+void star_fs_release_port(star_state_t *st, int port);
 
 /* Encoder ops -- src/star/hal_encoder.c */
 int hal_enc_create_group(void *ctx, int grp);

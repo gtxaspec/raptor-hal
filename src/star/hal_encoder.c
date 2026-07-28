@@ -9,11 +9,20 @@
  *
  *  - MI has no encoder *groups*. IMP's model is group -> registered
  *    channel -> bind; MI's is a plain module-to-module bind. So
- *    enc_create_group / enc_register_channel and their inverses are
- *    accepted and recorded but issue no MI call, and the real
- *    connection is made by hal_bind in hal_common.c. Returning
- *    RSS_ERR_NOTSUP instead would fail rvd's pipeline setup for a
- *    concept the hardware simply does not have.
+ *    enc_create_group and its inverse are accepted and recorded but
+ *    issue no MI call, and for a video stream the real connection is
+ *    made by hal_bind in hal_common.c. Returning RSS_ERR_NOTSUP instead
+ *    would fail rvd's pipeline setup for a concept the hardware simply
+ *    does not have.
+ *
+ *    enc_register_channel is where that stops being free. rvd skips the
+ *    bind chain entirely for JPEG streams, because on IMP registering a
+ *    second channel into the paired video stream's group is what feeds
+ *    it -- so a no-op register leaves the JPEG channel connected to
+ *    nothing at all, which is what it did until 2026-07-28. It now
+ *    brings up a VPE output port of its own for the JPEG channel. See
+ *    the comment on hal_enc_register_channel for the vendor rules that
+ *    make a dedicated port the right shape rather than a shared one.
  *
  *  - MI packs several NAL units into one stream *pack*. IMP hands back
  *    one NAL per pack, which is what rss_frame_t's nals[] was shaped
@@ -483,10 +492,16 @@ static void star_enc_fill_nals(star_venc_chn_t *enc, rss_frame_t *frame)
  * CHANNEL LIFECYCLE
  * ================================================================ */
 
+/* Defined further down, in the BIND section and beside destroy_channel;
+ * the JPEG half of register/unregister needs both. */
+static int star_enc_bind_port_rate(star_state_t *st, int port, int chn, unsigned int dst_fps);
+static void star_enc_unbind_and_release(star_state_t *st, int chn, star_venc_chn_t *enc);
+
 /*
  * MI has no encoder groups. IMP's group/register/bind triple collapses
- * to a single MI_SYS bind, made by hal_bind, so these four ops exist
- * only to keep rvd's pipeline setup on its normal path.
+ * to a single MI_SYS bind, made by hal_bind, so create_group and
+ * destroy_group exist only to keep rvd's pipeline setup on its normal
+ * path. register_channel is the exception -- see its own comment.
  */
 int hal_enc_create_group(void *ctx, int grp)
 {
@@ -503,23 +518,157 @@ int hal_enc_destroy_group(void *ctx, int grp)
     return hal_enc_create_group(ctx, grp);
 }
 
+/*
+ * The lowest VPE output port nothing is using, or -1.
+ *
+ * rvd configures its ports before any encoder channel is registered
+ * (pipeline_init runs the fs_create_channel loop to completion first,
+ * rvd_pipeline.c:949, and JPEG streams are appended after every video
+ * stream), so by the time this is asked the only unconfigured ports are
+ * genuinely spare.
+ */
+static int star_enc_spare_port(const star_state_t *st)
+{
+    int i;
+
+    for (i = 0; i < STAR_VPE_PORT_NUM; i++)
+        if (!st->port[i].configured)
+            return i;
+
+    return -1;
+}
+
+/*
+ * On IMP this is IMP_Encoder_RegisterChn, and for a JPEG stream it is
+ * the whole of how frames reach the encoder: rvd skips the bind chain
+ * for JPEG (`if (!s->is_jpeg)`, rvd_pipeline.c:1248) because registering
+ * a second channel into the paired video stream's *group* is enough --
+ * the group is already bound to the framesource, so both registered
+ * channels are fed.
+ *
+ * MI has no groups, so until 2026-07-28 this function was a validity
+ * check and nothing else, and the JPEG channel was never connected to
+ * anything: MI_VENC_CreateChn ran, MI_VENC_StartRecvPic ran, and no VPE
+ * port was ever bound to it. enc_poll then timed out forever, silently,
+ * because rvd_frame_loop.c treats a JPEG poll timeout as the expected
+ * "sensor idle" case. The symptom was /snap returning "No snapshot
+ * available yet" with a healthy ring and a working H.264 stream, and the
+ * one-line confirmation is that `logread | grep 'bind: VPE port'` showed
+ * two binds on a two-video-plus-two-JPEG pipeline instead of four.
+ *
+ * So this has to satisfy the group/register contract in MI's own terms,
+ * which means giving the JPEG channel a VPE output port of its own.
+ * Sharing the paired stream's port would be fewer lines, but the vendor
+ * rules it out twice: MI_SYS_BindChnPort2's Note says "the source and
+ * destination ports must not have been previously bound", and MI_SYS's
+ * architecture section says VPE "has one InputPort and multiple
+ * OutputPorts ... Vpe shares the same data source, but must have
+ * different output formats of different specifications" -- one output
+ * port per consumer is the model, not an optimisation of it.
+ *
+ * The dedicated port also buys the rate pacing. MI_SYS_BindChnPort2
+ * takes separate source and destination frame rates, so the port is
+ * bound at the JPEG stream's fps (1 by default) against a source running
+ * at 30 and MI drops the other 29 frames in hardware. That matters here
+ * because INFINITY6E's caps block does not set .jpeg_pulse, so rvd's
+ * duty-cycling -- the thing that stops an Ingenic JPEG channel encoding
+ * 30 frames a second and throwing 29 away -- is off. On a shared port
+ * there would be nothing pacing the channel at all.
+ *
+ * Failures below warn and return RSS_OK rather than propagating. rvd
+ * treats a register failure as fatal to the stream, and a board that
+ * cannot spare a VPE port should lose its snapshots, not its video.
+ * Every such exit says so in the log, which is the part that was missing
+ * before: a JPEG path that quietly does nothing is indistinguishable
+ * from one that works until someone asks it for a picture.
+ */
 int hal_enc_register_channel(void *ctx, int grp, int chn)
 {
+    star_state_t *st = star_state(ctx);
     star_venc_chn_t *enc = star_enc_chn(ctx, chn);
+    unsigned int snap_fps;
+    int src_port;
+    int port;
+    int ret;
 
-    if (!enc || grp < 0 || grp >= I6_VENC_CHN_NUM)
+    if (!st || !enc || grp < 0 || grp >= I6_VENC_CHN_NUM)
         return RSS_ERR_INVAL;
     if (!enc->created)
         return RSS_ERR_NOENT;
+
+    /*
+     * A video stream registers into its own group (rvd_pipeline.c:1223
+     * passes s->chn twice) and is bound by hal_bind straight afterwards.
+     * Nothing to do: the group is the fiction, the bind is the reality.
+     */
+    if (grp == chn)
+        return RSS_OK;
+
+    /* Already attached -- rvd re-registers on a per-stream hot restart. */
+    if (enc->bound)
+        return RSS_OK;
+
+    src_port = st->enc[grp].src_port;
+    if (!st->enc[grp].bound || src_port < 0) {
+        HAL_LOG_WARN("venc chn %d: paired video chn %d is not bound to a VPE port yet, "
+                     "so there is no geometry to clone -- no snapshots on this stream",
+                     chn, grp);
+        return RSS_OK;
+    }
+
+    port = star_enc_spare_port(st);
+    if (port < 0) {
+        HAL_LOG_WARN("venc chn %d: all %d VPE output ports are in use, "
+                     "so there is none left to feed it -- no snapshots on this stream",
+                     chn, STAR_VPE_PORT_NUM);
+        return RSS_OK;
+    }
+
+    ret = star_fs_clone_port(st, src_port, port);
+    if (ret) {
+        HAL_LOG_WARN("venc chn %d: could not bring up VPE port %d from port %d: %d "
+                     "-- no snapshots on this stream",
+                     chn, port, src_port, ret);
+        return RSS_OK;
+    }
+
+    snap_fps = enc->fps_num / (enc->fps_den ? enc->fps_den : 1);
+
+    ret = star_enc_bind_port_rate(st, port, chn, snap_fps);
+    if (ret) {
+        HAL_LOG_WARN("venc chn %d: VPE port %d bind failed: %d -- no snapshots on this stream", chn,
+                     port, ret);
+        star_fs_release_port(st, port);
+        return RSS_OK;
+    }
+
+    enc->owns_port = true;
+
+    HAL_LOG_INFO("venc chn %d: snapshot channel attached on VPE port %d, cloned from "
+                 "chn %d's port %d",
+                 chn, port, grp, src_port);
 
     return RSS_OK;
 }
 
 int hal_enc_unregister_channel(void *ctx, int chn)
 {
+    star_state_t *st = star_state(ctx);
     star_venc_chn_t *enc = star_enc_chn(ctx, chn);
 
-    return enc ? RSS_OK : RSS_ERR_INVAL;
+    if (!st || !enc)
+        return RSS_ERR_INVAL;
+
+    /*
+     * Only a snapshot channel has anything to undo -- a video channel's
+     * bind belongs to rvd's unbind chain, not to its group membership,
+     * and tearing it down here would unbind a stream that is still
+     * running. star_enc_unbind_and_release is a no-op unless owns_port.
+     */
+    if (enc->owns_port)
+        star_enc_unbind_and_release(st, chn, enc);
+
+    return RSS_OK;
 }
 
 int hal_enc_create_channel(void *ctx, int chn, const rss_video_config_t *cfg)
@@ -646,6 +795,31 @@ static void star_enc_close_fd(star_state_t *st, int chn, star_venc_chn_t *enc)
     enc->fd = -1;
 }
 
+/*
+ * Unbind a channel's source port, and release the port itself if this
+ * backend is the one that brought it up.
+ *
+ * Only snapshot ports are released here. rvd's own ports outlive their
+ * encoder channel on purpose -- it destroys and recreates a channel to
+ * change geometry without taking the framesource down -- but a snapshot
+ * port has no owner other than the channel it feeds, so nothing else
+ * would ever put it back. See hal_enc_register_channel.
+ */
+static void star_enc_unbind_and_release(star_state_t *st, int chn, star_venc_chn_t *enc)
+{
+    int port = enc->src_port;
+
+    if (!enc->bound || port < 0)
+        return;
+
+    star_enc_unbind_port(st, port, chn);
+
+    if (enc->owns_port) {
+        star_fs_release_port(st, port);
+        enc->owns_port = false;
+    }
+}
+
 int hal_enc_destroy_channel(void *ctx, int chn)
 {
     int ret;
@@ -668,8 +842,7 @@ int hal_enc_destroy_channel(void *ctx, int chn)
      * destroyed with a live bind leaves MI's kernel side referencing a
      * gone destination.
      */
-    if (enc->bound && enc->src_port >= 0)
-        star_enc_unbind_port(st, enc->src_port, chn);
+    star_enc_unbind_and_release(st, chn, enc);
 
     ret = st->venc.fnDestroyChannel(chn);
     if (ret)
@@ -709,7 +882,13 @@ static void star_enc_bind_cells(star_state_t *st, int port, int chn, i6_sys_bind
     dest->port = STAR_VENC_PORT;
 }
 
-int star_enc_bind_port(star_state_t *st, int port, int chn)
+/*
+ * dst_fps 0 means "whatever the source produces", which is what every
+ * video stream wants: its VPE port already runs at the rate the stream
+ * asked for. A JPEG snapshot channel passes its own, lower rate -- see
+ * hal_enc_register_channel for why the bind is the pacing mechanism.
+ */
+static int star_enc_bind_port_rate(star_state_t *st, int port, int chn, unsigned int dst_fps)
 {
     i6_sys_bind source, dest;
     star_venc_chn_t *enc;
@@ -754,8 +933,11 @@ int star_enc_bind_port(star_state_t *st, int port, int chn)
     if (!fps)
         fps = enc->fps_num / (enc->fps_den ? enc->fps_den : 1);
 
+    if (!dst_fps || dst_fps > fps)
+        dst_fps = fps;
+
     star_enc_bind_cells(st, port, chn, &source, &dest);
-    ret = st->sys.fnBindExt(&source, &dest, fps, fps, I6_SYS_LINK_FRAMEBASE, 0);
+    ret = st->sys.fnBindExt(&source, &dest, fps, dst_fps, I6_SYS_LINK_FRAMEBASE, 0);
     if (ret) {
         HAL_LOG_ERR("MI_SYS_BindChnPort2 VPE port %d -> VENC %d failed: %d", port, chn, ret);
         return RSS_ERR_IO;
@@ -764,9 +946,18 @@ int star_enc_bind_port(star_state_t *st, int port, int chn)
     enc->bound = true;
     enc->src_port = port;
 
-    HAL_LOG_INFO("bind: VPE port %d -> VENC chn %d, framebase, %u fps", port, chn, fps);
+    if (dst_fps == fps)
+        HAL_LOG_INFO("bind: VPE port %d -> VENC chn %d, framebase, %u fps", port, chn, fps);
+    else
+        HAL_LOG_INFO("bind: VPE port %d -> VENC chn %d, framebase, %u -> %u fps", port, chn, fps,
+                     dst_fps);
 
     return RSS_OK;
+}
+
+int star_enc_bind_port(star_state_t *st, int port, int chn)
+{
+    return star_enc_bind_port_rate(st, port, chn, 0);
 }
 
 int star_enc_unbind_port(star_state_t *st, int port, int chn)
@@ -813,8 +1004,7 @@ void star_enc_release_all(star_state_t *st)
             st->venc.fnStopReceiving(i);
             enc->receiving = false;
         }
-        if (enc->bound && enc->src_port >= 0)
-            star_enc_unbind_port(st, enc->src_port, i);
+        star_enc_unbind_and_release(st, i, enc);
 
         st->venc.fnDestroyChannel(i);
         free(enc->heap_packs);
