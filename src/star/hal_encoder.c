@@ -18,11 +18,11 @@
  *    enc_register_channel is where that stops being free. rvd skips the
  *    bind chain entirely for JPEG streams, because on IMP registering a
  *    second channel into the paired video stream's group is what feeds
- *    it -- so a no-op register leaves the JPEG channel connected to
- *    nothing at all, which is what it did until 2026-07-28. It now
- *    brings up a VPE output port of its own for the JPEG channel. See
- *    the comment on hal_enc_register_channel for the vendor rules that
- *    make a dedicated port the right shape rather than a shared one.
+ *    it -- so a no-op register here would leave the JPEG channel
+ *    connected to nothing at all. It brings up a VPE output port of its
+ *    own for the JPEG channel instead. See the comment on
+ *    hal_enc_register_channel for the vendor rules that make a dedicated
+ *    port the right shape rather than a shared one.
  *
  *  - MI packs several NAL units into one stream *pack*. IMP hands back
  *    one NAL per pack, which is what rss_frame_t's nals[] was shaped
@@ -546,15 +546,15 @@ static int star_enc_spare_port(const star_state_t *st)
  * the group is already bound to the framesource, so both registered
  * channels are fed.
  *
- * MI has no groups, so until 2026-07-28 this function was a validity
- * check and nothing else, and the JPEG channel was never connected to
- * anything: MI_VENC_CreateChn ran, MI_VENC_StartRecvPic ran, and no VPE
- * port was ever bound to it. enc_poll then timed out forever, silently,
- * because rvd_frame_loop.c treats a JPEG poll timeout as the expected
- * "sensor idle" case. The symptom was /snap returning "No snapshot
- * available yet" with a healthy ring and a working H.264 stream, and the
- * one-line confirmation is that `logread | grep 'bind: VPE port'` showed
- * two binds on a two-video-plus-two-JPEG pipeline instead of four.
+ * MI has no groups, so a validity check here is not enough: it would
+ * leave the JPEG channel connected to nothing at all. MI_VENC_CreateChn
+ * runs, MI_VENC_StartRecvPic runs, no VPE port is ever bound, and
+ * enc_poll times out forever -- silently, because rvd_frame_loop.c reads
+ * a JPEG poll timeout as the expected "sensor idle" case. That failure
+ * looks like /snap returning "No snapshot available yet" with a healthy
+ * ring and a working H.264 stream, and `logread | grep 'bind: VPE port'`
+ * showing two binds on a two-video-plus-two-JPEG pipeline instead of
+ * four. That grep is the standing check that this function did its job.
  *
  * So this has to satisfy the group/register contract in MI's own terms,
  * which means giving the JPEG channel a VPE output port of its own.

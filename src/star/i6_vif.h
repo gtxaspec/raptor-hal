@@ -46,22 +46,20 @@ typedef struct {
     char bitswap;
     i6_common_sync sync;
     /*
-     * The vendor's MI_VIF_DevAttr_t has a trailing u32MultiDevMap that this
-     * header did not declare until 2026-07-28, so MI_VIF_SetDevAttr read a
-     * word of our caller's stack frame and passed it to the driver as a
-     * device bitmap. Established by disassembling MI_VIF_SetDevAttr in
-     * libmi_vif.so: it block-copies 3 x 16 bytes plus one trailing word --
-     * 52, not 48 -- out of the pointer we hand it, then sends an ioctl whose
-     * hardcoded payload length is 56, i.e. 4 bytes of device id followed by
-     * those 52. So the field is at exactly +48 and sizeof must be 52.
+     * The vendor's MI_VIF_DevAttr_t ends in a u32MultiDevMap, and it must be
+     * declared here: MI_VIF_SetDevAttr block-copies 3 x 16 bytes plus one
+     * trailing word -- 52, not 48 -- out of the pointer it is given, then
+     * sends an ioctl whose hardcoded payload length is 56, i.e. 4 bytes of
+     * device id followed by those 52. (Both numbers read off a disassembly of
+     * libmi_vif.so.) So the field sits at exactly +48 and sizeof must be 52.
      *
-     * The read is deterministic per binary, which is why it went unnoticed:
-     * OpenIPC's stack layout happened to leave 1 there, which is the value
-     * the driver wants. Building with -fstack-protector-strong reorders the
-     * locals and left a fragment of the sensor-name string instead
-     * ("multidevmap 909402983" == 0x36346367 == "gc46"), and VIF then never
-     * synced -- dmesg looping on _MI_VIF_EnqueueOutputTaskDev "layout type
-     * 2, bindmode 4 not sync err" with no stream ever produced.
+     * Omitting it does not fail loudly. The vendor reads a word of the
+     * caller's stack frame and passes it to the driver as a device bitmap,
+     * deterministically for a given binary -- one stack layout leaves the 1
+     * the driver wants, another leaves a fragment of the sensor-name string
+     * (0x36346367, "gc46"), and VIF then never syncs: dmesg loops on
+     * _MI_VIF_EnqueueOutputTaskDev "layout type 2, bindmode 4 not sync err"
+     * and no stream is produced. Hence the asserts below rather than trust.
      */
     unsigned int multidevmap;
 } i6_vif_dev;
