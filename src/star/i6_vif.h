@@ -45,7 +45,29 @@ typedef struct {
     i6_common_input input;
     char bitswap;
     i6_common_sync sync;
+    /*
+     * The vendor's MI_VIF_DevAttr_t has a trailing u32MultiDevMap that this
+     * header did not declare until 2026-07-28, so MI_VIF_SetDevAttr read a
+     * word of our caller's stack frame and passed it to the driver as a
+     * device bitmap. Established by disassembling MI_VIF_SetDevAttr in
+     * libmi_vif.so: it block-copies 3 x 16 bytes plus one trailing word --
+     * 52, not 48 -- out of the pointer we hand it, then sends an ioctl whose
+     * hardcoded payload length is 56, i.e. 4 bytes of device id followed by
+     * those 52. So the field is at exactly +48 and sizeof must be 52.
+     *
+     * The read is deterministic per binary, which is why it went unnoticed:
+     * OpenIPC's stack layout happened to leave 1 there, which is the value
+     * the driver wants. Building with -fstack-protector-strong reorders the
+     * locals and left a fragment of the sensor-name string instead
+     * ("multidevmap 909402983" == 0x36346367 == "gc46"), and VIF then never
+     * synced -- dmesg looping on _MI_VIF_EnqueueOutputTaskDev "layout type
+     * 2, bindmode 4 not sync err" with no stream ever produced.
+     */
+    unsigned int multidevmap;
 } i6_vif_dev;
+
+_Static_assert(sizeof(i6_vif_dev) == 52, "i6_vif_dev must match the 52 bytes MI_VIF_SetDevAttr copies");
+_Static_assert(offsetof(i6_vif_dev, multidevmap) == 48, "u32MultiDevMap sits at +48; see the comment above");
 
 typedef struct {
     i6_common_rect capt;
@@ -57,6 +79,12 @@ typedef struct {
     i6_vif_frate frate;
     unsigned int frameLineCnt;
 } i6_vif_port;
+
+/* Checked the same way as i6_vif_dev above, since a short struct here would
+ * fail identically: MI_VIF_SetChnPortAttr copies 2 x 16 bytes and its ioctl
+ * payload is 40, i.e. 8 bytes of channel and port plus these 32. This one was
+ * already the right size -- the assert is here so it stays that way. */
+_Static_assert(sizeof(i6_vif_port) == 32, "i6_vif_port must match the 32 bytes MI_VIF_SetChnPortAttr copies");
 
 typedef struct {
     void *handle;

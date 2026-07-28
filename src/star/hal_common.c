@@ -502,6 +502,16 @@ static int star_vif_bringup(star_state_t *st)
         device.sync = st->pad.intfAttr.bt656.sync;
         device.bitswap = (char)st->pad.intfAttr.bt656.bitswap;
     }
+    /*
+     * One VIF device, so bit 0 only. Worth setting explicitly even though the
+     * memset now covers it: the driver reports what it read back as
+     * "MI_VIF_IMPL_SetDevAttr: workmode 3, multidevmap N, not support", and a
+     * streaming camera shows N == 1 followed by "[MhalCameraOpen] VifMask : 1"
+     * -- so this value is the oracle for whether the field landed where
+     * i6_vif.h says it does. The "not support" on that line is benign; a
+     * working camera prints it too.
+     */
+    device.multidevmap = 1;
 
     ret = st->vif.fnSetDeviceConfig(STAR_VIF_DEV, &device);
     if (ret) {
