@@ -1656,8 +1656,16 @@ static uint32_t star_ae_total_gain(const i6_isp_ae_status *ae)
  * validate a colour matrix.
  */
 #define STAR_AE_LANE_CLIP 240u
-#define STAR_AE_LANE_SPREAD 16u
-#define STAR_AE_LANE_Y_TOL 12u
+
+/*
+ * How far the runner-up order has to sit behind the winner, averaged over
+ * the cells scored, before the win means anything. One count per cell is
+ * inside integer-division rounding; two is not.
+ */
+#define STAR_AE_LANE_MARGIN 2u
+
+/* Enough cells that the sums are a population, not a sample. */
+#define STAR_AE_LANE_MIN_CELLS 64u
 
 /* At file scope rather than inside the function so the host suite can
  * clear it between cases; a one-shot latch is otherwise untestable except
@@ -1769,79 +1777,84 @@ static uint32_t star_ae_luma(star_state_t *st, const i6_isp_ae_status *ae)
 
     /*
      * WHICH lane is which is a separate question, and the placement line
-     * cannot answer it. The board has now spent two of those on frames
-     * that could not: r=0 g=0 b=0 y=0 from the reset ISP, then
-     * r=253 g=252 b=253 y=253 from a daylight scene pinned against the
-     * untuned 300us shutter floor. Both are degenerate the same way --
-     * with no spread between the lanes, every lane order fits.
+     * cannot answer it. Two things make it harder than it looks.
      *
-     * So this waits for a frame that discriminates, however many polls it
-     * takes (ric polls once a second, the flag is per process, waiting is
-     * free), and then checks the claim instead of leaving it to be
-     * eyeballed. If the layout really is waybeam's r,g,b,y then lane 3 is
-     * the BT.601 weighted sum of the first three.
+     * Spread between the lanes is necessary but nowhere near sufficient.
+     * What separates two orders is the weight difference across the lanes
+     * they exchange, so an r/g swap moves the prediction by only
+     * 0.288 * |r - g| -- r=40 g=36 b=24 y=36 has 16 counts of spread and
+     * all six orders land within tolerance of that y.
      *
-     * Spread between the lanes is necessary but nowhere near sufficient,
-     * and assuming otherwise is how this reports a conclusion it has not
-     * earned. r=40 g=36 b=24 y=36 has 16 counts of spread and every one of
-     * the six orders lands within the tolerance of y, because what
-     * separates two orders is not the spread but the weight difference
-     * across the lanes they exchange -- swapping r and g moves the
-     * prediction by only 0.288 * |r - g|.
+     * And the grid mean cannot supply the colour anyway, because AWB is
+     * built to remove it: point the camera at a saturated blue and the
+     * frame mean comes back r=55 g=38 b=43, red highest, blue corrected
+     * away. Waiting for a colourful mean is waiting for the thing AWB
+     * exists to prevent.
      *
-     * So score all six and require the assumed one to be the only fit.
-     * Anything less keeps waiting for a frame with real colour in it.
+     * So score the cells, not the mean. AWB neutralises the average over
+     * the frame; it does not make every cell grey, and a 32x32 grid gives
+     * a thousand of them. Summing each order's error across all cells
+     * turns a per-cell difference too small to see into a total that
+     * separates, and the correct order wins by more the more colour is
+     * anywhere in the scene.
      */
-    if (!star_ae_lanes_identified && mean[0] < STAR_AE_LANE_CLIP && mean[1] < STAR_AE_LANE_CLIP &&
-        mean[2] < STAR_AE_LANE_CLIP) {
+    if (!star_ae_lanes_identified) {
         /* Every way r,g,b could sit in lanes 0..2; the first is waybeam's. */
         static const unsigned char perm[6][3] = {{0, 1, 2}, {0, 2, 1}, {1, 0, 2},
                                                  {1, 2, 0}, {2, 0, 1}, {2, 1, 0}};
-        unsigned int lo = mean[0], hi = mean[0], y601 = 0, err = 0;
-        unsigned int rival = UINT_MAX;
+        uint64_t err_sum[6] = {0};
+        unsigned int scored = 0;
+        unsigned int best = 0, rival = 0;
 
-        for (unsigned int lane = 1; lane < 3; lane++) {
-            if (mean[lane] < lo)
-                lo = mean[lane];
-            if (mean[lane] > hi)
-                hi = mean[lane];
-        }
+        for (unsigned int i = 0; i < cells; i++) {
+            const unsigned char *c = &cell[i * I6_ISP_AE_CELL_SZ];
+            unsigned int y = c[I6_ISP_AE_CELL_Y];
 
-        for (unsigned int i = 0; i < 6; i++) {
-            unsigned int y = (299u * mean[perm[i][0]] + 587u * mean[perm[i][1]] +
-                              114u * mean[perm[i][2]]) /
-                             1000u;
-            unsigned int e = mean[3] > y ? mean[3] - y : y - mean[3];
+            /* A clipped cell has lost the ratios this depends on. */
+            if (c[0] >= STAR_AE_LANE_CLIP || c[1] >= STAR_AE_LANE_CLIP ||
+                c[2] >= STAR_AE_LANE_CLIP)
+                continue;
 
-            if (i == 0) {
-                y601 = y;
-                err = e;
-            } else if (e < rival) {
-                rival = e;
+            for (unsigned int p = 0; p < 6; p++) {
+                unsigned int pred =
+                    (299u * c[perm[p][0]] + 587u * c[perm[p][1]] + 114u * c[perm[p][2]]) / 1000u;
+
+                err_sum[p] += pred > y ? pred - y : y - pred;
             }
+            scored++;
         }
+
+        for (unsigned int p = 1; p < 6; p++)
+            if (err_sum[p] < err_sum[best])
+                best = p;
+
+        /* The closest order that is not the assumed one. */
+        rival = 1;
+        for (unsigned int p = 2; p < 6; p++)
+            if (err_sum[p] < err_sum[rival])
+                rival = p;
 
         /*
-         * A frame that fits the assumed order but fits a rival just as
-         * well has not identified anything. Say so once, then keep
-         * looking -- silence here reads as "not reached yet", which is a
-         * different thing entirely.
+         * Require a margin per scored cell rather than a bare ordering:
+         * across a thousand cells the sums separate on rounding alone,
+         * and a lead of a fraction of a count each is not evidence.
          */
-        if (err <= STAR_AE_LANE_Y_TOL && rival <= STAR_AE_LANE_Y_TOL) {
-            if (!star_ae_lanes_ambiguous) {
-                HAL_LOG_INFO("isp: AE lanes r=%u g=%u b=%u y=%u do not separate the orders "
-                             "(assumed order is %u counts from luma, the closest rival %u); "
-                             "waiting for a frame with more colour in it",
-                             mean[0], mean[1], mean[2], mean[3], err, rival);
-                star_ae_lanes_ambiguous = true;
-            }
-        } else if (hi - lo >= STAR_AE_LANE_SPREAD) {
-            HAL_LOG_INFO("isp: AE lanes r=%u g=%u b=%u y=%u across %u counts of colour spread; "
-                         "BT.601 luma of the first three is %u (off by %u, nearest rival order "
-                         "off by %u), so the r,g,b,y order is %s",
-                         mean[0], mean[1], mean[2], mean[3], hi - lo, y601, err, rival,
-                         err <= STAR_AE_LANE_Y_TOL ? "confirmed" : "WRONG -- lane 3 is not luma");
+        if (scored >= STAR_AE_LANE_MIN_CELLS &&
+            (best == 0 ? err_sum[rival] - err_sum[0] : err_sum[0] - err_sum[best]) >=
+                (uint64_t)scored * STAR_AE_LANE_MARGIN) {
+            HAL_LOG_INFO("isp: AE lanes over %u cells: r,g,b,y is off luma by %llu/cell, "
+                         "the nearest other order by %llu/cell -- the order is %s",
+                         scored, (unsigned long long)(err_sum[0] / scored),
+                         (unsigned long long)(err_sum[rival] / scored),
+                         best == 0 ? "confirmed" : "WRONG, another order fits better");
             star_ae_lanes_identified = true;
+        } else if (!star_ae_lanes_ambiguous && scored >= STAR_AE_LANE_MIN_CELLS) {
+            HAL_LOG_INFO("isp: AE lanes over %u cells do not separate yet (r,g,b,y off luma "
+                         "by %llu/cell, nearest other order %llu/cell); needs colour somewhere "
+                         "in frame, which AWB works against",
+                         scored, (unsigned long long)(err_sum[0] / scored),
+                         (unsigned long long)(err_sum[rival] / scored));
+            star_ae_lanes_ambiguous = true;
         }
     }
 
