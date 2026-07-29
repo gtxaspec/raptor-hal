@@ -124,6 +124,7 @@
 #include "star_state.h"
 
 #include <ctype.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1662,6 +1663,7 @@ static uint32_t star_ae_total_gain(const i6_isp_ae_status *ae)
  * clear it between cases; a one-shot latch is otherwise untestable except
  * in whichever test happens to run first. */
 static bool star_ae_lanes_identified;
+static bool star_ae_lanes_ambiguous;
 
 /*
  * Mean of the AE grid's Y lane, or 0 if the layout cannot be confirmed.
@@ -1777,13 +1779,26 @@ static uint32_t star_ae_luma(star_state_t *st, const i6_isp_ae_status *ae)
      * takes (ric polls once a second, the flag is per process, waiting is
      * free), and then checks the claim instead of leaving it to be
      * eyeballed. If the layout really is waybeam's r,g,b,y then lane 3 is
-     * the BT.601 weighted sum of the first three -- a far sharper test
-     * than "the numbers differ", since a swapped order or a fourth colour
-     * channel misses it by tens of counts.
+     * the BT.601 weighted sum of the first three.
+     *
+     * Spread between the lanes is necessary but nowhere near sufficient,
+     * and assuming otherwise is how this reports a conclusion it has not
+     * earned. r=40 g=36 b=24 y=36 has 16 counts of spread and every one of
+     * the six orders lands within the tolerance of y, because what
+     * separates two orders is not the spread but the weight difference
+     * across the lanes they exchange -- swapping r and g moves the
+     * prediction by only 0.288 * |r - g|.
+     *
+     * So score all six and require the assumed one to be the only fit.
+     * Anything less keeps waiting for a frame with real colour in it.
      */
     if (!star_ae_lanes_identified && mean[0] < STAR_AE_LANE_CLIP && mean[1] < STAR_AE_LANE_CLIP &&
         mean[2] < STAR_AE_LANE_CLIP) {
-        unsigned int lo = mean[0], hi = mean[0], y601, err;
+        /* Every way r,g,b could sit in lanes 0..2; the first is waybeam's. */
+        static const unsigned char perm[6][3] = {{0, 1, 2}, {0, 2, 1}, {1, 0, 2},
+                                                 {1, 2, 0}, {2, 0, 1}, {2, 1, 0}};
+        unsigned int lo = mean[0], hi = mean[0], y601 = 0, err = 0;
+        unsigned int rival = UINT_MAX;
 
         for (unsigned int lane = 1; lane < 3; lane++) {
             if (mean[lane] < lo)
@@ -1792,13 +1807,39 @@ static uint32_t star_ae_luma(star_state_t *st, const i6_isp_ae_status *ae)
                 hi = mean[lane];
         }
 
-        y601 = (299u * mean[0] + 587u * mean[1] + 114u * mean[2]) / 1000u;
-        err = mean[3] > y601 ? mean[3] - y601 : y601 - mean[3];
+        for (unsigned int i = 0; i < 6; i++) {
+            unsigned int y = (299u * mean[perm[i][0]] + 587u * mean[perm[i][1]] +
+                              114u * mean[perm[i][2]]) /
+                             1000u;
+            unsigned int e = mean[3] > y ? mean[3] - y : y - mean[3];
 
-        if (hi - lo >= STAR_AE_LANE_SPREAD) {
+            if (i == 0) {
+                y601 = y;
+                err = e;
+            } else if (e < rival) {
+                rival = e;
+            }
+        }
+
+        /*
+         * A frame that fits the assumed order but fits a rival just as
+         * well has not identified anything. Say so once, then keep
+         * looking -- silence here reads as "not reached yet", which is a
+         * different thing entirely.
+         */
+        if (err <= STAR_AE_LANE_Y_TOL && rival <= STAR_AE_LANE_Y_TOL) {
+            if (!star_ae_lanes_ambiguous) {
+                HAL_LOG_INFO("isp: AE lanes r=%u g=%u b=%u y=%u do not separate the orders "
+                             "(assumed order is %u counts from luma, the closest rival %u); "
+                             "waiting for a frame with more colour in it",
+                             mean[0], mean[1], mean[2], mean[3], err, rival);
+                star_ae_lanes_ambiguous = true;
+            }
+        } else if (hi - lo >= STAR_AE_LANE_SPREAD) {
             HAL_LOG_INFO("isp: AE lanes r=%u g=%u b=%u y=%u across %u counts of colour spread; "
-                         "BT.601 luma of the first three is %u, so the r,g,b,y order is %s",
-                         mean[0], mean[1], mean[2], mean[3], hi - lo, y601,
+                         "BT.601 luma of the first three is %u (off by %u, nearest rival order "
+                         "off by %u), so the r,g,b,y order is %s",
+                         mean[0], mean[1], mean[2], mean[3], hi - lo, y601, err, rival,
                          err <= STAR_AE_LANE_Y_TOL ? "confirmed" : "WRONG -- lane 3 is not luma");
             star_ae_lanes_identified = true;
         }
