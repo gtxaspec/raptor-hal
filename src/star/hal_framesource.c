@@ -489,6 +489,24 @@ int star_fs_clone_port(star_state_t *st, int src, int dst)
         return RSS_ERR_BUSY;
     }
 
+    /*
+     * A port brought up after rvd's own are already configured emits at
+     * the VPE channel's input size whatever MI_VPE_SetPortMode is told,
+     * and reports success either way. So a clone is only honest when the
+     * source's geometry is that input size; anything smaller would need a
+     * scaler this port will not apply, and the caller is better served by
+     * sharing the source port, which carries the right geometry already.
+     *
+     * The board shows this as an encoder that never produces: VENC is
+     * built for the stream's geometry and handed full-size frames.
+     */
+    if (s->width != st->plane.capt.width || s->height != st->plane.capt.height) {
+        HAL_LOG_INFO("vpe port %d: not cloning port %d -- %ux%u is not the VPE input size %ux%u, "
+                     "and a late port will not scale",
+                     dst, src, s->width, s->height, st->plane.capt.width, st->plane.capt.height);
+        return RSS_ERR_NOTSUP;
+    }
+
     memset(&attr, 0, sizeof(attr));
     attr.output.width = s->width;
     attr.output.height = s->height;
@@ -507,46 +525,19 @@ int star_fs_clone_port(star_state_t *st, int src, int dst)
     }
 
     /*
-     * The scaler only honours the requested output size once the port has
-     * a crop in the VPE input domain. rvd's ports get one from the driver
-     * because they are configured before the channel starts; a port
-     * configured while it runs does not, and silently emits frames at the
-     * channel's input size instead. Ask for the whole input -- this is a
-     * scale, not a zoom.
-     */
-    if (st->vpe.fnSetPortCrop) {
-        i6_common_rect crop;
-
-        memset(&crop, 0, sizeof(crop));
-        crop.x = 0;
-        crop.y = 0;
-        crop.width = st->plane.capt.width;
-        crop.height = st->plane.capt.height;
-
-        ret = st->vpe.fnSetPortCrop(STAR_VPE_CHN, dst, &crop);
-        if (ret)
-            HAL_LOG_WARN("MI_VPE_SetPortCrop(%d, %d) %ux%u failed: %d", STAR_VPE_CHN, dst,
-                         crop.width, crop.height, ret);
-    }
-
-    /*
-     * Verify rather than trust the return code. MI_VPE_SetPortMode reports
-     * success for a geometry it did not apply, and a snapshot port left at
-     * the channel's input size hands VENC frames its channel was not
-     * created for -- which shows up as an encoder that never produces,
-     * nowhere near the port that caused it.
+     * Report what MI says the port ended up as. It has been seen to echo
+     * the request rather than the effective state, so this is a hint for
+     * whoever is reading a log, not a check anything depends on -- the
+     * geometry guard above is what keeps a mis-scaled port out.
      */
     if (st->vpe.fnGetPortConfig) {
         i6_vpe_port got;
 
         memset(&got, 0, sizeof(got));
         if (st->vpe.fnGetPortConfig(STAR_VPE_CHN, dst, &got) == 0 &&
-            (got.output.width != s->width || got.output.height != s->height)) {
-            HAL_LOG_ERR("vpe port %d: asked for %ux%u, got %ux%u -- the port kept its own "
-                        "geometry, so it cannot feed a channel built for the source's",
-                        dst, s->width, s->height, got.output.width, got.output.height);
-            return RSS_ERR_IO;
-        }
+            (got.output.width != s->width || got.output.height != s->height))
+            HAL_LOG_WARN("vpe port %d: asked for %ux%u, MI_VPE_GetPortMode reports %ux%u", dst,
+                         s->width, s->height, got.output.width, got.output.height);
     }
 
     d->configured = true;

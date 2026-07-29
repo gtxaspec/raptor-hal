@@ -635,7 +635,8 @@ int hal_enc_register_channel(void *ctx, int grp, int chn)
             }
             HAL_LOG_WARN("venc chn %d: VPE port %d bind failed: %d", chn, port, ret);
             star_fs_release_port(st, port);
-        } else {
+        } else if (ret != RSS_ERR_NOTSUP) {
+            /* NOTSUP is a considered decline, already explained by the clone. */
             HAL_LOG_WARN("venc chn %d: could not bring up VPE port %d from port %d: %d", chn, port,
                          src_port, ret);
         }

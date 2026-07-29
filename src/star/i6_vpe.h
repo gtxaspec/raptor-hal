@@ -192,15 +192,12 @@ typedef struct {
     int (*fnSetPortConfig)(int channel, int port, i6_vpe_port *config);
 
     /*
-     * Optional -- guard every call. MI_VPE_SetPortMode returns 0 for a
-     * geometry it does not apply: a port configured after the VPE channel
-     * is already running keeps the channel's input size instead. Reading
-     * the mode back is the only way to tell, and the crop is what makes
-     * the scaler honour the request, since the driver gives an
-     * input-domain crop only to ports configured before the channel runs.
+     * Optional -- guard the call. MI_VPE_SetPortMode returns 0 for a
+     * geometry it does not apply, and this reads back what the port
+     * became. It has been seen to echo the request rather than the
+     * effective state, so treat it as a log aid, not a check.
      */
     int (*fnGetPortConfig)(int channel, int port, i6_vpe_port *config);
-    int (*fnSetPortCrop)(int channel, int port, i6_common_rect *crop);
 } i6_vpe_impl;
 
 static inline int i6_vpe_load(i6_vpe_impl *vpe_lib)
@@ -296,11 +293,9 @@ static inline int i6_vpe_load(i6_vpe_impl *vpe_lib)
         hal_symbol_load("i6_vpe", vpe_lib->handle, "MI_VPE_SetPortMode")))
         return RSS_ERR_NOTSUP;
 
-    /* Optional: absence costs the clone its verification, not the backend. */
+    /* Optional: absence costs the clone a log line, not the backend. */
     vpe_lib->fnGetPortConfig = (int(*)(int channel, int port, i6_vpe_port *config))
         hal_symbol_load("i6_vpe", vpe_lib->handle, "MI_VPE_GetPortMode");
-    vpe_lib->fnSetPortCrop = (int(*)(int channel, int port, i6_common_rect *crop))
-        hal_symbol_load("i6_vpe", vpe_lib->handle, "MI_VPE_SetPortCrop");
 
     return RSS_OK;
 }
