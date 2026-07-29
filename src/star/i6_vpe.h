@@ -191,13 +191,6 @@ typedef struct {
     int (*fnEnablePort)(int channel, int port);
     int (*fnSetPortConfig)(int channel, int port, i6_vpe_port *config);
 
-    /*
-     * Optional -- guard the call. MI_VPE_SetPortMode returns 0 for a
-     * geometry it does not apply, and this reads back what the port
-     * became. It has been seen to echo the request rather than the
-     * effective state, so treat it as a log aid, not a check.
-     */
-    int (*fnGetPortConfig)(int channel, int port, i6_vpe_port *config);
 } i6_vpe_impl;
 
 static inline int i6_vpe_load(i6_vpe_impl *vpe_lib)
@@ -293,9 +286,16 @@ static inline int i6_vpe_load(i6_vpe_impl *vpe_lib)
         hal_symbol_load("i6_vpe", vpe_lib->handle, "MI_VPE_SetPortMode")))
         return RSS_ERR_NOTSUP;
 
-    /* Optional: absence costs the clone a log line, not the backend. */
-    vpe_lib->fnGetPortConfig = (int(*)(int channel, int port, i6_vpe_port *config))
-        hal_symbol_load("i6_vpe", vpe_lib->handle, "MI_VPE_GetPortMode");
+    /*
+     * MI_VPE_GetPortMode and MI_VPE_SetPortCrop are deliberately not
+     * bound. Both were tried against this SDK and neither behaved as its
+     * signature suggests: the crop came back reading a rectangle it was
+     * never passed, and calling the getter left the port it was asked
+     * about with no geometry at all. i6_vpe_port is reconstructed, not
+     * vendor-supplied, so a size mismatch here writes past the caller's
+     * frame. Nothing on a working path may depend on an MI struct layout
+     * this port has not verified.
+     */
 
     return RSS_OK;
 }

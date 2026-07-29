@@ -524,22 +524,6 @@ int star_fs_clone_port(star_state_t *st, int src, int dst)
         return RSS_ERR_IO;
     }
 
-    /*
-     * Report what MI says the port ended up as. It has been seen to echo
-     * the request rather than the effective state, so this is a hint for
-     * whoever is reading a log, not a check anything depends on -- the
-     * geometry guard above is what keeps a mis-scaled port out.
-     */
-    if (st->vpe.fnGetPortConfig) {
-        i6_vpe_port got;
-
-        memset(&got, 0, sizeof(got));
-        if (st->vpe.fnGetPortConfig(STAR_VPE_CHN, dst, &got) == 0 &&
-            (got.output.width != s->width || got.output.height != s->height))
-            HAL_LOG_WARN("vpe port %d: asked for %ux%u, MI_VPE_GetPortMode reports %ux%u", dst,
-                         s->width, s->height, got.output.width, got.output.height);
-    }
-
     d->configured = true;
     d->width = s->width;
     d->height = s->height;
