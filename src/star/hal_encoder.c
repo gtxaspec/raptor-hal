@@ -910,16 +910,20 @@ static void star_enc_bind_cells(star_state_t *st, int port, int chn, i6_sys_bind
 }
 
 /*
- * dst_fps 0 means "whatever the source produces", which is what every
- * video stream wants: its VPE port already runs at the rate the stream
- * asked for. A JPEG snapshot channel passes its own, lower rate -- see
+ * dst_fps 0 means "the rate this port was configured for" -- a video
+ * stream. A JPEG snapshot channel passes its own, lower rate; see
  * hal_enc_register_channel for why the bind is the pacing mechanism.
+ *
+ * A VPE output port does not run at the rate its stream asked for. It
+ * runs at the VPE channel's, which is the sensor's, and this bind is the
+ * only thing between that and the encoder.
  */
 static int star_enc_bind_port_rate(star_state_t *st, int port, int chn, unsigned int dst_fps)
 {
     i6_sys_bind source, dest;
     star_venc_chn_t *enc;
-    unsigned int fps;
+    unsigned int port_fps;
+    unsigned int src_fps;
     int ret;
 
     if (!st || port < 0 || port >= STAR_VPE_PORT_NUM || chn < 0 || chn >= I6_VENC_CHN_NUM)
@@ -954,17 +958,32 @@ static int star_enc_bind_port_rate(star_state_t *st, int port, int chn, unsigned
      * frames out of DRAM. A realtime link here would hand the encoder
      * MI_SYS_REALTIME_MAGIC_PADDR instead of a frame.
      */
-    fps = st->port[port].fps_num && st->port[port].fps_den
-              ? st->port[port].fps_num / st->port[port].fps_den
-              : st->fps;
-    if (!fps)
-        fps = enc->fps_num / (enc->fps_den ? enc->fps_den : 1);
+    port_fps = st->port[port].fps_num && st->port[port].fps_den
+                   ? st->port[port].fps_num / st->port[port].fps_den
+                   : 0;
 
-    if (!dst_fps || dst_fps > fps)
-        dst_fps = fps;
+    /*
+     * srcFps is the rate the port actually emits, which is the sensor's --
+     * a VPE output port runs at the channel's rate whatever the stream
+     * asked for. MI reduces by the ratio of the two, so passing the
+     * stream's own rate as both makes the bind a pass-through: a 5 fps
+     * stream on a 30 fps sensor was delivering 30.
+     */
+    src_fps = st->fps;
+    if (!src_fps)
+        src_fps = port_fps;
+    if (!src_fps)
+        src_fps = enc->fps_num / (enc->fps_den ? enc->fps_den : 1);
+
+    /* No rate from the caller means "whatever this port was configured
+     * for" -- a video stream. A JPEG channel passes its own, lower rate. */
+    if (!dst_fps)
+        dst_fps = port_fps;
+    if (!dst_fps || dst_fps > src_fps)
+        dst_fps = src_fps;
 
     star_enc_bind_cells(st, port, chn, &source, &dest);
-    ret = st->sys.fnBindExt(&source, &dest, fps, dst_fps, I6_SYS_LINK_FRAMEBASE, 0);
+    ret = st->sys.fnBindExt(&source, &dest, src_fps, dst_fps, I6_SYS_LINK_FRAMEBASE, 0);
     if (ret) {
         HAL_LOG_ERR("MI_SYS_BindChnPort2 VPE port %d -> VENC %d failed: %d", port, chn, ret);
         return RSS_ERR_IO;
@@ -973,11 +992,11 @@ static int star_enc_bind_port_rate(star_state_t *st, int port, int chn, unsigned
     enc->bound = true;
     enc->src_port = port;
 
-    if (dst_fps == fps)
-        HAL_LOG_INFO("bind: VPE port %d -> VENC chn %d, framebase, %u fps", port, chn, fps);
+    if (dst_fps == src_fps)
+        HAL_LOG_INFO("bind: VPE port %d -> VENC chn %d, framebase, %u fps", port, chn, src_fps);
     else
-        HAL_LOG_INFO("bind: VPE port %d -> VENC chn %d, framebase, %u -> %u fps", port, chn, fps,
-                     dst_fps);
+        HAL_LOG_INFO("bind: VPE port %d -> VENC chn %d, framebase, %u -> %u fps", port, chn,
+                     src_fps, dst_fps);
 
     return RSS_OK;
 }
