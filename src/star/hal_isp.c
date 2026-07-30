@@ -428,16 +428,9 @@ static void star_iq_learn_unity(star_iq_param_t *p, const uint8_t *buf)
                  p->name, base, p->mi_max, base, p->mi_max - base);
 }
 
-/* Re-arm the baseline read for every knob that learns it. The tuning load
- * has just put the binary's own value back in each field. */
-static void star_iq_arm_unity(void)
-{
-    size_t i;
-
-    for (i = 0; i < IQ_PARAM_COUNT; i++)
-        if (g_iq[i].unity_from_tuning)
-            g_iq[i].unity_stale = true;
-}
+/* Re-arm every baseline that is read out of the tuning rather than assumed.
+ * Defined below the AE target curve, since it arms that too. */
+static void star_isp_arm_tuning_reads(void);
 
 /*
  * Read the module's current payload. Callers modify one field of it and
@@ -1033,57 +1026,266 @@ static int star_isp_set_orien(star_state_t *st);
 static void star_isp_reload_if_reset(star_state_t *st, bool force);
 
 /*
- * The AE target, as the tuning binary calibrated it, once per process.
+ * ================================================================
+ * THE AE TARGET CURVE
  *
- * EV compensation cannot lower exposure on this platform: the tuning leaves
- * MI_ISP_AE_SetEVComp's field at 0, which is the floor of its 0..200 range,
- * so raising it brightens and there is nothing underneath. The target luma
- * is a different call -- command 0x1407, payload 132, against EVComp's
- * 0x1403 and 8 -- and it is the one that moves both ways.
+ * EV compensation cannot lower exposure here. The tuning leaves
+ * MI_ISP_AE_SetEVComp's field at 0, which is the floor of its 0..200
+ * range, so raising it brightens and there is nothing underneath: it is a
+ * positive-only boost. The AE's target luma is a different call -- command
+ * 0x1407 with a 132-byte payload, against EVComp's 0x1403 and 8 -- and
+ * that one moves both ways.
  *
- * Where the value sits inside those 132 bytes is not something to guess.
- * The IQ_AUTOMAN convention in this file puts the manual field last (4 of
- * 76 for brightness, 4 of 1268 for sharpness), which makes 128 the leading
- * candidate, but a knob that pins the AE is not worth writing on a
- * prediction. So read it out and log it, and wire a setter once the log
- * says which word holds the number.
+ * It is not a scalar. The payload read off the board is
  *
- * Reading is safe here in a way a guessed getter is not: 132 is the size
- * the vendor's own wrapper moves into its API descriptor, not a
- * reconstruction, so the buffer cannot be short.
+ *   count 16
+ *   target 350 350 350 350 350 360 365 385 400 420 455 465 480 450 400 400
+ *   light  -88152 -71768 -55384 -39000 -22616 -6232 10152 26536 42920
+ *          59304 78888 92072 108456 130000 160000 170000
+ *
+ * so a 16-point curve of target luma against scene light level:
+ *
+ *   struct { uint32_t count; uint32_t target[16]; int32_t light[16]; }
+ *
+ * 1 + 16 + 16 words is 132 bytes exactly, which is the size the vendor's
+ * own wrapper moves into its API descriptor -- not a reconstruction. Three
+ * further things agree with the reading: the light axis is strictly
+ * increasing and mostly spaced by exactly 16384, so it is a fixed-point
+ * log scale; the target array is *not* monotonic, rising to 480 and
+ * falling back, which is what an AE curve does to protect highlights in a
+ * bright scene; and 350..480 in eighths is 43.75..60, bracketing the
+ * ae_luma this board reports in daylight.
+ *
+ * The unit of either axis is still not identified, and this does not need
+ * it: scaling the whole curve by a ratio is the same operation whatever
+ * the units are. That is the reason the knob is a proportion rather than
+ * an absolute target.
+ *
+ * The layout is checked rather than trusted, on every read -- see
+ * star_ae_target_valid. A wrong layout then declines instead of writing
+ * nonsense into the control loop that decides every exposure.
+ * ================================================================
  */
-#define STAR_AE_TARGET_PAYLOAD 132
+#define STAR_AE_TARGET_POINTS 16
+#define STAR_AE_TARGET_WORDS (1 + 2 * STAR_AE_TARGET_POINTS)
 
-static void star_isp_probe_ae_target(star_state_t *st)
+/* Word offsets within the payload. */
+#define STAR_AE_TARGET_COUNT 0
+#define STAR_AE_TARGET_CURVE 1
+#define STAR_AE_TARGET_LIGHT (1 + STAR_AE_TARGET_POINTS)
+
+/*
+ * Bound on a target-luma entry. Deliberately loose -- the point is not to
+ * police the tuning's curve but to catch the payload not being what this
+ * code thinks it is. The light axis runs negative, so if the two arrays
+ * were the other way round its entries would read as huge unsigned values
+ * and fail this immediately.
+ */
+#define STAR_AE_TARGET_MAX 65535u
+
+/* The tuning's own curve, so a scale is always applied to the calibration
+ * rather than compounding on the last value written. Re-read on each
+ * tuning load, like the learned IQ neutrals. */
+static uint32_t star_ae_target_base[STAR_AE_TARGET_POINTS];
+static unsigned int star_ae_target_count;
+static bool star_ae_target_known;
+static bool star_ae_target_stale;
+
+static i6_isp_cmd_fn star_ae_target_get;
+static i6_isp_cmd_fn star_ae_target_set;
+
+/*
+ * Does this payload look like the curve described above?
+ *
+ * The strictly-increasing test is the load-bearing one. An axis has to
+ * increase; the target curve provably does not (the board's first five
+ * entries are all 350), so the two arrays cannot be swapped without this
+ * failing.
+ */
+static bool star_ae_target_valid(const uint32_t *buf, unsigned int *count_out)
 {
-    static bool probed;
-    uint32_t buf[STAR_AE_TARGET_PAYLOAD / sizeof(uint32_t)];
-    char line[128];
-    i6_isp_cmd_fn get;
-    size_t words = sizeof(buf) / sizeof(buf[0]);
+    unsigned int count = buf[STAR_AE_TARGET_COUNT];
 
-    if (probed || !st->isp_loaded || !st->isp.handle)
-        return;
-    probed = true;
+    if (count < 2 || count > STAR_AE_TARGET_POINTS)
+        return false;
 
-    get = (i6_isp_cmd_fn)hal_symbol_load("i6_isp", st->isp.handle, "MI_ISP_AE_GetTarget");
-    if (!get)
+    for (unsigned int i = 0; i < count; i++)
+        if (buf[STAR_AE_TARGET_CURVE + i] == 0 ||
+            buf[STAR_AE_TARGET_CURVE + i] > STAR_AE_TARGET_MAX)
+            return false;
+
+    for (unsigned int i = 1; i < count; i++)
+        if ((int32_t)buf[STAR_AE_TARGET_LIGHT + i] <=
+            (int32_t)buf[STAR_AE_TARGET_LIGHT + i - 1])
+            return false;
+
+    *count_out = count;
+    return true;
+}
+
+static int star_ae_target_resolve(star_state_t *st)
+{
+    if (star_ae_target_get && star_ae_target_set)
+        return RSS_OK;
+    if (!st->isp_loaded || !st->isp.handle)
+        return RSS_ERR_NOENT;
+
+    star_ae_target_get =
+        (i6_isp_cmd_fn)hal_symbol_load("i6_isp", st->isp.handle, "MI_ISP_AE_GetTarget");
+    star_ae_target_set =
+        (i6_isp_cmd_fn)hal_symbol_load("i6_isp", st->isp.handle, "MI_ISP_AE_SetTarget");
+    if (!star_ae_target_get || !star_ae_target_set) {
+        star_ae_target_get = NULL;
+        star_ae_target_set = NULL;
+        return RSS_ERR_NOTSUP;
+    }
+
+    return RSS_OK;
+}
+
+/*
+ * Snapshot the calibrated curve, before any scale of ours has touched it.
+ * Armed by each tuning load for the same reason the IQ neutrals are: after
+ * the first write the field holds our number, not the calibration's.
+ */
+static void star_ae_target_learn(star_state_t *st)
+{
+    uint32_t buf[STAR_AE_TARGET_WORDS];
+    unsigned int count;
+
+    if (!star_ae_target_stale || star_ae_target_resolve(st) != RSS_OK)
         return;
 
     memset(buf, 0, sizeof(buf));
-    if (get(STAR_ISP_CHN, buf)) {
-        HAL_LOG_WARN("isp: MI_ISP_AE_GetTarget failed -- no AE target readback");
+    if (star_ae_target_get(STAR_ISP_CHN, buf)) {
+        HAL_LOG_WARN("isp: MI_ISP_AE_GetTarget failed -- ae_target unavailable this run");
+        star_ae_target_stale = false;
         return;
     }
 
-    HAL_LOG_INFO("isp: AE target payload, %u words of 4 bytes:", (unsigned int)words);
-    for (size_t i = 0; i < words; i += 8) {
-        int n = snprintf(line, sizeof(line), "  [%2u]", (unsigned int)i);
-
-        for (size_t j = i; j < i + 8 && j < words; j++)
-            n += snprintf(line + n, sizeof(line) - (size_t)n, " %8x", buf[j]);
-        HAL_LOG_INFO("isp: %s", line);
+    if (!star_ae_target_valid(buf, &count)) {
+        HAL_LOG_WARN("isp: the AE target payload is not the 16-point curve this code expects "
+                     "(count %u, first target %u, first light %d) -- ae_target declined rather "
+                     "than written blind",
+                     buf[STAR_AE_TARGET_COUNT], buf[STAR_AE_TARGET_CURVE],
+                     (int32_t)buf[STAR_AE_TARGET_LIGHT]);
+        star_ae_target_stale = false;
+        star_ae_target_known = false;
+        return;
     }
+
+    memcpy(star_ae_target_base, &buf[STAR_AE_TARGET_CURVE], sizeof(star_ae_target_base));
+    star_ae_target_count = count;
+    star_ae_target_known = true;
+    star_ae_target_stale = false;
+
+    HAL_LOG_INFO("isp: AE target curve from the tuning: %u points, %u..%u -- ae_target scales "
+                 "it, 128 leaving it alone",
+                 count, star_ae_target_base[0], star_ae_target_base[count - 1]);
+}
+
+/*
+ * Apply raptor's 0..255 as a proportion of the calibrated curve: 128 is the
+ * curve unchanged, 64 is half of it, 255 very nearly double. A proportion
+ * rather than an absolute target because the unit of the field is not
+ * known -- see the block comment above.
+ */
+static int star_ae_target_apply(star_state_t *st, int val)
+{
+    uint32_t buf[STAR_AE_TARGET_WORDS];
+    unsigned int count;
+    int ret;
+
+    ret = star_ae_target_resolve(st);
+    if (ret != RSS_OK)
+        return ret;
+
+    star_ae_target_learn(st);
+    if (!star_ae_target_known)
+        return RSS_ERR_NOTSUP;
+
+    /* Neutral is the tuning's curve, and writing it back is what puts it
+     * back after a scale has been in effect. */
+    memset(buf, 0, sizeof(buf));
+    if (star_ae_target_get(STAR_ISP_CHN, buf))
+        return RSS_ERR_IO;
+
+    /* Read-modify-write: the count and the light axis are the tuning's
+     * calibration and none of this knob's business. */
+    if (!star_ae_target_valid(buf, &count))
+        return RSS_ERR_NOTSUP;
+
+    for (unsigned int i = 0; i < star_ae_target_count && i < count; i++) {
+        uint64_t scaled = (uint64_t)star_ae_target_base[i] * (uint32_t)val / STAR_ISP_NEUTRAL;
+
+        if (scaled < 1)
+            scaled = 1;
+        if (scaled > STAR_AE_TARGET_MAX)
+            scaled = STAR_AE_TARGET_MAX;
+        buf[STAR_AE_TARGET_CURVE + i] = (uint32_t)scaled;
+    }
+
+    if (star_ae_target_set(STAR_ISP_CHN, buf)) {
+        HAL_LOG_WARN("isp: MI_ISP_AE_SetTarget failed for ae_target %d", val);
+        return RSS_ERR_IO;
+    }
+
+    HAL_LOG_INFO("isp: ae_target = %d (%u%% of the tuning's curve, %u..%u -> %u..%u)", val,
+                 (unsigned int)(100u * (unsigned int)val / STAR_ISP_NEUTRAL),
+                 star_ae_target_base[0], star_ae_target_base[star_ae_target_count - 1],
+                 buf[STAR_AE_TARGET_CURVE], buf[STAR_AE_TARGET_CURVE + star_ae_target_count - 1]);
+    return RSS_OK;
+}
+
+static void star_isp_arm_tuning_reads(void)
+{
+    size_t i;
+
+    for (i = 0; i < IQ_PARAM_COUNT; i++)
+        if (g_iq[i].unity_from_tuning)
+            g_iq[i].unity_stale = true;
+
+    star_ae_target_stale = true;
+}
+
+/*
+ * Queue-or-apply, the same shape as the IQ scalars and for the same reason:
+ * rvd sets this during pipeline construction, long before the ISP will
+ * answer. Recorded either way, because a tuning reload restores the
+ * calibrated curve and the last value asked for is what has to go back on.
+ */
+int hal_isp_set_ae_target(void *ctx, int val)
+{
+    star_state_t *st = star_state(ctx);
+
+    if (!st)
+        return RSS_ERR_INVAL;
+    if (val < 0 || val > 255)
+        return RSS_ERR_INVAL;
+
+    st->pend_ae_target = val;
+    st->pend_ae_target_set = true;
+
+    if (!st->isp_tuned) {
+        HAL_LOG_DBG("isp: ae_target = %d queued until the ISP is up", val);
+        return RSS_OK;
+    }
+
+    return star_ae_target_apply(st, val);
+}
+
+int hal_isp_get_ae_target(void *ctx, int *val)
+{
+    star_state_t *st = star_state(ctx);
+
+    if (!st || !val)
+        return RSS_ERR_INVAL;
+
+    /* What was asked for, not a readback. The field holds a scaled curve
+     * rather than a scale, so recovering the ratio would mean dividing by a
+     * baseline that a tuning reload may since have replaced. */
+    *val = st->pend_ae_target_set ? st->pend_ae_target : STAR_ISP_NEUTRAL;
+    return RSS_OK;
 }
 
 void star_isp_tune_when_ready(star_state_t *st, bool verbose)
@@ -1167,12 +1369,9 @@ void star_isp_tune_when_ready(star_state_t *st, bool verbose)
      */
     star_isp_snapshot_bin_limits(st);
 
-    /* Same reason, for the knobs whose neutral is the tuning's own value:
-     * the field has to be read before the flush writes to it. */
-    star_iq_arm_unity();
-
-    /* Also before the flush: the AE target as the tuning calibrated it. */
-    star_isp_probe_ae_target(st);
+    /* Same reason, for the knobs whose baseline is the tuning's own value:
+     * the fields have to be read before the flush writes to them. */
+    star_isp_arm_tuning_reads();
 
     /* Config knobs go on after the tuning file, never before. */
     star_isp_flush_pending(st);
@@ -1241,6 +1440,12 @@ void star_isp_teardown(star_state_t *st)
         g_iq[i].has_pending = false;
         g_iq[i].unity_stale = false;
     }
+
+    /* Same ownership: these point into the handle about to be closed. */
+    star_ae_target_get = NULL;
+    star_ae_target_set = NULL;
+    star_ae_target_known = false;
+    star_ae_target_stale = false;
 
     i6_isp_unload(&st->isp);
     st->isp_loaded = false;
@@ -1566,6 +1771,11 @@ static void star_isp_flush_pending(star_state_t *st)
      * under the frame period survives it untouched. */
     if (st->pend_ae_it_max > 0)
         (void)star_isp_apply_ae_it_max(st, (unsigned int)st->pend_ae_it_max);
+
+    /* Snapshots the calibrated curve the load just restored and re-applies
+     * the scale on top of it, in that order -- see star_ae_target_apply. */
+    if (st->pend_ae_target_set)
+        (void)star_ae_target_apply(st, st->pend_ae_target);
 }
 
 /*
@@ -2194,7 +2404,7 @@ static void star_isp_reload_if_reset(star_state_t *st, bool force)
      * is followed by this call. A learned neutral is part of that state:
      * keeping the one from before the reload would leave the scale centred
      * on a value no longer in the field, for the rest of the run. */
-    star_iq_arm_unity();
+    star_isp_arm_tuning_reads();
     star_isp_flush_pending(st);
 }
 

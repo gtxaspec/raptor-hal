@@ -335,7 +335,7 @@ static void test_evcomp_neutral_comes_from_the_tuning(void)
     CHECK(star_iq_fetch(&st, IQ_EVCOMP, buf) == RSS_OK, "unarmed fetch succeeds");
     CHECK(g_iq[IQ_EVCOMP].mi_unity == saved.mi_unity, "an unarmed fetch must not adopt a baseline");
 
-    star_iq_arm_unity();
+    star_isp_arm_tuning_reads();
     CHECK(g_iq[IQ_EVCOMP].unity_stale, "a tuning load arms the read");
     CHECK(star_iq_fetch(&st, IQ_EVCOMP, buf) == RSS_OK, "armed fetch succeeds");
     CHECK(g_iq[IQ_EVCOMP].mi_unity == 20, "the tuning's value becomes the neutral, got %u",
@@ -353,13 +353,178 @@ static void test_evcomp_neutral_comes_from_the_tuning(void)
     /* A reading outside the field's range means the offset or the width is
      * wrong, and adopting it would hide that for the rest of the run. */
     g_unity_probe_value = 4096;
-    star_iq_arm_unity();
+    star_isp_arm_tuning_reads();
     CHECK(star_iq_fetch(&st, IQ_EVCOMP, buf) == RSS_OK, "an out-of-range fetch still succeeds");
     CHECK(g_iq[IQ_EVCOMP].mi_unity == 20, "an impossible baseline is refused, got %u",
           g_iq[IQ_EVCOMP].mi_unity);
     CHECK(!g_iq[IQ_EVCOMP].unity_stale, "and is not retried every frame");
 
     g_iq[IQ_EVCOMP] = saved;
+}
+
+/*
+ * The AE target curve. Its layout is reconstructed from one board dump, so
+ * the code checks the payload on every read rather than trusting it -- these
+ * cover the checks, because the cost of them being wrong is a wrong value
+ * written into the loop that decides every exposure.
+ *
+ * The payload is the one the board reported.
+ */
+static uint32_t g_ae_target_buf[STAR_AE_TARGET_WORDS];
+
+static void ae_target_fill_board_payload(void)
+{
+    static const uint32_t curve[STAR_AE_TARGET_POINTS] = { 350, 350, 350, 350, 350, 360, 365, 385,
+                                                           400, 420, 455, 465, 480, 450, 400, 400 };
+    static const int32_t light[STAR_AE_TARGET_POINTS] = {
+        -88152, -71768, -55384, -39000, -22616, -6232, 10152,  26536,
+        42920,  59304,  78888,  92072,  108456, 130000, 160000, 170000
+    };
+
+    g_ae_target_buf[STAR_AE_TARGET_COUNT] = STAR_AE_TARGET_POINTS;
+    for (unsigned int i = 0; i < STAR_AE_TARGET_POINTS; i++) {
+        g_ae_target_buf[STAR_AE_TARGET_CURVE + i] = curve[i];
+        g_ae_target_buf[STAR_AE_TARGET_LIGHT + i] = (uint32_t)light[i];
+    }
+}
+
+static int ae_target_stub_get(int chn, void *buf)
+{
+    (void)chn;
+    memcpy(buf, g_ae_target_buf, sizeof(g_ae_target_buf));
+    return 0;
+}
+
+static int ae_target_stub_set(int chn, void *buf)
+{
+    (void)chn;
+    memcpy(g_ae_target_buf, buf, sizeof(g_ae_target_buf));
+    return 0;
+}
+
+static void test_ae_target_layout_is_checked_not_trusted(void)
+{
+    unsigned int count = 0;
+
+    ae_target_fill_board_payload();
+    CHECK(star_ae_target_valid(g_ae_target_buf, &count), "the board's own payload must validate");
+    CHECK(count == 16, "and report 16 points, got %u", count);
+
+    /*
+     * The discriminator that matters. If the two arrays were the other way
+     * round, the light axis would sit where the targets are -- and its
+     * negative entries read as huge unsigned values, while the target curve
+     * is not strictly increasing (the first five entries are all 350).
+     */
+    ae_target_fill_board_payload();
+    for (unsigned int i = 0; i < STAR_AE_TARGET_POINTS; i++) {
+        uint32_t t = g_ae_target_buf[STAR_AE_TARGET_CURVE + i];
+
+        g_ae_target_buf[STAR_AE_TARGET_CURVE + i] = g_ae_target_buf[STAR_AE_TARGET_LIGHT + i];
+        g_ae_target_buf[STAR_AE_TARGET_LIGHT + i] = t;
+    }
+    CHECK(!star_ae_target_valid(g_ae_target_buf, &count), "a swapped payload must be refused");
+
+    /* A light axis that does not increase is not an axis. */
+    ae_target_fill_board_payload();
+    g_ae_target_buf[STAR_AE_TARGET_LIGHT + 5] = g_ae_target_buf[STAR_AE_TARGET_LIGHT + 4];
+    CHECK(!star_ae_target_valid(g_ae_target_buf, &count),
+          "a light axis with a repeat must be refused");
+
+    /* Counts that cannot address the arrays. */
+    ae_target_fill_board_payload();
+    g_ae_target_buf[STAR_AE_TARGET_COUNT] = 0;
+    CHECK(!star_ae_target_valid(g_ae_target_buf, &count), "a count of 0 must be refused");
+    g_ae_target_buf[STAR_AE_TARGET_COUNT] = STAR_AE_TARGET_POINTS + 1;
+    CHECK(!star_ae_target_valid(g_ae_target_buf, &count), "a count past the array must be refused");
+
+    /* An implausible target, which is what a shifted payload looks like. */
+    ae_target_fill_board_payload();
+    g_ae_target_buf[STAR_AE_TARGET_CURVE + 3] = 0;
+    CHECK(!star_ae_target_valid(g_ae_target_buf, &count), "a zero target must be refused");
+    ae_target_fill_board_payload();
+    g_ae_target_buf[STAR_AE_TARGET_CURVE + 3] = STAR_AE_TARGET_MAX + 1;
+    CHECK(!star_ae_target_valid(g_ae_target_buf, &count), "an over-range target must be refused");
+}
+
+static void test_ae_target_scales_the_tuning_curve(void)
+{
+    rss_hal_ctx_t ctx;
+    star_state_t st;
+    int v = 0;
+
+    memset(&ctx, 0, sizeof(ctx));
+    memset(&st, 0, sizeof(st));
+    ctx.platform = &st;
+    st.isp_loaded = true;
+    st.isp_tuned = true;
+
+    ae_target_fill_board_payload();
+    star_ae_target_get = ae_target_stub_get;
+    star_ae_target_set = ae_target_stub_set;
+    star_ae_target_known = false;
+    star_isp_arm_tuning_reads();
+
+    /* Neutral leaves the calibrated curve exactly as it was. */
+    CHECK(hal_isp_set_ae_target(&ctx, STAR_ISP_NEUTRAL) == RSS_OK, "neutral applies");
+    CHECK(g_ae_target_buf[STAR_AE_TARGET_CURVE] == 350 &&
+              g_ae_target_buf[STAR_AE_TARGET_CURVE + 12] == 480,
+          "neutral must leave the curve alone, got %u..%u",
+          g_ae_target_buf[STAR_AE_TARGET_CURVE], g_ae_target_buf[STAR_AE_TARGET_CURVE + 12]);
+
+    /* Half of neutral halves every point of it. */
+    CHECK(hal_isp_set_ae_target(&ctx, 64) == RSS_OK, "half applies");
+    CHECK(g_ae_target_buf[STAR_AE_TARGET_CURVE] == 175 &&
+              g_ae_target_buf[STAR_AE_TARGET_CURVE + 12] == 240,
+          "half must halve the curve, got %u..%u", g_ae_target_buf[STAR_AE_TARGET_CURVE],
+          g_ae_target_buf[STAR_AE_TARGET_CURVE + 12]);
+
+    /*
+     * And the scale is always against the tuning's curve, never against what
+     * the last write left. Applying half twice must not quarter it, and
+     * returning to neutral must restore the calibration exactly.
+     */
+    CHECK(hal_isp_set_ae_target(&ctx, 64) == RSS_OK, "half applies again");
+    CHECK(g_ae_target_buf[STAR_AE_TARGET_CURVE] == 175, "a repeated scale must not compound, got %u",
+          g_ae_target_buf[STAR_AE_TARGET_CURVE]);
+    CHECK(hal_isp_set_ae_target(&ctx, STAR_ISP_NEUTRAL) == RSS_OK, "back to neutral");
+    CHECK(g_ae_target_buf[STAR_AE_TARGET_CURVE] == 350, "neutral must restore the tuning, got %u",
+          g_ae_target_buf[STAR_AE_TARGET_CURVE]);
+
+    /* The count and the light axis are the tuning's calibration. */
+    CHECK(hal_isp_set_ae_target(&ctx, 32) == RSS_OK, "a quarter applies");
+    CHECK(g_ae_target_buf[STAR_AE_TARGET_COUNT] == 16, "the point count must survive");
+    CHECK((int32_t)g_ae_target_buf[STAR_AE_TARGET_LIGHT] == -88152 &&
+              (int32_t)g_ae_target_buf[STAR_AE_TARGET_LIGHT + 15] == 170000,
+          "the light axis must survive untouched");
+
+    /* Never zero, whatever the ratio asks for: a target of 0 is not an
+     * exposure request the AE can act on. */
+    CHECK(hal_isp_set_ae_target(&ctx, 0) == RSS_OK, "zero applies");
+    CHECK(g_ae_target_buf[STAR_AE_TARGET_CURVE] >= 1, "a scaled target must stay above zero");
+
+    /* Out-of-range asks are rejected rather than clamped silently. */
+    CHECK(hal_isp_set_ae_target(&ctx, 256) == RSS_ERR_INVAL, "256 must be rejected");
+    CHECK(hal_isp_set_ae_target(&ctx, -1) == RSS_ERR_INVAL, "-1 must be rejected");
+
+    /* The getter reports the request, since the field holds a scaled curve
+     * rather than a scale. */
+    CHECK(hal_isp_get_ae_target(&ctx, &v) == RSS_OK, "get succeeds");
+    CHECK(v == 0, "the getter reports the last accepted request, got %d", v);
+
+    /* A payload that does not check out declines rather than writing. */
+    ae_target_fill_board_payload();
+    g_ae_target_buf[STAR_AE_TARGET_COUNT] = 99;
+    star_ae_target_known = false;
+    star_isp_arm_tuning_reads();
+    CHECK(hal_isp_set_ae_target(&ctx, 64) == RSS_ERR_NOTSUP,
+          "an unrecognised payload must decline");
+    CHECK(g_ae_target_buf[STAR_AE_TARGET_CURVE] == 350, "and must not have written anything");
+
+    star_ae_target_get = NULL;
+    star_ae_target_set = NULL;
+    star_ae_target_known = false;
+    star_ae_target_stale = false;
 }
 
 /*
@@ -1333,6 +1498,8 @@ int main(void)
     test_unscale_round_trip();
     test_scale_degenerate_inputs();
     test_evcomp_neutral_comes_from_the_tuning();
+    test_ae_target_layout_is_checked_not_trusted();
+    test_ae_target_scales_the_tuning_curve();
     test_pending_queue();
     test_orientation_carries_both_axes();
     test_recorded_values_survive_a_reload();

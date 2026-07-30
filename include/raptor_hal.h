@@ -948,6 +948,13 @@ typedef struct rss_hal_ops {
     int (*isp_set_dpc_strength)(void *ctx, int val);
     int (*isp_set_drc_strength)(void *ctx, int val);
     int (*isp_set_ae_comp)(void *ctx, int val);
+    /*
+     * Scale the AE's target-luma curve, 128 leaving the tuning's own curve
+     * alone. Separate from isp_set_ae_comp because EV compensation is a
+     * positive-only boost on some vendors and then cannot lower exposure at
+     * all -- this is the AE's aim itself, and moves both ways.
+     */
+    int (*isp_set_ae_target)(void *ctx, int val);
     int (*isp_set_max_again)(void *ctx, int gain);
     int (*isp_set_max_dgain)(void *ctx, int gain);
     int (*isp_set_highlight_depress)(void *ctx, int val);
@@ -968,6 +975,7 @@ typedef struct rss_hal_ops {
     int (*isp_get_max_dgain)(void *ctx, uint32_t *gain);
     int (*isp_get_sensor_attr)(void *ctx, uint32_t *width, uint32_t *height);
     int (*isp_get_ae_comp)(void *ctx, int *val);
+    int (*isp_get_ae_target)(void *ctx, int *val);
     int (*isp_get_module_control)(void *ctx, uint32_t *modules);
     int (*isp_get_sinter_strength)(void *ctx, uint8_t *val);
     int (*isp_get_temper_strength)(void *ctx, uint8_t *val);
