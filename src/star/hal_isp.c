@@ -1032,6 +1032,60 @@ static void star_isp_flush_pending(star_state_t *st);
 static int star_isp_set_orien(star_state_t *st);
 static void star_isp_reload_if_reset(star_state_t *st, bool force);
 
+/*
+ * The AE target, as the tuning binary calibrated it, once per process.
+ *
+ * EV compensation cannot lower exposure on this platform: the tuning leaves
+ * MI_ISP_AE_SetEVComp's field at 0, which is the floor of its 0..200 range,
+ * so raising it brightens and there is nothing underneath. The target luma
+ * is a different call -- command 0x1407, payload 132, against EVComp's
+ * 0x1403 and 8 -- and it is the one that moves both ways.
+ *
+ * Where the value sits inside those 132 bytes is not something to guess.
+ * The IQ_AUTOMAN convention in this file puts the manual field last (4 of
+ * 76 for brightness, 4 of 1268 for sharpness), which makes 128 the leading
+ * candidate, but a knob that pins the AE is not worth writing on a
+ * prediction. So read it out and log it, and wire a setter once the log
+ * says which word holds the number.
+ *
+ * Reading is safe here in a way a guessed getter is not: 132 is the size
+ * the vendor's own wrapper moves into its API descriptor, not a
+ * reconstruction, so the buffer cannot be short.
+ */
+#define STAR_AE_TARGET_PAYLOAD 132
+
+static void star_isp_probe_ae_target(star_state_t *st)
+{
+    static bool probed;
+    uint32_t buf[STAR_AE_TARGET_PAYLOAD / sizeof(uint32_t)];
+    char line[128];
+    i6_isp_cmd_fn get;
+    size_t words = sizeof(buf) / sizeof(buf[0]);
+
+    if (probed || !st->isp_loaded || !st->isp.handle)
+        return;
+    probed = true;
+
+    get = (i6_isp_cmd_fn)hal_symbol_load("i6_isp", st->isp.handle, "MI_ISP_AE_GetTarget");
+    if (!get)
+        return;
+
+    memset(buf, 0, sizeof(buf));
+    if (get(STAR_ISP_CHN, buf)) {
+        HAL_LOG_WARN("isp: MI_ISP_AE_GetTarget failed -- no AE target readback");
+        return;
+    }
+
+    HAL_LOG_INFO("isp: AE target payload, %u words of 4 bytes:", (unsigned int)words);
+    for (size_t i = 0; i < words; i += 8) {
+        int n = snprintf(line, sizeof(line), "  [%2u]", (unsigned int)i);
+
+        for (size_t j = i; j < i + 8 && j < words; j++)
+            n += snprintf(line + n, sizeof(line) - (size_t)n, " %8x", buf[j]);
+        HAL_LOG_INFO("isp: %s", line);
+    }
+}
+
 void star_isp_tune_when_ready(star_state_t *st, bool verbose)
 {
     int ret;
@@ -1116,6 +1170,9 @@ void star_isp_tune_when_ready(star_state_t *st, bool verbose)
     /* Same reason, for the knobs whose neutral is the tuning's own value:
      * the field has to be read before the flush writes to it. */
     star_iq_arm_unity();
+
+    /* Also before the flush: the AE target as the tuning calibrated it. */
+    star_isp_probe_ae_target(st);
 
     /* Config knobs go on after the tuning file, never before. */
     star_isp_flush_pending(st);
