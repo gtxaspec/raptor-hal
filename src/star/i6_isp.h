@@ -119,16 +119,21 @@ _Static_assert(offsetof(i6_isp_ae_status, sensorGain) == 28, "AE status sensor g
  * are the grid dimensions themselves. 128x90 is the payload's maximum,
  * not the live grid -- the buffer stays sized for the declared 46088
  * either way, and the grid actually averaged is whatever AE status
- * reports. The lane order is still only waybeam's word: that scene came
- * back r=46 g=46 b=44 y=46, which is consistent with r,g,b,y but too
- * neutral to distinguish the lanes from each other.
+ * reports.
+ *
+ * The lane order is r,g,b,y, confirmed from the cells themselves: over 1022
+ * scored cells lane 3 is the BT.601 sum of lanes 0..2 to within integer
+ * rounding, which no other assignment of r, g and b reproduces. A frame
+ * *mean* cannot settle it -- see the reasoning at the lane check in
+ * hal_isp.c, which is where the two ways of getting this wrong are written
+ * down.
  */
 #define I6_ISP_AE_BLK_X 128
 #define I6_ISP_AE_BLK_Y 90
 #define I6_ISP_AE_BLK_MAX (I6_ISP_AE_BLK_X * I6_ISP_AE_BLK_Y)
 #define I6_ISP_AE_CELL_SZ 4
 
-/* Byte lane within a cell. Order is waybeam's r, g, b, y. */
+/* Byte lane within a cell. The order is r, g, b, y -- see above. */
 #define I6_ISP_AE_CELL_Y 3
 
 typedef union {

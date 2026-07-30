@@ -212,8 +212,15 @@ typedef struct {
     uint16_t manual_off; /* where the value lives (0 for FLAT/BOOL) */
     uint8_t width;       /* 1, 2 or 4 bytes */
     uint8_t shape;       /* star_iq_shape_t */
-    uint32_t mi_max;     /* MI's maximum for the field */
-    uint32_t mi_unity;   /* MI value that means the same as raptor's 128 */
+    uint32_t mi_max;   /* MI's maximum for the field */
+    uint32_t mi_unity; /* MI value that means the same as raptor's 128 */
+    /*
+     * Set for a parameter whose MI neutral is not a constant this port can
+     * know: the baseline is whatever the tuning binary left in the field,
+     * and mi_unity above is only the fallback for a board running with no
+     * tuning file at all.
+     */
+    bool unity_from_tuning;
 
     /* Resolved on first use and cached. dlsym per call would work, but
      * these sit on rvd's control path and the symbol never changes. */
@@ -241,6 +248,10 @@ typedef struct {
     int pending;
     bool has_pending;
     bool pending_is_raw; /* set via star_iq_set_raw, not _set_scalar */
+
+    /* Armed by every tuning load, cleared by the fetch that reads the
+     * baseline back out. Only meaningful with unity_from_tuning. */
+    bool unity_stale;
 } star_iq_param_t;
 
 enum {
@@ -270,31 +281,39 @@ enum {
  *                        a linear 0..255 -> 0..127 map would silently
  *                        double saturation at raptor's neutral
  *   sharpness, NR        0..255, midpoint 128
- *   EV compensation      0..200 where 100 is no compensation
+ *   EV compensation      0..200, unity unknown and learned from the tuning
+ *                        -- see unity_from_tuning
  */
 static star_iq_param_t g_iq[IQ_PARAM_COUNT] = {
     [IQ_BRIGHTNESS] = { "brightness", "MI_ISP_IQ_GetBrightness", "MI_ISP_IQ_SetBrightness", 76, 72,
-                        4, IQ_AUTOMAN, 100, 50, NULL, NULL },
+                        4, IQ_AUTOMAN, 100, 50, false, NULL, NULL },
     [IQ_CONTRAST] = { "contrast", "MI_ISP_IQ_GetContrast", "MI_ISP_IQ_SetContrast", 76, 72, 4,
-                      IQ_AUTOMAN, 100, 50, NULL, NULL },
+                      IQ_AUTOMAN, 100, 50, false, NULL, NULL },
     [IQ_SATURATION] = { "saturation", "MI_ISP_IQ_GetSaturation", "MI_ISP_IQ_SetSaturation", 416, 392,
-                        1, IQ_AUTOMAN, 127, 32, NULL, NULL },
+                        1, IQ_AUTOMAN, 127, 32, false, NULL, NULL },
     [IQ_SHARPNESS] = { "sharpness", "MI_ISP_IQ_GetSharpness", "MI_ISP_IQ_SetSharpness", 1268, 1192,
-                       1, IQ_AUTOMAN, 255, 128, NULL, NULL },
+                       1, IQ_AUTOMAN, 255, 128, false, NULL, NULL },
     /* Spatial (per-frame) luma noise reduction is raptor's "sinter". */
     [IQ_SINTER] = { "sinter", "MI_ISP_IQ_GetNRLuma", "MI_ISP_IQ_SetNRLuma", 112, 104, 1, IQ_AUTOMAN,
-                    255, 128, NULL, NULL },
+                    255, 128, false, NULL, NULL },
     /* Temporal noise reduction is raptor's "temper" -- MI calls it 3D NR. */
     [IQ_TEMPER] = { "temper", "MI_ISP_IQ_GetNR3D", "MI_ISP_IQ_SetNR3D", 1776, 1288, 1, IQ_AUTOMAN,
-                    255, 128, NULL, NULL },
+                    255, 128, false, NULL, NULL },
     [IQ_DEFOG] = { "defog", "MI_ISP_IQ_GetDefog", "MI_ISP_IQ_SetDefog", 28, 0, 4, IQ_BOOL, 1, 0,
-                   NULL, NULL },
+                   false, NULL, NULL },
     [IQ_GRAY] = { "gray", "MI_ISP_IQ_GetColorToGray", "MI_ISP_IQ_SetColorToGray", 4, 0, 4, IQ_BOOL,
-                  1, 0, NULL, NULL },
+                  1, 0, false, NULL, NULL },
+    /*
+     * The only knob whose neutral has to be learned. It is IQ_FLAT, so
+     * there is no auto mode to hand it back to, and MI's own no-compensation
+     * value is undocumented -- 100 is the midpoint of the range, which is
+     * not the same thing. Anything written here pins the AE's target luma,
+     * so guessing the neutral wrong shifts every default image.
+     */
     [IQ_EVCOMP] = { "ae_comp", "MI_ISP_AE_GetEVComp", "MI_ISP_AE_SetEVComp", 8, 0, 4, IQ_FLAT, 200,
-                    100, NULL, NULL },
+                    100, true, NULL, NULL },
     [IQ_FLICKER] = { "antiflicker", "MI_ISP_AE_GetFlicker", "MI_ISP_AE_SetFlicker", 4, 0, 4, IQ_FLAT,
-                     3, 0, NULL, NULL },
+                     3, 0, false, NULL, NULL },
 };
 
 /* ================================================================
@@ -372,6 +391,55 @@ static int star_iq_resolve(star_state_t *st, star_iq_param_t *p)
 }
 
 /*
+ * Adopt the tuning binary's own value as the neutral raptor's 128 maps to.
+ *
+ * Called on every fetch and gated on unity_stale, which each tuning load
+ * re-arms, so what it reads is the binary's value and not one of ours: the
+ * knob queue is flushed after the load, and this runs on the fetch that
+ * flush performs.
+ *
+ * Without it the sub-neutral half of raptor's scale is measured from a
+ * guess. On this board the guess was 100 of 0..200 and the tuning sits far
+ * below that, so a default config brightened the picture and every value
+ * under 128 was spent climbing back down to where the tuning already was.
+ */
+static void star_iq_learn_unity(star_iq_param_t *p, const uint8_t *buf)
+{
+    uint32_t base;
+
+    if (!p->unity_from_tuning || !p->unity_stale)
+        return;
+
+    base = star_iq_read(buf, p->manual_off, p->width);
+    if (base > p->mi_max) {
+        /* Out of range means the offset or width is wrong, and a baseline
+         * adopted from a misread field would be invisible afterwards. */
+        HAL_LOG_WARN("isp: %s reads MI %u, above its %u maximum -- not adopting it as the "
+                     "neutral, keeping %u",
+                     p->name, base, p->mi_max, p->mi_unity);
+        p->unity_stale = false;
+        return;
+    }
+
+    p->mi_unity = base;
+    p->unity_stale = false;
+    HAL_LOG_INFO("isp: %s baseline from the tuning is MI %u/%u -- raptor 128 maps here, "
+                 "so 0..127 darkens by up to %u and 129..255 brightens by up to %u",
+                 p->name, base, p->mi_max, base, p->mi_max - base);
+}
+
+/* Re-arm the baseline read for every knob that learns it. The tuning load
+ * has just put the binary's own value back in each field. */
+static void star_iq_arm_unity(void)
+{
+    size_t i;
+
+    for (i = 0; i < IQ_PARAM_COUNT; i++)
+        if (g_iq[i].unity_from_tuning)
+            g_iq[i].unity_stale = true;
+}
+
+/*
  * Read the module's current payload. Callers modify one field of it and
  * hand it back to star_iq_store, so the ~1700 bytes of tuning we cannot
  * describe are preserved rather than zeroed.
@@ -392,6 +460,7 @@ static int star_iq_fetch(star_state_t *st, int idx, uint8_t *buf)
         return RSS_ERR_IO;
     }
 
+    star_iq_learn_unity(p, buf);
     return RSS_OK;
 }
 
@@ -423,7 +492,10 @@ static uint32_t star_iq_scale(int val, uint32_t unity, uint32_t max)
         return 0;
     if (val >= 255)
         return max;
-    if (val == STAR_ISP_NEUTRAL || unity == 0 || unity >= max)
+    /* A unity of 0 is legitimate for a learned baseline and needs no guard:
+     * the divisors below are constants, and the sub-neutral half correctly
+     * collapses onto 0 because there is nowhere below it to go. */
+    if (val == STAR_ISP_NEUTRAL || unity >= max)
         return unity;
 
     if (val < STAR_ISP_NEUTRAL)
@@ -438,13 +510,14 @@ static uint8_t star_iq_unscale(uint32_t mi, uint32_t unity, uint32_t max)
 {
     if (max == 0 || mi >= max)
         return 255;
-    if (mi == 0)
-        return 0;
-    if (unity == 0 || unity >= max)
+    if (unity >= max)
         return STAR_ISP_NEUTRAL;
+    /* Tested before the mi == 0 case, which it subsumes: with a baseline of
+     * 0, MI 0 is neutral rather than the bottom of the scale. */
     if (mi == unity)
         return STAR_ISP_NEUTRAL;
 
+    /* unity is necessarily non-zero on this branch, so the divide is safe. */
     if (mi < unity)
         return (uint8_t)(((uint64_t)mi * STAR_ISP_NEUTRAL) / unity);
 
@@ -1040,6 +1113,10 @@ void star_isp_tune_when_ready(star_state_t *st, bool verbose)
      */
     star_isp_snapshot_bin_limits(st);
 
+    /* Same reason, for the knobs whose neutral is the tuning's own value:
+     * the field has to be read before the flush writes to it. */
+    star_iq_arm_unity();
+
     /* Config knobs go on after the tuning file, never before. */
     star_isp_flush_pending(st);
 
@@ -1105,6 +1182,7 @@ void star_isp_teardown(star_state_t *st)
         g_iq[i].fn_get = NULL;
         g_iq[i].fn_set = NULL;
         g_iq[i].has_pending = false;
+        g_iq[i].unity_stale = false;
     }
 
     i6_isp_unload(&st->isp);
@@ -2056,7 +2134,10 @@ static void star_isp_reload_if_reset(star_state_t *st, bool force)
 
     /* The load replaced the ISP's state with the binary's own, so anything
      * the config asked for has to go back on -- same reason the first load
-     * is followed by this call. */
+     * is followed by this call. A learned neutral is part of that state:
+     * keeping the one from before the reload would leave the scale centred
+     * on a value no longer in the field, for the rest of the run. */
+    star_iq_arm_unity();
     star_isp_flush_pending(st);
 }
 

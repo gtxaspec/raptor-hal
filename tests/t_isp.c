@@ -280,14 +280,86 @@ static void test_unscale_round_trip(void)
 /* Degenerate table entries must not divide by zero or misreport. */
 static void test_scale_degenerate_inputs(void)
 {
-    CHECK(star_iq_scale(200, 0, 1) == 0, "unity 0 short-circuits");
     CHECK(star_iq_scale(200, 5, 5) == 5, "unity == max short-circuits");
-    CHECK(star_iq_unscale(3, 0, 10) == STAR_ISP_NEUTRAL, "unity 0 reads back neutral");
     CHECK(star_iq_unscale(0, 0, 0) == 255, "max 0 saturates rather than dividing by zero");
     /* In-range mi with a degenerate unity: falls back to neutral. An mi
      * at or above max saturates first, which is why this uses 5 not 99. */
     CHECK(star_iq_unscale(5, 10, 10) == STAR_ISP_NEUTRAL, "unity >= max reads back neutral");
     CHECK(star_iq_unscale(99, 10, 10) == 255, "mi above max saturates");
+
+    /*
+     * A unity of 0 is not degenerate -- it is what a learned baseline looks
+     * like when the tuning sits at the bottom of MI's range. Neutral has to
+     * still mean 0, the half below it collapse onto 0 because there is
+     * nowhere lower, and the half above it must still reach max.
+     */
+    CHECK(star_iq_scale(STAR_ISP_NEUTRAL, 0, 200) == 0, "unity 0: neutral is 0");
+    CHECK(star_iq_scale(64, 0, 200) == 0, "unity 0: below neutral collapses onto 0");
+    CHECK(star_iq_scale(255, 0, 200) == 200, "unity 0: the top still reaches max");
+    CHECK(star_iq_scale(192, 0, 200) > 0, "unity 0: above neutral still brightens");
+    CHECK(star_iq_unscale(0, 0, 200) == STAR_ISP_NEUTRAL, "unity 0: MI 0 reads back neutral");
+    CHECK(star_iq_unscale(100, 0, 200) > STAR_ISP_NEUTRAL,
+          "unity 0: anything above it reads back above neutral");
+}
+
+/*
+ * ae_comp's neutral is whatever the tuning binary left in the field, read
+ * back once per load. Getting this wrong is not visible in a log: it
+ * silently shifts what a default config does to the picture.
+ */
+static uint32_t g_unity_probe_value;
+static int unity_probe_get(int chn, void *buf)
+{
+    (void)chn;
+    memcpy(buf, &g_unity_probe_value, sizeof(g_unity_probe_value));
+    return 0;
+}
+
+static void test_evcomp_neutral_comes_from_the_tuning(void)
+{
+    star_iq_param_t saved = g_iq[IQ_EVCOMP];
+    star_state_t st;
+    uint8_t buf[STAR_IQ_PAYLOAD_MAX];
+
+    memset(&st, 0, sizeof(st));
+    st.isp_loaded = true;
+
+    /* Both pointers set, so star_iq_resolve returns without a dlopen. */
+    g_iq[IQ_EVCOMP].fn_get = unity_probe_get;
+    g_iq[IQ_EVCOMP].fn_set = unity_probe_get;
+
+    CHECK(g_iq[IQ_EVCOMP].unity_from_tuning, "ae_comp must be marked as learning its neutral");
+    CHECK(!g_iq[IQ_EVCOMP].unity_stale, "and must not learn before a tuning load arms it");
+
+    g_unity_probe_value = 20;
+    CHECK(star_iq_fetch(&st, IQ_EVCOMP, buf) == RSS_OK, "unarmed fetch succeeds");
+    CHECK(g_iq[IQ_EVCOMP].mi_unity == saved.mi_unity, "an unarmed fetch must not adopt a baseline");
+
+    star_iq_arm_unity();
+    CHECK(g_iq[IQ_EVCOMP].unity_stale, "a tuning load arms the read");
+    CHECK(star_iq_fetch(&st, IQ_EVCOMP, buf) == RSS_OK, "armed fetch succeeds");
+    CHECK(g_iq[IQ_EVCOMP].mi_unity == 20, "the tuning's value becomes the neutral, got %u",
+          g_iq[IQ_EVCOMP].mi_unity);
+    CHECK(!g_iq[IQ_EVCOMP].unity_stale, "and is read once, not on every fetch");
+
+    /* The point of the exercise: raptor's neutral is now inert, and the
+     * range below it darkens from the tuning's own value rather than from
+     * a guess of 100. */
+    CHECK(star_iq_scale(STAR_ISP_NEUTRAL, g_iq[IQ_EVCOMP].mi_unity, 200) == 20,
+          "neutral writes the tuning's value straight back");
+    CHECK(star_iq_scale(64, g_iq[IQ_EVCOMP].mi_unity, 200) == 10, "half of neutral halves it");
+    CHECK(star_iq_scale(0, g_iq[IQ_EVCOMP].mi_unity, 200) == 0, "0 reaches the bottom");
+
+    /* A reading outside the field's range means the offset or the width is
+     * wrong, and adopting it would hide that for the rest of the run. */
+    g_unity_probe_value = 4096;
+    star_iq_arm_unity();
+    CHECK(star_iq_fetch(&st, IQ_EVCOMP, buf) == RSS_OK, "an out-of-range fetch still succeeds");
+    CHECK(g_iq[IQ_EVCOMP].mi_unity == 20, "an impossible baseline is refused, got %u",
+          g_iq[IQ_EVCOMP].mi_unity);
+    CHECK(!g_iq[IQ_EVCOMP].unity_stale, "and is not retried every frame");
+
+    g_iq[IQ_EVCOMP] = saved;
 }
 
 /*
@@ -765,6 +837,11 @@ static void fill_lanes(unsigned char *cell, unsigned int cells, unsigned char r,
     }
 }
 
+/* The grid the board reports. It has to be this big: the check scores
+ * cells and declines to answer on fewer than STAR_AE_LANE_MIN_CELLS. */
+#define LANE_PROBE_BLK_X 32
+#define LANE_PROBE_BLK_Y 32
+
 static void lane_probe(unsigned char r, unsigned char g, unsigned char b, unsigned char y)
 {
     rss_hal_ctx_t ctx;
@@ -772,9 +849,18 @@ static void lane_probe(unsigned char r, unsigned char g, unsigned char b, unsign
     rss_exposure_t exp;
 
     exposure_setup(&ctx, &st);
-    fill_lanes(g_ae_stats->lead.cell, 8, r, g, b, y);
-    g_ae_stats->lead.blkX = 4;
-    g_ae_stats->lead.blkY = 2;
+
+    /* The AE status is what says how big the grid is; the stats buffer has
+     * to agree with it or the layout is treated as unconfirmed. */
+    g_ae_status.avgBlkX = LANE_PROBE_BLK_X;
+    g_ae_status.avgBlkY = LANE_PROBE_BLK_Y;
+    fill_lanes(g_ae_stats->lead.cell, LANE_PROBE_BLK_X * LANE_PROBE_BLK_Y, r, g, b, y);
+    g_ae_stats->lead.blkX = LANE_PROBE_BLK_X;
+    g_ae_stats->lead.blkY = LANE_PROBE_BLK_Y;
+
+    /* The "still ambiguous" note is once per process, so clear it between
+     * probes -- each frame's own verdict is what is under test. */
+    star_ae_lanes_ambiguous = false;
 
     g_log_lines = 0;
     rss_hal_log_fn = capture_log;
@@ -788,23 +874,30 @@ static void test_ae_lane_identification_waits_for_a_frame_that_answers(void)
     assert(g_ae_stats);
     star_ae_lanes_identified = false;
 
-    /* The two frames that actually happened. */
+    /*
+     * The two frames that actually happened. Neither may confirm anything:
+     * every order predicts an all-zero cell perfectly, and a clipped cell
+     * is skipped outright, so the clipped frame scores none at all.
+     */
     lane_probe(0, 0, 0, 0);
-    CHECK(!log_containing("AE lanes"), "an all-zero frame identifies nothing");
+    CHECK(!log_containing("order is confirmed"), "an all-zero frame identifies nothing");
     lane_probe(253, 252, 253, 253);
-    CHECK(!log_containing("AE lanes"), "a clipped frame identifies nothing");
+    CHECK(!log_containing("AE lanes"), "a clipped frame scores no cells and says nothing");
 
     /* And the one that was reported as "should be good enough": a neutral
-     * scene is unclipped and still cannot separate the lanes. */
+     * scene is unclipped and still cannot separate the lanes. r and g equal
+     * means the orders that swap them predict identically. */
     lane_probe(46, 46, 44, 46);
-    CHECK(!log_containing("AE lanes"), "a neutral frame identifies nothing");
+    CHECK(!log_containing("order is confirmed"), "a neutral frame identifies nothing");
     CHECK(!star_ae_lanes_identified, "none of those may consume the one shot");
 
     /* A coloured frame whose lane 3 really is BT.601 luma:
-     * (299*180 + 587*90 + 114*40) / 1000 = 111. */
+     * (299*180 + 587*90 + 114*40) / 1000 = 111, so r,g,b,y is off by 0 a
+     * cell and the nearest rival (b,r,g) by 16. */
     lane_probe(180, 90, 40, 111);
     CHECK(log_containing("AE lanes") != NULL, "a coloured frame must report");
-    CHECK(log_containing("order is confirmed") != NULL, "and must confirm the r,g,b,y order: %s",
+    CHECK(log_containing("the order is confirmed") != NULL,
+          "and must confirm the r,g,b,y order: %s",
           log_containing("AE lanes") ? log_containing("AE lanes") : "(nothing logged)");
 
     /* One shot: the answer does not change, so neither does the log. */
@@ -812,10 +905,10 @@ static void test_ae_lane_identification_waits_for_a_frame_that_answers(void)
     CHECK(!log_containing("AE lanes"), "the line is once per process");
 
     /* A lane 3 that is not luma has to say so rather than be read as a
-     * confirmation. 40 is the b lane, i.e. the order b,g,r,y. */
+     * confirmation. y = 40 is the b lane, so g,b,r,y fits far better. */
     star_ae_lanes_identified = false;
     lane_probe(180, 90, 40, 40);
-    CHECK(log_containing("WRONG -- lane 3 is not luma") != NULL,
+    CHECK(log_containing("WRONG, another order fits better") != NULL,
           "a non-luma lane 3 must be called out: %s",
           log_containing("AE lanes") ? log_containing("AE lanes") : "(nothing logged)");
 
@@ -1239,6 +1332,7 @@ int main(void)
     test_scale_endpoints_and_monotonicity();
     test_unscale_round_trip();
     test_scale_degenerate_inputs();
+    test_evcomp_neutral_comes_from_the_tuning();
     test_pending_queue();
     test_orientation_carries_both_axes();
     test_recorded_values_survive_a_reload();
