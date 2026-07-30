@@ -885,8 +885,8 @@ const rss_hal_caps_t g_hal_caps = {
      * has_audio_process_lib, has_agc_mode, has_hpf_cutoff,
      * has_howling_suppress and has_audio_aec_channel all describe MI's
      * VQE features (noise reduction, AGC, high-pass, echo cancellation).
-     * Verified 2026-07-26, because "false" here is not caution -- turning
-     * any of them on is a crash:
+     * All false, and not out of caution -- turning any of them on is a
+     * crash:
      *
      *   1. None of the 20 libraries OpenIPC ships for infinity6e defines
      *      a single Iaa* symbol. The whole algorithm surface --
@@ -943,8 +943,8 @@ const rss_hal_caps_t g_hal_caps = {
      * max_fs_channels is 4 because a raptor framesource channel is a VPE
      * output port (src/star/hal_framesource.c) and a VPE channel has four
      * of them: divinus's teardown disables ports 0..3 (i6_hal.c:365) and
-     * waybeam uses 0 and 1. Measured on an SSC30KQ: star_probe -v had all
-     * four ports accept MI_VPE_SetPortMode at 640x360 NV12. */
+     * waybeam uses 0 and 1. Measured on an SSC30KQ: all four ports accept
+     * MI_VPE_SetPortMode at 640x360 NV12. */
     .max_enc_channels = 8,
     .max_fs_channels = 4,
     /* Keep in step with STAR_OSD_REGION_MAX in src/star/star_state.h.

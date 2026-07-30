@@ -68,9 +68,9 @@
 /*
  * VPE output ports per channel. divinus's teardown disables ports 0..3
  * (i6_hal.c:365) and waybeam only ever uses 0 and 1, so 4 is the
- * documented-by-use bound. star_probe -v reports which ports actually
- * accept MI_VPE_SetPortMode on this silicon; hal_caps.c's
- * max_fs_channels quotes that result.
+ * documented-by-use bound. How many of the four actually accept
+ * MI_VPE_SetPortMode is a property of the silicon; hal_caps.c's
+ * max_fs_channels carries the measured answer.
  *
  * Treat this as an upper bound to size arrays with, not a count of ports
  * that will work. divinus's teardown loop is defensive -- it disables
@@ -613,8 +613,7 @@ static inline star_state_t *star_state(void *ctx)
 /*
  * star_vpe_pixfmt -- the pixel format the VPE *channel* consumes.
  *
- * Shared by hal_common.c (channel attributes) and star_probe. Bayer
- * sensors need this derived rather than read from the plane's own
+ * Bayer sensors need this derived rather than read from the plane's own
  * pixFmt field; see the long comment on star_vif_pixfmt in
  * hal_common.c for the hardware evidence.
  */

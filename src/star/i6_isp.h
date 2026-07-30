@@ -4,8 +4,8 @@
  * Based on OpenIPC divinus, src/hal/star/i6_isp.h. See i6_common.h for why
  * these headers are vendored and for the four adaptations applied to all of
  * them. This one carries more than divinus's original: divinus binds six
- * MI_ISP entry points, and phase 3 needs the readiness probe and generic
- * IQ-command access as well (see below).
+ * MI_ISP entry points, and this backend needs the readiness probe and
+ * generic IQ-command access as well (see below).
  *
  * ================================================================
  * TWO SHAPES OF MI_ISP CALL
@@ -114,9 +114,9 @@ _Static_assert(offsetof(i6_isp_ae_status, sensorGain) == 28, "AE status sensor g
  * whatever lands at that offset. Neither matching means no luma -- not a
  * plausible-looking number derived from the wrong bytes.
  *
- * Settled on an SSC30KQ + GC4653 board 2026-07-27: the probe reported
- * "AE grid 32x32, cells at offset 8", so the eight bytes LEAD and they
- * are the grid dimensions themselves. 128x90 is the payload's maximum,
+ * Measured on an SSC30KQ + GC4653: the grid reads back 32x32 with the
+ * cells at offset 8, so the eight bytes LEAD and they are the grid
+ * dimensions themselves. 128x90 is the payload's maximum,
  * not the live grid -- the buffer stays sized for the declared 46088
  * either way, and the grid actually averaged is whatever AE status
  * reports.
@@ -181,9 +181,9 @@ typedef struct {
     /*
      * No 3A entry points are bound here on purpose: this backend loads the
      * tuning binary and leaves the vendor algorithms alone (see hal_isp.c's
-     * load site). MI_ISP_CUS3A_Enable and MI_ISP_DisableUserspace3A were
-     * bound as hard requirements until 2026-07-27, so a board whose
-     * libmi_isp.so lacked either failed ISP init over symbols nothing
+     * load site). Binding them as hard requirements, as an earlier
+     * arrangement of this did, fails ISP init on any board whose
+     * libmi_isp.so lacks either -- over symbols nothing would have
      * called.
      */
     int (*fnLoadChannelConfig)(int channel, char *path, unsigned int key);

@@ -18,9 +18,8 @@
  * One divergence from divinus beyond the four common adaptations: the
  * loader below also opens libispalgo.so, libcus3a.so and libmi_isp.so.
  * divinus opens those in its i6_isp.h loader, which it happens to run
- * before its VPE loader; this backend has no MI_ISP binding until phase 3,
- * so the dependency lives with the module that has it. The reason it is
- * mandatory rather than tidy is in i6_vpe_load.
+ * before its VPE loader; here the dependency lives with the module that
+ * needs it. The reason it is mandatory rather than tidy is in i6_vpe_load.
  *
  * Copyright (c) 2024 OpenIPC
  * SPDX-License-Identifier: MIT
@@ -202,17 +201,16 @@ static inline int i6_vpe_load(i6_vpe_impl *vpe_lib)
      * MI_ISP_DisableUserspace3A undefined, and its DT_NEEDED lists only
      * libc -- so the dynamic loader chains nothing, and with RTLD_LAZY the
      * miss surfaces at first call as a fatal "symbol lookup error" rather
-     * than as a dlopen failure we could report. The first board run of
-     * star_probe -v died exactly there, immediately after MI_VPE_CreateChannel
-     * was entered.
+     * than as a dlopen failure we could report -- a fatal exit immediately
+     * after MI_VPE_CreateChannel is entered.
      *
      * One level deeper, libmi_isp.so itself needs libcus3a.so (7 symbols)
      * and libispalgo.so (14) and likewise names neither in DT_NEEDED, which
      * is why divinus opens all three in that order before ever touching VPE
      * (i6_isp.h:32-36, loaded at i6_hal.c:53, ten lines ahead of its VPE
      * load). RTLD_GLOBAL is what makes them satisfy the next library's
-     * undefined symbols; dlopen refcounts, so phase 3's real MI_ISP binding
-     * can open libmi_isp.so again without conflict.
+     * undefined symbols; dlopen refcounts, so hal_isp.c's own MI_ISP
+     * binding can open libmi_isp.so again without conflict.
      *
      * The algorithm libraries are best-effort: their symbols are reached
      * through libmi_isp, not from here, and a board missing them is a

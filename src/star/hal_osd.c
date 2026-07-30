@@ -9,11 +9,9 @@
  * encoder. The other is that **rvd cannot start at all on this backend
  * without it**: rvd builds its bind chain as FS [-> IVS] [-> OSD] -> ENC
  * on the strength of `[osd] enabled` alone -- not on caps, not on
- * whether the OSD ops exist -- and until now hal_bind rejected anything
- * that was not exactly FS -> ENC, so the rejected bind took the whole
- * pipeline down. That is why `[osd] enabled = false` was pinned in the
- * board config from phase 2 onward. This file removes that requirement:
- * see hal_bind in hal_common.c, which now collapses the OSD stage.
+ * whether the OSD ops exist -- so a hal_bind that rejected anything but
+ * FS -> ENC would take the whole pipeline down. See hal_bind in
+ * hal_common.c, which collapses the OSD stage instead.
  *
  * HOW raptor's MODEL MAPS ONTO MI's
  *
@@ -41,7 +39,7 @@
  * channel, and the backend records the pair only when the bind happens.
  * So register_region records the intent and star_osd_flush_pending
  * performs the attach from star_enc_bind_port once the port is known and
- * live. This is the same shape as phase 3's deferred ISP tuning, for the
+ * live. The deferred ISP tuning in hal_isp.c has the same shape, for the
  * same underlying reason: rvd's call order is built around Ingenic's
  * object lifetimes, not MI's.
  *
@@ -175,8 +173,8 @@ static void star_osd_fill_chn(const star_osd_region_t *r, i6_rgn_chn *chn)
 
     chn->osd.layer = (unsigned int)r->layer;
     /*
-     * ALPHA: constAlphaOn STAYS 0. Board-verified 2026-07-26 -- setting
-     * it is what made every overlay invisible.
+     * ALPHA: constAlphaOn STAYS 0. Setting it makes every overlay
+     * invisible.
      *
      * bgFgAlpha is {background, foreground}: the alphas the hardware
      * applies to a pixel according to its own alpha channel, so the
@@ -251,14 +249,14 @@ static int star_osd_probe_pixfmt(star_state_t *st)
         ret = st->rgn.fnCreateRegion(probe_handle, &cnf);
         if (ret) {
             /*
-             * INFO, not DBG: a rejected probe makes mi_rgn.ko print
-             * "<<<MI_RGN_IMPL_Create[...] Check osd attr error!" to the
-             * kernel log at KERN_ERR, in red. That message is expected --
-             * asking is the whole point of a probe -- but with this line
-             * compiled out (HAL_LOG_DBG needs HAL_DEBUG) the kernel error
-             * appeared in logread with nothing in userspace to explain it,
-             * which cost real time to chase. One INFO line per rejected
-             * format, once per boot, is worth it.
+             * INFO, not DBG, and deliberately so: a rejected probe makes
+             * mi_rgn.ko print "<<<MI_RGN_IMPL_Create[...] Check osd attr
+             * error!" to the kernel log at KERN_ERR, in red. The message is
+             * expected -- asking is the whole point of a probe -- but
+             * HAL_LOG_DBG compiles out without HAL_DEBUG, which would leave
+             * that kernel error in logread with nothing in userspace to
+             * explain it. One line per rejected format, once per boot, is
+             * the cheaper end of that trade.
              */
             HAL_LOG_INFO("osd: %s rejected by MI_RGN_Create: %#x "
                          "(the kernel's \"Check osd attr error\" is this probe)",
@@ -349,8 +347,8 @@ static int star_osd_try_attach(star_state_t *st, int handle, star_osd_region_t *
      * release build is indistinguishable from a silent deferral in
      * star_osd_port_for_group.
      */
-    HAL_LOG_INFO("osd: region %d attached to VPE port %u (group %d), layer %d, alpha bg/fg %u/%u",
-                 handle, port.port, r->grp, r->layer, r->bg_alpha, r->fg_alpha);
+    HAL_LOG_DBG("osd: region %d attached to VPE port %u (group %d), layer %d, alpha bg/fg %u/%u",
+                handle, port.port, r->grp, r->layer, r->bg_alpha, r->fg_alpha);
 
     return RSS_OK;
 }
@@ -861,8 +859,8 @@ int hal_osd_update_region_data(void *ctx, int handle, const uint8_t *data)
 
     if (!r->bmp_logged) {
         r->bmp_logged = true;
-        HAL_LOG_INFO("osd: region %d first bitmap accepted, %dx%d %s", handle, r->width, r->height,
-                     star_osd_fmt_name(st->rgn_fmt));
+        HAL_LOG_DBG("osd: region %d first bitmap accepted, %dx%d %s", handle, r->width, r->height,
+                    star_osd_fmt_name(st->rgn_fmt));
     }
 
     return RSS_OK;

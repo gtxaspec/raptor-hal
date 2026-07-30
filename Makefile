@@ -5,7 +5,6 @@
 #   make PLATFORM=T40 CROSS_COMPILE=mipsel-linux- INGENIC_HEADERS=/path/to/headers
 #   make PLATFORM=INFINITY6E CROSS_COMPILE=arm-linux-gnueabihf-
 #   make PLATFORM=T31 clean
-#   make PLATFORM=INFINITY6E CROSS_COMPILE=arm-linux-gnueabihf- star_probe
 #
 # Required variables:
 #   PLATFORM        - Target SoC:
@@ -179,30 +178,9 @@ DEPS := $(ALL_OBJS:.o=.d)
 LIB_VIDEO := libraptor_hal_video.a
 LIB_AUDIO := libraptor_hal_audio.a
 
-.PHONY: all clean info star_probe
+.PHONY: all clean info
 
 all: $(LIB_VIDEO) $(LIB_AUDIO)
-
-# Throwaway ABI probe — validates the vendored src/star/i6_*.h layouts against
-# the real vendor .so files on a board. Never part of `all`, never installed;
-# see tools/star_probe.c. Self-contained apart from libdl, so it still builds
-# when the archives do not.
-ifeq ($(VENDOR),sigmastar)
-star_probe: tools/star_probe
-
-# -MMD generates tools/star_probe.d so edits to the src/star/i6_*.h headers
-# rebuild the probe. Without it make sees only the .c, and a header-only fix
-# silently leaves the previous binary in place — which is exactly the kind of
-# stale artefact this tool exists to rule out.
-tools/star_probe: tools/star_probe.c
-	@echo "  CCLD    $@"
-	$(Q)$(CC) $(CFLAGS) -MMD -MP $< -o $@ -ldl
-
--include tools/star_probe.d
-else
-star_probe:
-	$(error star_probe is SigmaStar-only — build with PLATFORM=INFINITY6E)
-endif
 
 # Compile hal_common.c twice with different module defines
 src/hal_common_video.o: $(HAL_COMMON_SRC)
@@ -237,7 +215,7 @@ clean:
 	# to go whenever the archives do: left behind, it tells the parent make that
 	# archives it can no longer see have already been produced, and the next
 	# daemon link fails on a missing .a.
-	$(Q)rm -f $(ALL_OBJS) $(DEPS) $(LIB_VIDEO) $(LIB_AUDIO) tools/star_probe tools/star_probe.d .built
+	$(Q)rm -f $(ALL_OBJS) $(DEPS) $(LIB_VIDEO) $(LIB_AUDIO) .built
 	# `make clean` runs without PLATFORM, so VENDOR defaults to ingenic and
 	# $(ALL_OBJS) names only that backend's objects. Sweep the other
 	# vendors' subdirs explicitly so a clean is vendor-independent.

@@ -48,8 +48,8 @@
  * into the encoder's output memory instead of a copy, and the consumer
  * reads it after the HAL has already released the frame. That is safe
  * on Ingenic, whose encoder writes each frame into a distinct rmem
- * slot. It is not safe here: star_probe -c saw three consecutive frames
- * of 61634, 2582 and 4073 bytes all land at the same address
+ * slot. It is not safe here: three consecutive frames of 61634, 2582
+ * and 4073 bytes were measured landing at the same address
  * (0xb607c000 / phys 0x302c3000), so MI reuses the stream buffer as
  * soon as MI_VENC_ReleaseStream hands it back. A reference published
  * across that boundary reads whatever the next frame overwrote it with.
@@ -407,8 +407,8 @@ static bool star_enc_nal_is_key(rss_nal_type_t type)
  * publishes a frame's NALs as one concatenated byte run into the ring
  * and rsd's Annex-B transport re-splits on start codes anyway.
  *
- * star_probe -c measured what the vendor reference leaves unstated, on
- * an SSC30KQ:
+ * Measured on an SSC30KQ, since the vendor reference leaves it
+ * unstated:
  *
  *   - packetInfo offsets are relative to the start of the pack's valid
  *     data and tile it exactly -- an IDR pack of 61634 bytes came back
@@ -628,9 +628,9 @@ int hal_enc_register_channel(void *ctx, int grp, int chn)
             ret = star_enc_bind_port_rate(st, port, chn, snap_fps);
             if (ret == RSS_OK) {
                 enc->owns_port = true;
-                HAL_LOG_INFO("venc chn %d: snapshot channel attached on VPE port %d, "
-                             "cloned from chn %d's port %d",
-                             chn, port, grp, src_port);
+                HAL_LOG_DBG("venc chn %d: snapshot channel attached on VPE port %d, "
+                            "cloned from chn %d's port %d",
+                            chn, port, grp, src_port);
                 return RSS_OK;
             }
             HAL_LOG_WARN("venc chn %d: VPE port %d bind failed: %d", chn, port, ret);
@@ -671,9 +671,9 @@ int hal_enc_register_channel(void *ctx, int grp, int chn)
         return RSS_OK;
     }
 
-    HAL_LOG_INFO("venc chn %d: snapshot channel sharing chn %d's VPE port %d "
-                 "(no port of its own); frame pacing is MI's to honour here",
-                 chn, grp, src_port);
+    HAL_LOG_DBG("venc chn %d: snapshot channel sharing chn %d's VPE port %d "
+                "(no port of its own); frame pacing is MI's to honour here",
+                chn, grp, src_port);
 
     return RSS_OK;
 }
@@ -993,10 +993,10 @@ static int star_enc_bind_port_rate(star_state_t *st, int port, int chn, unsigned
     enc->src_port = port;
 
     if (dst_fps == src_fps)
-        HAL_LOG_INFO("bind: VPE port %d -> VENC chn %d, framebase, %u fps", port, chn, src_fps);
+        HAL_LOG_DBG("bind: VPE port %d -> VENC chn %d, framebase, %u fps", port, chn, src_fps);
     else
-        HAL_LOG_INFO("bind: VPE port %d -> VENC chn %d, framebase, %u -> %u fps", port, chn,
-                     src_fps, dst_fps);
+        HAL_LOG_DBG("bind: VPE port %d -> VENC chn %d, framebase, %u -> %u fps", port, chn,
+                    src_fps, dst_fps);
 
     return RSS_OK;
 }

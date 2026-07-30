@@ -760,7 +760,7 @@ static bool star_isp_resolve_iq(star_state_t *st, const rss_sensor_config_t *cfg
     if (cfg && cfg->iq_file[0]) {
         if (access(cfg->iq_file, R_OK) == 0) {
             snprintf(out, len, "%s", cfg->iq_file);
-            HAL_LOG_INFO("isp: tuning file %s (from config)", out);
+            HAL_LOG_DBG("isp: tuning file %s (from config)", out);
             return true;
         }
         HAL_LOG_WARN("isp: configured tuning file %s is not readable; trying the sensor default",
@@ -789,7 +789,7 @@ static bool star_isp_resolve_iq(star_state_t *st, const rss_sensor_config_t *cfg
 
     snprintf(out, len, "/etc/sensors/%s.bin", lower);
     if (access(out, R_OK) == 0) {
-        HAL_LOG_INFO("isp: tuning file %s (from sensor name)", out);
+        HAL_LOG_DBG("isp: tuning file %s (from sensor name)", out);
         return true;
     }
 
@@ -871,11 +871,11 @@ static void star_isp_snapshot_bin_limits(star_state_t *st)
      * is reachable on this board at all -- and a night_gain that is not
      * reachable means auto night mode simply never triggers.
      */
-    HAL_LOG_INFO("isp: AE tuning limits (x1024): sensor gain %u..%u, isp gain %u..%u, "
-                 "shutter %u..%u us -- so total_gain tops out at %llu",
-                 limit.minSensorGain, limit.maxSensorGain, limit.minIspGain, limit.maxIspGain,
-                 limit.minShutterUs, limit.maxShutterUs,
-                 (unsigned long long)limit.maxSensorGain *
+    HAL_LOG_DBG("isp: AE tuning limits (x1024): sensor gain %u..%u, isp gain %u..%u, "
+                "shutter %u..%u us -- so total_gain tops out at %llu",
+                limit.minSensorGain, limit.maxSensorGain, limit.minIspGain, limit.maxIspGain,
+                limit.minShutterUs, limit.maxShutterUs,
+                (unsigned long long)limit.maxSensorGain *
                          (limit.maxIspGain ? limit.maxIspGain : 1024u) / 1024u);
 }
 
@@ -901,12 +901,10 @@ int star_isp_cap_exposure(star_state_t *st, unsigned int fps)
     }
 
     /*
-     * Read before write, and the compiler is the backstop: a previous
-     * cleanup deleted the env-var block that used to sit here and took
-     * this call with it, leaving the read-modify-write below modifying an
-     * uninitialised struct and writing stack contents into the AE's
-     * limits. It never reached hardware, but only because the host suite
-     * caught it -- the ARM -Werror build did not.
+     * Read before write, and the read is not optional: the
+     * read-modify-write below would otherwise hand the AE an uninitialised
+     * struct, writing stack contents into its limits. Nothing in the ARM
+     * -Werror build catches that, so the host suite covers it instead.
      */
     ret = star_isp_read_limits(st, &limit);
     if (ret == RSS_ERR_IO)
@@ -989,10 +987,9 @@ void star_isp_bringup(star_state_t *st, const rss_sensor_config_t *cfg)
         return;
 
     /*
-     * Everything below is best-effort. An untuned image streams; a
-     * pipeline aborted over a tuning file does not, and phase 2 shipped
-     * for weeks with the generic tuning precisely because a wrong-looking
-     * image is a defect rather than an outage.
+     * Everything below is best-effort. An untuned image streams, and a
+     * pipeline aborted over a tuning file does not: a wrong-looking image
+     * is a defect, not an outage.
      */
     st->pend_max_again = -1;
     st->pend_max_dgain = -1;
@@ -1322,33 +1319,19 @@ void star_isp_tune_when_ready(star_state_t *st, bool verbose)
          * -- it sleeps a second and loads (media.c:827) -- and divinus is
          * the reference with known-good colour on this board.
          *
-         * The code used to stop userspace 3A before the load and restart
-         * CUS3A after it, copying waybeam (star6e_pipeline.c:270-284).
-         *
-         * Board evidence 2026-07-26: with the handoff in place and
-         * MI_ISP_CUS3A_Enable demonstrably passing AWB = 1 (the driver
-         * prints the flags it received), the picture still had a magenta
-         * cast under artificial light. That is what an auto white balance
-         * which is *enabled* but has no algorithm behind it looks like.
-         * MI_ISP_DisableUserspace3A tears the vendor algorithms down --
+         * Do not bracket the load by stopping userspace 3A and restarting
+         * CUS3A, the way waybeam does (star6e_pipeline.c:270-284).
+         * MI_ISP_DisableUserspace3A tears the vendor algorithms down:
          * libmi_isp imports CUS3A_Init and CUS3A_EnableUserspaceAE/AWB/AF
-         * from libcus3a, and that registration is what
-         * MI_ISP_DisableUserspace3A undoes. MI_ISP_CUS3A_Enable only sets
-         * flags; it cannot put the algorithms back. The one entry point
-         * that can is MI_ISP_EnableUserspace3A, which is a *different*
-         * symbol, and waybeam's own 6E notes say not to call it on the
-         * normal internal-AE path.
+         * from libcus3a, and that registration is what it undoes.
+         * MI_ISP_CUS3A_Enable only sets flags and cannot put the
+         * algorithms back -- the one entry point that can is
+         * MI_ISP_EnableUserspace3A, a different symbol, which waybeam's
+         * own 6E notes say not to call on the normal internal-AE path.
          *
-         * That was diagnosed twice over. 19170e8 removed the handoff and
-         * was wrong about why the picture improved -- the real cause was
-         * the tuning tear-down this file now repairs -- so an
-         * RSS_ISP_3A_HANDOFF hatch stayed behind to compare the two
-         * sequences from one binary once the tear-down was dealt with.
-         * BOARD-VERIFIED 2026-07-27, under artificial light, on a build
-         * whose reload repair had fired: colour is correct with no
-         * handoff. The hatch and star_isp_enable_3a are gone with it. If
-         * some future board shows the cast, the sequence is described
-         * above and the code for it is in 19170e8.
+         * The symptom is an auto white balance that is enabled with
+         * nothing behind it: a magenta cast under artificial light, with
+         * MI_ISP_CUS3A_Enable demonstrably having passed AWB = 1.
          */
         ret = st->isp.fnLoadChannelConfig(STAR_ISP_CHN, st->iq_file, STAR_IQ_LOAD_KEY);
         if (ret) {
@@ -1357,8 +1340,7 @@ void star_isp_tune_when_ready(star_state_t *st, bool verbose)
                          st->iq_file, ret);
             st->iq_file[0] = '\0';
         } else {
-            HAL_LOG_INFO("isp: loaded tuning file %s (3A left running, as divinus does)",
-                         st->iq_file);
+            HAL_LOG_INFO("isp: loaded tuning file %s", st->iq_file);
         }
     }
 
@@ -1422,7 +1404,7 @@ void star_isp_untune(star_state_t *st)
         return;
 
     st->isp_tuned = false;
-    HAL_LOG_INFO("isp: VPE channel stopped; tuning will be re-applied when it restarts");
+    HAL_LOG_DBG("isp: VPE channel stopped; tuning will be re-applied when it restarts");
 }
 
 void star_isp_teardown(star_state_t *st)
@@ -1588,8 +1570,8 @@ int hal_isp_get_antiflicker(void *ctx, rss_antiflicker_t *mode)
  * The units are MI's own and are not raptor's 0..255: they are x1024
  * fixed point, 1024 being unity. rvd's defaults (max_again 160, max_dgain
  * 80) are Ingenic gain codes, and rvd applies them whether or not the
- * config mentions the keys, so the pass-through this code used to do wrote
- * sub-unity ceilings on every boot. Values below unity are now refused and
+ * config mentions the keys, so passing them straight through would write
+ * sub-unity ceilings on every boot. Values below unity are refused and
  * values above the tuning's calibrated ceiling clamped to it -- see the
  * reasoning inside. Treat these two keys as MI-native on this platform.
  */
@@ -1841,7 +1823,7 @@ static int star_isp_apply_ae_it_max(star_state_t *st, unsigned int it_max)
         return RSS_OK;
     }
 
-    HAL_LOG_INFO("isp: max exposure %u -> %u us", limit.maxShutterUs, it_max);
+    HAL_LOG_DBG("isp: max exposure %u -> %u us", limit.maxShutterUs, it_max);
     limit.maxShutterUs = it_max;
     if (limit.minShutterUs > it_max)
         limit.minShutterUs = it_max;
@@ -1940,11 +1922,10 @@ int hal_isp_get_max_dgain(void *ctx, uint32_t *gain)
  * Exposure readback -- what the AE converged on, for ric's day/night
  * detection.
  *
- * This op was in the "left unimplemented on purpose" list above until
- * phase 6, on the grounds that MI exposes no current-exposure query. That
- * was wrong about one symbol: AE_GetManualExpo returns the manual
- * *setting* and AE_GetExposureLimit the bounds, but CUS3A_GetAeStatus
- * returns what the AE actually converged on.
+ * MI looks at first as though it exposes no current-exposure query, and
+ * two of the obvious symbols are indeed the wrong ones: AE_GetManualExpo
+ * returns the manual *setting* and AE_GetExposureLimit the bounds. But
+ * CUS3A_GetAeStatus returns what the AE actually converged on.
  *
  * Two calls, and the second one is optional. MI_ISP_CUS3A_GetAeStatus
  * gives shutter and both gains, which is a complete ambient-light signal
@@ -1972,9 +1953,8 @@ int hal_isp_get_max_dgain(void *ctx, uint32_t *gain)
  * It matters most for luma, where the two readings sit at opposite ends:
  * a live sensor never reports a mean luma of exactly 0, and ric's
  * day->night test is `ae_luma < night_luma`. So a zero read as data is
- * the darkest possible scene, and a backend with no luma source would
- * pin the camera in night mode forever. ric was doing exactly that on
- * this platform before phase 6.
+ * the darkest possible scene, so a backend with no luma source that
+ * reported zero here would pin the camera in night mode forever.
  * ================================================================
  */
 
@@ -2040,7 +2020,6 @@ static uint32_t star_ae_luma(star_state_t *st, const i6_isp_ae_status *ae)
     unsigned int blk_y = ae->avgBlkY;
     unsigned int cells;
     uint64_t sum[I6_ISP_AE_CELL_SZ] = {0};
-    unsigned int mean[I6_ISP_AE_CELL_SZ];
     uint32_t luma;
     int ret;
 
@@ -2103,20 +2082,23 @@ static uint32_t star_ae_luma(star_state_t *st, const i6_isp_ae_status *ae)
 
     luma = (uint32_t)(sum[I6_ISP_AE_CELL_Y] / cells);
 
-    for (unsigned int lane = 0; lane < I6_ISP_AE_CELL_SZ; lane++)
-        mean[lane] = (unsigned int)(sum[lane] / cells);
-
     /*
-     * Where the cells sit, once. Any frame with data in it settles that,
-     * so the only guard needed is against an all-zero sample -- which is
-     * not hypothetical: this fired in the window where the ISP had been
-     * reset to its defaults and logged r=0 g=0 b=0 y=0.
+     * Where the cells sit, once. Any frame with data in it settles that, so
+     * the only guard needed is against an all-zero sample -- not
+     * hypothetical, since an ISP freshly reset to its defaults reports
+     * exactly that.
+     *
+     * The lane means are computed in the argument list rather than into an
+     * array, because HAL_LOG_DBG compiles away entirely without HAL_DEBUG
+     * and an array filled only for it would be an unused variable in every
+     * release build.
      */
     if (!layout_logged && (sum[0] || sum[1] || sum[2] || sum[3])) {
-        HAL_LOG_INFO("isp: AE grid %ux%u, cells at offset %u, lane means "
-                     "r=%u g=%u b=%u y=%u (y is the one used)",
-                     blk_x, blk_y, cell == stats->lead.cell ? 8u : 0u, mean[0], mean[1], mean[2],
-                     mean[3]);
+        HAL_LOG_DBG("isp: AE grid %ux%u, cells at offset %u, lane means "
+                    "r=%u g=%u b=%u y=%u (y is the one used)",
+                    blk_x, blk_y, cell == stats->lead.cell ? 8u : 0u,
+                    (unsigned int)(sum[0] / cells), (unsigned int)(sum[1] / cells),
+                    (unsigned int)(sum[2] / cells), (unsigned int)(sum[3] / cells));
         layout_logged = true;
     }
 
@@ -2187,18 +2169,30 @@ static uint32_t star_ae_luma(star_state_t *st, const i6_isp_ae_status *ae)
         if (scored >= STAR_AE_LANE_MIN_CELLS &&
             (best == 0 ? err_sum[rival] - err_sum[0] : err_sum[0] - err_sum[best]) >=
                 (uint64_t)scored * STAR_AE_LANE_MARGIN) {
-            HAL_LOG_INFO("isp: AE lanes over %u cells: r,g,b,y is off luma by %llu/cell, "
-                         "the nearest other order by %llu/cell -- the order is %s",
-                         scored, (unsigned long long)(err_sum[0] / scored),
-                         (unsigned long long)(err_sum[rival] / scored),
-                         best == 0 ? "confirmed" : "WRONG, another order fits better");
+            /*
+             * The assumed order confirming is the expected outcome and tells
+             * an operator nothing. Another order fitting better means every
+             * luma this file reports is built from the wrong bytes, and
+             * day/night follows that luma -- worth a warning.
+             */
+            if (best == 0)
+                HAL_LOG_DBG("isp: AE lanes over %u cells: r,g,b,y is off luma by %llu/cell, "
+                            "the nearest other order by %llu/cell -- the order is confirmed",
+                            scored, (unsigned long long)(err_sum[0] / scored),
+                            (unsigned long long)(err_sum[rival] / scored));
+            else
+                HAL_LOG_WARN("isp: AE lanes over %u cells: r,g,b,y is off luma by %llu/cell but "
+                             "another order fits better at %llu/cell -- scene luma is being read "
+                             "from the wrong bytes",
+                             scored, (unsigned long long)(err_sum[0] / scored),
+                             (unsigned long long)(err_sum[best] / scored));
             star_ae_lanes_identified = true;
         } else if (!star_ae_lanes_ambiguous && scored >= STAR_AE_LANE_MIN_CELLS) {
-            HAL_LOG_INFO("isp: AE lanes over %u cells do not separate yet (r,g,b,y off luma "
-                         "by %llu/cell, nearest other order %llu/cell); needs colour somewhere "
-                         "in frame, which AWB works against",
-                         scored, (unsigned long long)(err_sum[0] / scored),
-                         (unsigned long long)(err_sum[rival] / scored));
+            HAL_LOG_DBG("isp: AE lanes over %u cells do not separate yet (r,g,b,y off luma "
+                        "by %llu/cell, nearest other order %llu/cell); needs colour somewhere "
+                        "in frame, which AWB works against",
+                        scored, (unsigned long long)(err_sum[0] / scored),
+                        (unsigned long long)(err_sum[rival] / scored));
             star_ae_lanes_ambiguous = true;
         }
     }
@@ -2287,19 +2281,18 @@ static void star_isp_reassert_limits(star_state_t *st)
 /*
  * Reload the tuning binary when the ISP is found back on its defaults.
  *
- * Board evidence, 2026-07-27, and this is the one that explains the rest.
  * Loading the api bin plainly works: two different bins produce two
  * different AE limit sets (24576/100000 and 131072/50000), read back from
- * the AE immediately after the load. But `1024..8192` and `..14000` --
- * where this board's AE actually sits, permanently -- are the limits the
- * ISP reports with *no tuning file at all*, confirmed by watching a failed
- * load report exactly those numbers.
+ * the AE immediately after the load. But `1024..8192` and `..14000` are
+ * the limits the ISP reports with *no tuning file at all* -- a deliberately
+ * failed load reports exactly those numbers -- and that is where this
+ * board's AE otherwise sits, permanently.
  *
- * So the bin lands and is then wiped, and everything else follows from
- * that: the AE ignoring limits widened underneath it, an OEM _night bin
- * that forces monochrome under divinus doing nothing here, deleting the
- * bin changing nothing, and white balance being wrong under artificial
- * light. None of those were separate problems.
+ * So the bin lands and is then wiped, and a whole family of symptoms
+ * follows from that one cause: the AE ignoring limits widened underneath
+ * it, an OEM _night bin that forces monochrome under divinus doing nothing
+ * here, deleting the bin changing nothing, and white balance being wrong
+ * under artificial light.
  *
  * What wipes it is deliberately not chased any further. The shape is
  * known -- this port already documents that CUS3A re-auto-starts when a
@@ -2360,15 +2353,14 @@ static void star_isp_reload_if_reset(star_state_t *st, bool force)
      * Either reading means the tuning is in effect: the value it published,
      * or the narrower one this config deliberately asked for. Treating a
      * configured ceiling as evidence of a reset would have this reload on
-     * every poll; ignoring it -- which is what the first version of this
-     * did -- turns setting max_again into a way to switch the repair off,
-     * and the config used to recommend setting max_again.
+     * every poll; ignoring it turns setting max_again into a way to switch
+     * the repair off.
      *
      * The blind spot is a max_again that happens to equal the untuned
      * default, 8192 on this board: a reset then looks like the config
      * being honoured. Left alone rather than special-cased, because the
-     * tuning's ceiling is the one worth having here and the config now
-     * says to leave max_again unset.
+     * tuning's ceiling is the one worth having here and the config says to
+     * leave max_again unset.
      */
     star_isp_wanted_limits(st, &want_shutter, &want_gain);
     if (limit.maxSensorGain == st->bin_max_sensor_gain ||
@@ -2462,8 +2454,8 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
  * ISP half of a day/night transition -- under IR illumination the colour
  * channels carry no useful chroma, so monochrome output is both cleaner
  * and what the scene actually contains. Driving the physical IR-cut
- * filter is phase 6's GPIO work; this op does not pretend to do it, and
- * a board with no IR-cut wiring still benefits from the switch.
+ * filter is ric's GPIO work; this op does not pretend to do it, and a
+ * board with no IR-cut wiring still benefits from the switch.
  */
 int hal_isp_set_running_mode(void *ctx, rss_isp_mode_t mode)
 {

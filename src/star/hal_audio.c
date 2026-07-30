@@ -69,7 +69,7 @@
  *
  *   the ao_* family
  *       Playback. Nothing in scope plays audio out, libmi_ao is never
- *       loaded, and phase 4 is capture-only by design.
+ *       loaded, and this backend is capture-only by design.
  *
  * Copyright (C) 2026 Thingino Project
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -243,8 +243,7 @@ static void star_audio_teardown(star_state_t *st)
  * starts with no user-side queue at all, so MI_AI_GetFrame has nothing to hand
  * back and fails with MI_AI_ERR_NOBUF (0xA004200D, "insufficient audio input
  * buffer") on every call while the device reports itself perfectly enabled --
- * which is exactly the fault this board showed on 2026-07-25. All three sources
- * do it: the vendor MI_AI reference's own capture example (1, 8), divinus
+ * -- the exact fault a board shows without it. All three sources do it: the vendor MI_AI reference's own capture example (1, 8), divinus
  * (2, 4) and waybeam (1, 2). It is also why the doc calling u32FrmNum
  * "Reserved, unused" matters here -- the device-side ring is not what feeds
  * userspace, this queue is.
@@ -529,10 +528,10 @@ int hal_audio_read_frame(void *ctx, int dev, int chn, rss_audio_frame_t *frame, 
      * MI_AI overloads the code: 0xA004200D is both "this port has no user-side
      * queue" and the empty-queue answer when s32MilliSec is 0. The vendor docs
      * for VENC and VDEC say an unblocked fetch reports BUF_EMPTY, and that is
-     * simply not what MI_AI does -- board-observed 2026-07-26, and it cost a
-     * build: treating it as a lost queue re-applied the output port depth
-     * (which FLUSHES the queue) on every empty poll, so MI logged "Buffer(s)
-     * is lost" about five periods at a time, continuously.
+     * simply not what MI_AI does. Treating it as a lost queue re-applies the
+     * output port depth -- which FLUSHES the queue -- on every empty poll, and
+     * MI then logs "Buffer(s) is lost" about five periods at a time,
+     * continuously.
      *
      * Nothing is given up by returning early here. If the port really has lost
      * its queue, the caller's next *blocking* fetch reports NOBUF too, and the
@@ -678,8 +677,8 @@ int hal_audio_set_volume(void *ctx, int dev, int chn, int vol)
     }
 
     st->aud_volume = vol < 0 ? 0 : (vol > 100 ? 100 : vol);
-    HAL_LOG_INFO("audio: volume %d -> gain index %d (%s)", st->aud_volume, idx,
-                 st->aud_input == RSS_AUDIO_INPUT_DMIC ? "dmic" : "amic");
+    HAL_LOG_DBG("audio: volume %d -> gain index %d (%s)", st->aud_volume, idx,
+                st->aud_input == RSS_AUDIO_INPUT_DMIC ? "dmic" : "amic");
 
     return RSS_OK;
 }

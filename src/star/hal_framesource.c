@@ -229,8 +229,8 @@ void star_fs_release_all(star_state_t *st)
  *               VPE *input* domain and it exists for digital zoom
  *               (waybeam drives pan/zoom with it). rvd only sets crop
  *               for multi-sensor, which this backend declares
- *               unsupported (max_sensors = 1), so wiring it now would
- *               be untestable code. Phase 3.
+ *               unsupported (max_sensors = 1), so wiring it would be
+ *               untestable code.
  *   cfg->fcrop  post-scaler crop, T23-only in IMP. No MI counterpart.
  */
 static int star_fs_configure(star_state_t *st, int chn, star_vpe_port_t *port,
@@ -262,8 +262,8 @@ static int star_fs_configure(star_state_t *st, int chn, star_vpe_port_t *port,
     }
 
     if (cfg->crop.enable)
-        HAL_LOG_WARN("fs chn %d: crop %dx%d+%d+%d ignored -- MI_VPE_SetPortCrop is phase 3", chn,
-                     cfg->crop.w, cfg->crop.h, cfg->crop.x, cfg->crop.y);
+        HAL_LOG_WARN("fs chn %d: crop %dx%d+%d+%d ignored -- MI_VPE_SetPortCrop is unimplemented",
+                     chn, cfg->crop.w, cfg->crop.h, cfg->crop.x, cfg->crop.y);
     if (cfg->fcrop.enable)
         HAL_LOG_WARN("fs chn %d: post-scaler crop has no MI equivalent, ignored", chn);
 
@@ -299,8 +299,8 @@ static int star_fs_configure(star_state_t *st, int chn, star_vpe_port_t *port,
      * is the output port's queue depth. */
     port->queue_depth = cfg->nr_vbs > 0 ? (unsigned int)cfg->nr_vbs : STAR_VPE_QUEUE_DEPTH;
 
-    HAL_LOG_INFO("fs chn %d: VPE port %ux%u pixFmt %d, queue depth %u", chn, width, height, pixFmt,
-                 port->queue_depth);
+    HAL_LOG_DBG("fs chn %d: VPE port %ux%u pixFmt %d, queue depth %u", chn, width, height, pixFmt,
+                port->queue_depth);
 
     return RSS_OK;
 }
@@ -550,8 +550,8 @@ int star_fs_clone_port(star_state_t *st, int src, int dst)
     }
     d->enabled = true;
 
-    HAL_LOG_INFO("vpe port %d: snapshot port cloned from port %d, %ux%u pixFmt %d, queue depth %u",
-                 dst, src, d->width, d->height, d->pixFmt, d->queue_depth);
+    HAL_LOG_DBG("vpe port %d: snapshot port cloned from port %d, %ux%u pixFmt %d, queue depth %u",
+                dst, src, d->width, d->height, d->pixFmt, d->queue_depth);
 
     return star_fs_apply_depth(st, dst, d);
 }

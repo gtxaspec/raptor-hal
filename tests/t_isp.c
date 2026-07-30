@@ -732,16 +732,12 @@ static void test_recorded_values_survive_a_reload(void)
 /*
  * The tuning load must not touch 3A at all.
  *
- * Board evidence 2026-07-26: stopping userspace 3A around the load and
- * restarting CUS3A afterwards left auto white balance enabled-but-dead
- * (MI_ISP_DisableUserspace3A unregisters the vendor algorithms;
- * MI_ISP_CUS3A_Enable only sets flags). divinus loads the binary and
- * leaves 3A running, and divinus has good colour on this board.
- * Board-verified under artificial light 2026-07-27, after which the
- * RSS_ISP_3A_HANDOFF hatch and the CUS3A binding were removed outright --
- * so what this now pins is that the load calls nothing but the load. The
- * byte-width assertions that used to live here went with i6_isp_p3a; the
- * disassembly they encoded is in 4141c43.
+ * Stopping userspace 3A around the load and restarting CUS3A afterwards
+ * leaves auto white balance enabled-but-dead: MI_ISP_DisableUserspace3A
+ * unregisters the vendor algorithms and MI_ISP_CUS3A_Enable only sets
+ * flags. divinus loads the binary and leaves 3A running, and divinus has
+ * good colour on this board. So what this pins is that the load calls
+ * nothing but the load.
  */
 static unsigned int loadcfg_calls;
 
@@ -1056,26 +1052,35 @@ static void test_ae_lane_identification_waits_for_a_frame_that_answers(void)
     CHECK(!log_containing("order is confirmed"), "a neutral frame identifies nothing");
     CHECK(!star_ae_lanes_identified, "none of those may consume the one shot");
 
-    /* A coloured frame whose lane 3 really is BT.601 luma:
-     * (299*180 + 587*90 + 114*40) / 1000 = 111, so r,g,b,y is off by 0 a
-     * cell and the nearest rival (b,r,g) by 16. */
+    /*
+     * A coloured frame whose lane 3 really is BT.601 luma:
+     * (299*180 + 587*90 + 114*40) / 1000 = 111, so r,g,b,y is off by 0 a cell
+     * and the nearest rival (b,r,g) by 16.
+     *
+     * Asserted on the state rather than the log, because confirming the
+     * assumed order is the uninteresting outcome and says so at debug level,
+     * which compiles out without HAL_DEBUG. The state is what the rest of
+     * the file depends on.
+     */
     lane_probe(180, 90, 40, 111);
-    CHECK(log_containing("AE lanes") != NULL, "a coloured frame must report");
-    CHECK(log_containing("the order is confirmed") != NULL,
-          "and must confirm the r,g,b,y order: %s",
-          log_containing("AE lanes") ? log_containing("AE lanes") : "(nothing logged)");
+    CHECK(star_ae_lanes_identified, "a coloured frame must settle the order");
+    CHECK(!log_containing("wrong bytes"), "and must not call the assumed order wrong");
 
-    /* One shot: the answer does not change, so neither does the log. */
+    /* One shot: the answer does not change, so nothing is scored again. */
     lane_probe(180, 90, 40, 111);
-    CHECK(!log_containing("AE lanes"), "the line is once per process");
+    CHECK(!log_containing("AE lanes"), "the question is asked once per process");
 
-    /* A lane 3 that is not luma has to say so rather than be read as a
-     * confirmation. y = 40 is the b lane, so g,b,r,y fits far better. */
+    /*
+     * A lane 3 that is not luma is the outcome that matters, so it warns
+     * rather than being read as a confirmation. y = 40 is the b lane, so
+     * g,b,r,y fits far better.
+     */
     star_ae_lanes_identified = false;
     lane_probe(180, 90, 40, 40);
-    CHECK(log_containing("WRONG, another order fits better") != NULL,
+    CHECK(log_containing("another order fits better") != NULL,
           "a non-luma lane 3 must be called out: %s",
           log_containing("AE lanes") ? log_containing("AE lanes") : "(nothing logged)");
+    CHECK(star_ae_lanes_identified, "and must still consume the one shot");
 
     free(g_ae_stats);
     g_ae_stats = NULL;

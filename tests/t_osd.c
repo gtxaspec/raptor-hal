@@ -410,7 +410,7 @@ static void test_register_attaches_immediately_when_running(void)
 }
 
 /*
- * The regression test for the invisible-overlay bug (board, 2026-07-26).
+ * The regression test for the invisible-overlay bug.
  *
  * rvd sends global_alpha_en = true with bg_alpha = 0 and fg_alpha = 255.
  * Mapping that onto MI's constAlphaOn made every overlay fully

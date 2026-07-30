@@ -324,7 +324,7 @@ static unsigned char star_sensor_pick_mode(star_state_t *st, const rss_sensor_co
         return 0;
     }
 
-    HAL_LOG_INFO("sensor: mode %u matches the requested %ux%u", best, want_w, want_h);
+    HAL_LOG_DBG("sensor: mode %u matches the requested %ux%u", best, want_w, want_h);
     return best;
 }
 
@@ -344,9 +344,9 @@ static unsigned char star_sensor_pick_mode(star_state_t *st, const rss_sensor_co
  *
  * The descriptors are read back *after* Enable, unlike divinus. The sensor
  * driver's pCus_sensor_init runs on Enable, and before it does, pad.intfAttr
- * and the plane geometry read back as zero -- confirmed on this board with
- * star_probe, which reported "planes 0, lanes 0" pre-Enable and correct
- * values after. divinus queries beforehand and gets away with it only
+ * and the plane geometry read back as zero -- measured on this board as
+ * "planes 0, lanes 0" before Enable and correct after. divinus queries
+ * beforehand and gets away with it only
  * because the single field it uses from intfAttr, mipi.input, is 0 for this
  * sensor anyway. waybeam queries after Enable (sensor_select.c:485); so do we.
  */
@@ -454,11 +454,11 @@ static int star_sensor_bringup(star_state_t *st, const rss_sensor_config_t *cfg,
         return RSS_ERR_IO;
     }
 
-    HAL_LOG_INFO("sensor \"%.32s\": mode %u \"%.32s\", %ux%u, %u-%u fps, bayer %d, "
-                 "precision %d, pixFmt %d",
-                 st->plane.sensName, st->res_index, st->res.desc, st->plane.capt.width,
-                 st->plane.capt.height, st->res.minFps, st->res.maxFps, st->plane.bayer,
-                 st->plane.precision, st->plane.pixFmt);
+    HAL_LOG_DBG("sensor \"%.32s\": mode %u \"%.32s\", %ux%u, %u-%u fps, bayer %d, "
+                "precision %d, pixFmt %d",
+                st->plane.sensName, st->res_index, st->res.desc, st->plane.capt.width,
+                st->plane.capt.height, st->res.minFps, st->res.maxFps, st->plane.bayer,
+                st->plane.precision, st->plane.pixFmt);
 
     /*
      * MI's own idea of the sensor name is authoritative and only available
@@ -549,8 +549,8 @@ static int star_vif_bringup(star_state_t *st)
     }
     st->vif_port_enabled = true;
 
-    HAL_LOG_INFO("VIF up: dev %d chn %d port %d, %ux%u, pixFmt %d", STAR_VIF_DEV, STAR_VIF_CHN,
-                 STAR_VIF_PORT, port.dest.width, port.dest.height, port.pixFmt);
+    HAL_LOG_DBG("VIF up: dev %d chn %d port %d, %ux%u, pixFmt %d", STAR_VIF_DEV, STAR_VIF_CHN,
+                STAR_VIF_PORT, port.dest.width, port.dest.height, port.pixFmt);
 
     return RSS_OK;
 }
@@ -584,8 +584,7 @@ static int star_vif_bringup(star_state_t *st)
  * ISP channel has finished initialising, so anything touching MI_ISP
  * must poll MI_ISP_IQ_GetParaInitStatus first or the kernel logs
  * "IspApiGet channel not created" (waybeam star6e_pipeline.c:172-200).
- * No MI_ISP call exists in this backend yet; phase 3 needs that poll
- * before its first one.
+ * hal_isp.c does that polling; see star_isp_wait_ready.
  */
 static int star_vpe_bringup(star_state_t *st)
 {
@@ -623,8 +622,8 @@ static int star_vpe_bringup(star_state_t *st)
 
     memset(&param, 0, sizeof(param));
     param.hdr = I6_HDR_OFF;
-    /* 3DNR level 1, as both references default it. Range is 0-7 and
-     * exposing it belongs with the rest of the ISP controls in phase 3. */
+    /* 3DNR level 1, as both references default it. The range is 0-7;
+     * raptor's own temper knob goes through MI_ISP_IQ_SetNR3D instead. */
     param.level3DNR = 1;
     /* Digital mirror/flip stay off; orientation is a sensor register.
      * See the note in hal_framesource.c's star_fs_configure. */
@@ -1054,16 +1053,14 @@ static int hal_sys_rebase_timestamp(void *ctx, int64_t base)
  * The data path therefore has exactly one link, FS -> ENC. An OSD stage
  * in the chain is not fiction, though, and it is not ignored: the
  * overlay really is applied to that link, by hal_osd.c attaching the
- * region to the same VPE port (phase 5). What has no counterpart is the
+ * region to the same VPE port. What has no counterpart is the
  * *stage*, so the OSD cell is collapsed rather than rejected:
  *
  *   FS  -> OSD    remember which framesource port feeds this encoder
  *   OSD -> ENC    perform the real bind, using the remembered port
  *
- * Before phase 5 this returned NOTSUP for anything but FS -> ENC, and
- * since rvd inserts the OSD stage on `[osd] enabled` alone, that one
- * rejection took the whole pipeline down -- which is why the board
- * config had to pin `[osd] enabled = false`. It no longer does.
+ * Rejecting the OSD stage instead would take the whole pipeline down,
+ * since rvd inserts it on `[osd] enabled` alone.
  *
  * IVS is still unsupported: no ops are implemented, so rvd never sets
  * ivs_active and the stage cannot appear.
