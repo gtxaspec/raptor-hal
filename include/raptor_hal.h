@@ -475,6 +475,16 @@ typedef struct {
     int rst_gpio;
     int pwdn_gpio;
     int power_gpio;
+
+    /*
+     * Mirror and flip as requested by the config, here rather than left to
+     * isp_set_hflip/isp_set_vflip because where orientation is a sensor
+     * register the driver latches it during hal_init, before any caller can
+     * reach an ISP op. This decides how the first frame comes out; the ops
+     * still change it afterwards, and Ingenic uses them alone.
+     */
+    int hflip;
+    int vflip;
 } rss_sensor_config_t;
 
 /* Maximum number of sensors supported (IMPVI_MAIN, SEC, THR) */
@@ -646,6 +656,13 @@ typedef struct {
     bool has_multi_sensor;
     int max_sensors;           /* 1 for T20-T31, 3 for T23-1.3.0/T32/T40/T41 */
     bool has_t23_multicam_api; /* T23 1.3.0 IMP_ISP_MultiCamera_* functions */
+    /*
+     * The SDK binds the sensor when its driver loads and addresses it by
+     * index, so the HAL resolves the sensor's identity itself and neither a
+     * name nor an I2C address is required configuration. Either may still be
+     * given, and is then advisory. False on Ingenic, which is told both.
+     */
+    bool sdk_owns_sensor;
     bool has_defog;
     bool has_dpc;
     bool has_drc;

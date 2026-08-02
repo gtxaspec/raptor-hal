@@ -6,7 +6,8 @@
  * corresponding capability block is compiled and all others are excluded.
  *
  * Values are derived from the SDK difference analysis across all 10
- * supported Ingenic SoCs (T10, T20, T21, T23, T30, T31, T32, T33, T40, T41).
+ * supported Ingenic SoCs (T10, T20, T21, T23, T30, T31, T32, T33, T40, T41),
+ * plus the SigmaStar Infinity6 families at the end of the chain.
  */
 
 #include "hal_internal.h"
@@ -807,6 +808,85 @@ const rss_hal_caps_t g_hal_caps = {
     .max_isp_osd_regions = 8,
 };
 
+/* ═══════════════════════════════════════════════════════════════════════
+ * INFINITY6E (SigmaStar SSC30KQ / SSC338Q)
+ *
+ * The MI ABI spans the Infinity6 series -- divinus drives the whole family
+ * through one i6 HAL, switching only at infinity6c -- so a further family
+ * needs a block like this one and no backend code.
+ *
+ * A false here is either a permanent SDK fact or an op not implemented yet.
+ * Consumers check these flags before calling an optional op, so false keeps
+ * them off a NULL vtable entry. Unlisted fields default to false/0.
+ * ═══════════════════════════════════════════════════════════════════════ */
+#elif defined(PLATFORM_INFINITY6E)
+const rss_hal_caps_t g_hal_caps = {
+    .soc_name = HAL_PLATFORM_NAME,
+    /* Compile-time fallback; the real one comes from MI_SYS_GetVersion(). */
+    .sdk_version = "MI",
+
+    .has_h265 = true,
+    /* MI rate control has no equivalent of Ingenic's SMART mode. */
+    .has_smart_rc = false,
+
+    /* raptor's multi-sensor path is Ingenic IMPVI-specific. */
+    .has_multi_sensor = false,
+    .max_sensors = 1,
+    .has_t23_multicam_api = false,
+    /* MI binds the sensor when its driver loads and addresses it by index,
+     * so the backend resolves its identity and needs no I2C address. */
+    .sdk_owns_sensor = true,
+
+    /*
+     * ISP tuning, true only where MI has a control matching the raptor knob:
+     * defog (a toggle, hence no strength variants), sinter/temper (NRLuma and
+     * NR3D, both 0..255), ae_comp (EVComp), max_gain (the AE exposure limits).
+     *
+     * These are reached by poking a field at a hardcoded (payload size,
+     * offset) pair in an opaque MI IQ struct, read out of this SoC's
+     * libmi_isp.so with objdump -- properties of that library build rather
+     * than of the MI API, so another family needs its own numbers before it
+     * can claim them.
+     */
+    .has_defog = true,
+    .has_sinter = true,
+    .has_temper = true,
+    .has_ae_comp = true,
+    .has_max_gain = true,
+
+    /*
+     * Audio VQE stays false, and not out of caution: enabling it crashes.
+     * The Iaa* algorithm surface is weak-undefined in libmi_ai.so with no
+     * provider in any library shipped for this SoC, while the MI_AI_*Vqe*
+     * wrappers are defined -- so nothing fails at load, and the capture path
+     * then reaches IaaApc_* through the PLT with no null guard, jumping to
+     * address 0. MI's own reference agrees the packs are gone as of 2.19.
+     * has_alc_gain/has_digital_gain describe two gain stages; MI has one,
+     * owned by audio_set_volume.
+     */
+
+    /* Ingenic internals: xburst2 core, IMP generation, IMPVI convention. */
+    .uses_xburst2 = false,
+    .uses_new_sdk = false,
+    .uses_impvi = false,
+
+    /*
+     * Limits. The family exposes 9 VENC channels, capped here at raptor's own
+     * array bound. A VPE channel has four output ports, one per framesource
+     * channel -- measured on an SSC30KQ, all four accept MI_VPE_SetPortMode
+     * at 640x360 NV12, and the count is a VPE property rather than a
+     * per-family one. max_osd_regions is the backend's own tracking
+     * bound, MI publishing none, and a group is an encoder channel with a
+     * bound VPE port. The has_osd_* flags stay false: MI has only OSD and
+     * COVER region types, no group callback, and rss_osd_region_t has no
+     * field to drive its invert attribute.
+     */
+    .max_enc_channels = 8,
+    .max_fs_channels = 4,
+    .max_osd_regions = 16,
+    .max_osd_groups = 4,
+};
+
 #else
-#error "No PLATFORM_* defined. Set one of: PLATFORM_T10 T20 T21 T23 T30 T31 T32 T33 T40 T41"
+#error "No PLATFORM_* defined. Set one of: PLATFORM_T10 T20 T21 T23 T30 T31 T32 T33 T40 T41 INFINITY6E"
 #endif

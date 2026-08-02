@@ -1,12 +1,15 @@
-# Raptor HAL - Hardware Abstraction Layer for Ingenic SoCs
+# Raptor HAL - Hardware Abstraction Layer for Ingenic and SigmaStar SoCs
 #
 # Usage:
 #   make PLATFORM=T31 CROSS_COMPILE=mipsel-linux-
 #   make PLATFORM=T40 CROSS_COMPILE=mipsel-linux- INGENIC_HEADERS=/path/to/headers
+#   make PLATFORM=INFINITY6E CROSS_COMPILE=arm-linux-gnueabihf-
 #   make PLATFORM=T31 clean
 #
 # Required variables:
-#   PLATFORM        - Target SoC: T10, T20, T21, T23, T30, T31, T32, T40, T41
+#   PLATFORM        - Target SoC:
+#                       Ingenic   - T10, T20, T21, T23, T30, T31, T32, T33, T40, T41
+#                       SigmaStar - INFINITY6E
 #   CROSS_COMPILE   - Cross-compiler prefix (e.g. mipsel-linux-)
 #
 # Optional variables:
@@ -21,11 +24,20 @@ $(error PLATFORM not set. Use: make PLATFORM=T31)
 endif
 
 # Validate platform
-VALID_PLATFORMS := T10 T20 T21 T23 T30 T31 T32 T33 T40 T41
+VALID_PLATFORMS := T10 T20 T21 T23 T30 T31 T32 T33 T40 T41 INFINITY6E
 ifeq ($(filter $(PLATFORM),$(VALID_PLATFORMS)),)
 $(error Invalid PLATFORM=$(PLATFORM). Valid: $(VALID_PLATFORMS))
 endif
 endif # clean guard
+
+# Vendor selection. Set outside the clean guard so `make clean` still
+# resolves the right object paths.
+SIGMASTAR_PLATFORMS := INFINITY6E
+ifneq ($(filter $(PLATFORM),$(SIGMASTAR_PLATFORMS)),)
+VENDOR := sigmastar
+else
+VENDOR := ingenic
+endif
 
 # SDK version mapping
 HEADER_VER_T10 := 3.12.0
@@ -57,7 +69,14 @@ HEADER_LANG := $(HEADER_LANG_$(PLATFORM))
 # Paths
 INGENIC_HEADERS ?= ingenic-headers
 INGENIC_LIB     ?= ../ingenic-lib
+
+# SigmaStar needs no SDK path: no redistributable MI headers exist, so the
+# backend declares the ABI itself and dlopens the libraries.
+ifeq ($(VENDOR),sigmastar)
+SDK_INCLUDE     :=
+else
 SDK_INCLUDE     := $(INGENIC_HEADERS)/$(PLATFORM)/$(HEADER_VER)/$(HEADER_LANG)
+endif
 
 # Toolchain
 CC      := $(CROSS_COMPILE)gcc
@@ -74,8 +93,12 @@ CFLAGS  += -std=c11
 CFLAGS  += -ffunction-sections -fdata-sections -flto
 CFLAGS  += -fno-asynchronous-unwind-tables -fmerge-all-constants -fno-ident
 CFLAGS  += -DPLATFORM_$(PLATFORM)
+ifneq ($(SDK_INCLUDE),)
 CFLAGS  += -I$(SDK_INCLUDE)
+# Guarded on SDK_INCLUDE being non-empty rather than on the vendor: a bare
+# -I would swallow the following flag as its argument.
 CFLAGS  += -I$(SDK_INCLUDE)/imp
+endif
 CFLAGS  += -Iinclude
 CFLAGS  += -Isrc
 
@@ -162,9 +185,13 @@ $(LIB_AUDIO): src/hal_common_audio.o $(CORE_OBJS) $(AUDIO_OBJS)
 clean:
 	@echo "  CLEAN"
 	$(Q)rm -f $(ALL_OBJS) $(DEPS) $(LIB_VIDEO) $(LIB_AUDIO)
+	# clean runs without PLATFORM, so $(ALL_OBJS) names only the default
+	# vendor's objects. Sweep the other vendors' subdirs explicitly.
+	$(Q)rm -f src/*/*.o src/*/*.d
 
 info:
 	@echo "Platform:        $(PLATFORM)"
+	@echo "Vendor:          $(VENDOR)"
 	@echo "SDK version:     $(HEADER_VER)"
 	@echo "SDK language:    $(HEADER_LANG)"
 	@echo "SDK include:     $(SDK_INCLUDE)"
