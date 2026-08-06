@@ -692,6 +692,22 @@ typedef struct {
 
 typedef struct rss_hal_ctx rss_hal_ctx_t;
 
+/* Optional standalone V4L2 capture -> OpenIMP AVC path. This API is kept
+ * outside the IMP vtable because it owns a complete capture/encode queue and
+ * is selected explicitly by consumers. It is available only when libimp
+ * exports the OpenIMP_AVC interface. */
+typedef struct rss_v4l2_h264 rss_v4l2_h264_t;
+
+int rss_v4l2_h264_create(rss_v4l2_h264_t **backend, const char *video_device,
+                         const rss_video_config_t *config);
+void rss_v4l2_h264_destroy(rss_v4l2_h264_t *backend);
+int rss_v4l2_h264_start(rss_v4l2_h264_t *backend);
+int rss_v4l2_h264_stop(rss_v4l2_h264_t *backend);
+int rss_v4l2_h264_poll(rss_v4l2_h264_t *backend, uint32_t timeout_ms);
+int rss_v4l2_h264_get_frame(rss_v4l2_h264_t *backend, rss_frame_t *frame);
+int rss_v4l2_h264_release_frame(rss_v4l2_h264_t *backend, rss_frame_t *frame);
+int rss_v4l2_h264_request_idr(rss_v4l2_h264_t *backend);
+
 /* ================================================================
  * Operations Vtable
  * ================================================================ */

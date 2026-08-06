@@ -101,6 +101,7 @@ CORE_SRCS := src/hal_caps.c
 
 VIDEO_SRCS := src/hal_encoder.c \
               src/hal_framesource.c \
+              src/hal_v4l2.c \
               src/hal_isp.c \
               src/hal_osd.c \
               src/hal_gpio.c \
