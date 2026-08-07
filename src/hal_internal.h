@@ -51,8 +51,32 @@
 #define HAL_PLATFORM_NAME "T41"
 #elif defined(PLATFORM_A1)
 #define HAL_PLATFORM_NAME "A1"
+#elif defined(PLATFORM_INFINITY6E)
+#define HAL_PLATFORM_NAME "INFINITY6E"
 #else
 #error "No PLATFORM_* defined"
+#endif
+
+/*
+ * Vendor selection.
+ *
+ * Everything above the INFINITY* entries is an Ingenic T-series/A1 part
+ * sharing the IMP SDK; the derived HAL_OLD_SDK/HAL_NEW_SDK/HAL_IMPVI_SDK
+ * macros below only distinguish IMP *generations* and are meaningless for
+ * other vendors. HAL_INGENIC_SDK / HAL_SIGMASTAR_SDK sit one level above them
+ * and select which vendor SDK is in play at all.
+ *
+ * SigmaStar platforms are expected to share one backend written against the
+ * MI ABI, which spans the Infinity6 family: divinus drives infinity6,
+ * infinity6e and infinity6b0 through the same i6 HAL, switching
+ * implementations only at infinity6c and mercury6. A further family in that
+ * range should therefore need a capability block in hal_caps.c and no backend
+ * code, so this macro selects the vendor rather than the chip.
+ */
+#if defined(PLATFORM_INFINITY6E)
+#define HAL_SIGMASTAR_SDK
+#else
+#define HAL_INGENIC_SDK
 #endif
 
 /* T10 shares the same SDK as T20 — alias so all PLATFORM_T20 guards apply to T10 */
@@ -102,6 +126,11 @@
 #if defined(PLATFORM_T23)
 #define HAL_T23_MULTICAM
 #endif
+
+/* Sections 2-5 are Ingenic IMP SDK specific: struct shims, vendor headers,
+ * type-name normalization, and externs for symbols missing from IMP headers.
+ * Other vendors provide their own equivalents (see section 3b). */
+#ifdef HAL_INGENIC_SDK
 
 /* ═══════════════════════════════════════════════════════════════════════
  * 2. Stub Types for Missing ISP Structs
@@ -218,6 +247,23 @@ int IMP_Encoder_SetChnAttrRcMode(int encChn, const IMPEncoderAttrRcMode *pstRcMo
 }
 #endif
 
+#endif /* HAL_INGENIC_SDK */
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * 3b. Vendor SDK Includes -- SigmaStar MI
+ *
+ * There are none, by design. SigmaStar's MI SDK is split per module
+ * (libmi_sys, libmi_venc, ...) and SigmaStar publishes no redistributable
+ * headers for it, so the backend does not include vendor headers or link
+ * -lmi_* at all: src/star/i6_*.h carry the ABI declarations (vendored from
+ * OpenIPC/divinus, MIT) together with dlopen-based loaders, and the backend
+ * includes those directly.
+ *
+ * Two consequences worth stating: the build needs no MI libraries present,
+ * and the binary binds to whatever MI stack the device itself carries --
+ * which matters because that stack is coupled to the running 4.9.84 kernel.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
 /* ═══════════════════════════════════════════════════════════════════════
  * 6. Logging
  *
@@ -286,7 +332,9 @@ struct rss_hal_ctx {
     /* Multi-sensor state */
     int sensor_count;
     rss_sensor_config_t sensors[RSS_MAX_SENSORS];
+#ifdef HAL_INGENIC_SDK
     IMPSensorInfo imp_sensors[RSS_MAX_SENSORS];
+#endif
 
     /* Flip state per sensor (needed for SoCs with combined H/V flip) */
     int hflip_state[RSS_MAX_SENSORS];
@@ -305,7 +353,9 @@ struct rss_hal_ctx {
     int nal_array_caps[RSS_MAX_ENC_CHANNELS];
 
     /* Per-channel vendor stream struct (reused across get/release_frame) */
+#ifdef HAL_INGENIC_SDK
     IMPEncoderStream stream_priv[RSS_MAX_ENC_CHANNELS];
+#endif
 
     /* Per-channel configured codec. The JPEG pack-shape heuristic in
      * get_frame is unreliable (T31 JPEG packs are not single-pack
@@ -326,12 +376,14 @@ struct rss_hal_ctx {
     rss_audio_input_t audio_input_type;
 
     /* Audio preallocated structs (reused across get/release calls) */
+#ifdef HAL_INGENIC_SDK
     IMPAudioFrame ai_frame_priv;
 #ifdef HAL_HAS_DMIC
     IMPDmicChnFrame dmic_frame_priv;
 #endif
     IMPAudioStream aenc_stream_priv;
     IMPAudioStream adec_stream_priv;
+#endif
 
     /* Platform-specific opaque data */
     void *platform;
