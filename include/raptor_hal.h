@@ -876,12 +876,10 @@ typedef struct rss_hal_ops {
     int (*isp_set_dpc_strength)(void *ctx, int val);
     int (*isp_set_drc_strength)(void *ctx, int val);
     int (*isp_set_ae_comp)(void *ctx, int val);
-    /*
-     * Scale the AE's target-luma curve, 128 leaving the tuning's own curve
-     * alone. Separate from isp_set_ae_comp because EV compensation is a
-     * positive-only boost on some vendors and then cannot lower exposure at
-     * all -- this is the AE's aim itself, and moves both ways.
-     */
+    /* Scale the AE's target-luma curve, 128 leaving the tuning's own alone.
+     * Separate from isp_set_ae_comp because EV compensation is a
+     * positive-only boost on some vendors; this is the AE's aim itself and
+     * moves both ways. */
     int (*isp_set_ae_target)(void *ctx, int val);
     int (*isp_set_max_again)(void *ctx, int gain);
     int (*isp_set_max_dgain)(void *ctx, int gain);

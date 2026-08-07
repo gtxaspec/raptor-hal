@@ -58,20 +58,14 @@
 #endif
 
 /*
- * Vendor selection.
+ * Vendor selection. Everything above the INFINITY* entries is an Ingenic
+ * T-series/A1 part sharing the IMP SDK, so HAL_OLD_SDK/HAL_NEW_SDK/
+ * HAL_IMPVI_SDK below distinguish IMP *generations* and mean nothing for
+ * another vendor. These two sit above them and select the vendor SDK itself.
  *
- * Everything above the INFINITY* entries is an Ingenic T-series/A1 part
- * sharing the IMP SDK; the derived HAL_OLD_SDK/HAL_NEW_SDK/HAL_IMPVI_SDK
- * macros below only distinguish IMP *generations* and are meaningless for
- * other vendors. HAL_INGENIC_SDK / HAL_SIGMASTAR_SDK sit one level above them
- * and select which vendor SDK is in play at all.
- *
- * SigmaStar platforms are expected to share one backend written against the
- * MI ABI, which spans the Infinity6 family: divinus drives infinity6,
- * infinity6e and infinity6b0 through the same i6 HAL, switching
- * implementations only at infinity6c and mercury6. A further family in that
- * range should therefore need a capability block in hal_caps.c and no backend
- * code, so this macro selects the vendor rather than the chip.
+ * Keyed on the vendor rather than the chip: the MI ABI spans the Infinity6
+ * family, so a further family in that range should need a capability block in
+ * hal_caps.c and no backend code.
  */
 #if defined(PLATFORM_INFINITY6E)
 #define HAL_SIGMASTAR_SDK
@@ -252,16 +246,13 @@ int IMP_Encoder_SetChnAttrRcMode(int encChn, const IMPEncoderAttrRcMode *pstRcMo
 /* ═══════════════════════════════════════════════════════════════════════
  * 3b. Vendor SDK Includes -- SigmaStar MI
  *
- * There are none, by design. SigmaStar's MI SDK is split per module
- * (libmi_sys, libmi_venc, ...) and SigmaStar publishes no redistributable
- * headers for it, so the backend does not include vendor headers or link
- * -lmi_* at all: src/star/i6_*.h carry the ABI declarations (vendored from
- * OpenIPC/divinus, MIT) together with dlopen-based loaders, and the backend
- * includes those directly.
+ * There are none, by design. SigmaStar publishes no redistributable headers
+ * for MI, so the backend carries its own ABI declarations and reaches MI
+ * through dlopen rather than including vendor headers or linking -lmi_*.
  *
- * Two consequences worth stating: the build needs no MI libraries present,
- * and the binary binds to whatever MI stack the device itself carries --
- * which matters because that stack is coupled to the running 4.9.84 kernel.
+ * So the build needs no MI libraries present, and the binary binds to
+ * whatever MI stack the device carries -- which matters because that stack is
+ * coupled to the kernel the device runs.
  * ═══════════════════════════════════════════════════════════════════════ */
 
 /* ═══════════════════════════════════════════════════════════════════════
