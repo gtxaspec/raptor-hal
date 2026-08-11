@@ -458,16 +458,51 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
     IMPISPEVAttr ev_attr;
     memset(&ev_attr, 0, sizeof(ev_attr));
     ret = IMP_ISP_Tuning_GetEVAttr(&ev_attr);
-    if (ret == 0)
+    if (ret == 0) {
         exposure->ev = ev_attr.ev;
+        /* The GetExpr product above reads 0 on T20: one_line_expr_in_us
+         * is unpopulated there. EVAttr carries microseconds directly. */
+        if (exposure->exposure_time == 0)
+            exposure->exposure_time = ev_attr.expr_us;
+    }
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
     int luma = 0;
     ret = IMP_ISP_Tuning_GetAeLuma(&luma);
     if (ret == 0)
         exposure->ae_luma = (uint32_t)luma;
-#else
-    /* T20/T21/T30: no GetAeLuma, use EV as luma approximation */
-    exposure->ae_luma = exposure->ev;
+#elif defined(PLATFORM_T10) || defined(PLATFORM_T20) || defined(PLATFORM_T21) ||                   \
+    defined(PLATFORM_T30)
+    /* No GetAeLuma on these SDKs. Estimate the mean from the 5-bin AE
+     * histogram: the bin edges live in the real 0-255 luma domain and
+     * the counts are normalized to a 65535 total, so a bin-midpoint
+     * weighted mean lands on the same scale GetAeLuma reports on
+     * T23/T31 (measured on T20: lit lab ~70, darkness ~6). Never
+     * substitute EV here -- EV rises in darkness, the opposite
+     * direction of luma, which inverted every ae_luma consumer in ric
+     * (T20 field report: auto day/night could not trigger at all).
+     * GetAeZone is not an alternative: its symbol exists but returns
+     * -1 on the T20 libimp. Unordered bin edges mean the statistics
+     * unit is not configured; ae_luma then stays 0 ("cannot answer"
+     * per the exposure contract) and ric runs on gain alone. */
+    {
+        IMPISPAEHist hist;
+        memset(&hist, 0, sizeof(hist));
+        if (IMP_ISP_Tuning_GetAeHist(&hist) == 0 && hist.ae_histhresh[0] < hist.ae_histhresh[1] &&
+            hist.ae_histhresh[1] < hist.ae_histhresh[2] &&
+            hist.ae_histhresh[2] < hist.ae_histhresh[3]) {
+            uint32_t lo = 0, count_sum = 0;
+            uint64_t weighted = 0;
+            for (int b = 0; b < 5; b++) {
+                uint32_t hi = b < 4 ? hist.ae_histhresh[b] : 255;
+                uint32_t mid = (lo + hi) / 2;
+                weighted += (uint64_t)hist.ae_hist[b] * mid;
+                count_sum += hist.ae_hist[b];
+                lo = hi;
+            }
+            if (count_sum > 0)
+                exposure->ae_luma = (uint32_t)((weighted + count_sum / 2) / count_sum);
+        }
+    }
 #endif
 
     /* AWB R/B gain statistics */
