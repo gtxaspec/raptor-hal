@@ -401,8 +401,17 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
     IMPISPAEStatisInfo ae_statis;
     memset(&ae_statis, 0, sizeof(ae_statis));
     ret = IMP_ISP_Tuning_GetAeStatistics(IMPVI_MAIN, &ae_statis);
-    if (ret == 0)
+    if (ret == 0) {
         exposure->ae_luma = ae_luma_from_statistics(&ae_statis);
+    } else {
+        /* Warn once, not per RIC poll: luma stays 0 and day/night
+         * falls back to gain-only behavior. */
+        static bool ae_statis_warned;
+        if (!ae_statis_warned) {
+            HAL_LOG_WARN("GetAeStatistics failed: %d, ae_luma unavailable", ret);
+            ae_statis_warned = true;
+        }
+    }
 
 #if defined(PLATFORM_T40) || defined(PLATFORM_T41)
     exposure->ev = (uint32_t)expr_info.ExposureValue;
@@ -415,6 +424,12 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
     if (ret == 0) {
         exposure->wb_rgain = (uint16_t)awb_statis.statis_gol_gain.rgain;
         exposure->wb_bgain = (uint16_t)awb_statis.statis_gol_gain.bgain;
+    } else {
+        static bool awb_statis_warned;
+        if (!awb_statis_warned) {
+            HAL_LOG_WARN("GetAwbGlobalStatistics failed: %d, WB gains unavailable", ret);
+            awb_statis_warned = true;
+        }
     }
 
     return RSS_OK;
