@@ -3,9 +3,19 @@
  *
  * Simple sysfs GPIO operations.  No vendor SDK dependency.
  *
- * GPIO access is done through /sys/class/gpio/gpio{pin}/value.
- * The pin is assumed to be already exported and direction set
- * by the system init scripts or device tree.
+ * GPIO access is done through /sys/class/gpio/gpio{pin}/value,
+ * exporting the pin first if the system has not already.
+ *
+ * A pin this file exports is a pin nothing else configured, and a fresh
+ * export leaves the line an input, so hal_gpio_set sets the direction
+ * itself or the value write fails with EPERM.  It reads the direction
+ * first and writes "out" only on a mismatch: an unconditional write
+ * resets the line low on most drivers, and a pin deliberately configured
+ * elsewhere stays as it was.
+ *
+ * hal_gpio_get does not force "in".  Turning an output round to read it
+ * would release whatever it holds -- on an IR-cut driver, the filter --
+ * and a freshly exported pin is already an input.
  *
  * IR-cut control is board-specific and requires configuration
  * that maps logical state (day/night) to physical GPIO pins.
@@ -56,10 +66,51 @@ static int gpio_export(int pin)
 }
 
 /* ================================================================
+ * DIRECTION HELPER
+ *
+ * Make the pin an output, writing "out" only on a mismatch.
+ * ================================================================ */
+
+static int gpio_set_output(int pin)
+{
+    char path[GPIO_PATH_MAX];
+    char buf[8];
+    int fd;
+    ssize_t n;
+
+    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/direction", pin);
+
+    fd = open(path, O_RDONLY);
+    if (fd >= 0) {
+        memset(buf, 0, sizeof(buf));
+        n = read(fd, buf, sizeof(buf) - 1);
+        close(fd);
+        if (n > 0 && strncmp(buf, "out", 3) == 0)
+            return RSS_OK;
+    }
+
+    fd = open(path, O_WRONLY);
+    if (fd < 0) {
+        /* Some drivers export a fixed-function line with no direction
+         * attribute; leave the value write to succeed or fail on its own. */
+        return RSS_ERR_IO;
+    }
+
+    if (write(fd, "out", 3) != 3) {
+        HAL_LOG_ERR("gpio_set: direction out on pin %d failed", pin);
+        close(fd);
+        return RSS_ERR_IO;
+    }
+
+    close(fd);
+    return RSS_OK;
+}
+
+/* ================================================================
  * GPIO SET
  *
  * Write a value (0 or 1) to /sys/class/gpio/gpio{pin}/value.
- * Exports the pin first if needed.
+ * Exports the pin and makes it an output first if needed.
  * ================================================================ */
 
 int hal_gpio_set(void *ctx, int pin, int value)
@@ -71,8 +122,9 @@ int hal_gpio_set(void *ctx, int pin, int value)
     if (pin < 0)
         return RSS_ERR_INVAL;
 
-    /* Ensure pin is exported */
+    /* Ensure pin is exported and driving */
     gpio_export(pin);
+    gpio_set_output(pin);
 
     snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/value", pin);
 
@@ -96,6 +148,7 @@ int hal_gpio_set(void *ctx, int pin, int value)
  * GPIO GET
  *
  * Read a value (0 or 1) from /sys/class/gpio/gpio{pin}/value.
+ * Exports the pin if needed but does not touch its direction.
  * ================================================================ */
 
 int hal_gpio_get(void *ctx, int pin, int *value)
