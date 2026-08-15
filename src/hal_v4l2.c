@@ -590,6 +590,11 @@ int rss_v4l2_h264_release_frame(rss_v4l2_h264_t *backend, rss_frame_t *frame)
     return ret;
 }
 
+/* Thread contract: called from RVD's ctrl thread while the encoder
+ * thread is concurrently in poll/dequeue on the same handle. No
+ * userspace lock on purpose: serialization is the AL codec command
+ * path's job, the same interlock the vendor SDK's RequestIDR has
+ * relied on in production for years. */
 int rss_v4l2_h264_request_idr(rss_v4l2_h264_t *backend)
 {
     if (!backend)
