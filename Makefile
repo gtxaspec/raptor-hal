@@ -12,6 +12,7 @@
 # Optional variables:
 #   INGENIC_HEADERS - Path to ingenic-headers repo (default: ../ingenic-headers)
 #   INGENIC_LIB     - Path to ingenic-lib repo (default: ../ingenic-lib)
+#   V4L2_OPENIMP    - Set to 1 for the optional V4L2/OpenIMP AVC bridge
 #   DEBUG           - Set to 1 for debug build
 #   V               - Set to 1 for verbose output
 
@@ -107,6 +108,10 @@ VIDEO_SRCS := src/hal_encoder.c \
               src/hal_ivs.c \
               src/hal_memory.c
 
+ifeq ($(V4L2_OPENIMP),1)
+VIDEO_SRCS += src/hal_v4l2.c
+endif
+
 AUDIO_SRCS := src/hal_audio.c \
               src/hal_dmic.c
 
@@ -161,7 +166,8 @@ $(LIB_AUDIO): src/hal_common_audio.o $(CORE_OBJS) $(AUDIO_OBJS)
 
 clean:
 	@echo "  CLEAN"
-	$(Q)rm -f $(ALL_OBJS) $(DEPS) $(LIB_VIDEO) $(LIB_AUDIO)
+	$(Q)rm -f $(ALL_OBJS) $(DEPS) src/hal_v4l2.o src/hal_v4l2.d \
+		$(LIB_VIDEO) $(LIB_AUDIO)
 
 info:
 	@echo "Platform:        $(PLATFORM)"
