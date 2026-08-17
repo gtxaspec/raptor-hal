@@ -34,7 +34,7 @@
  * header is not available here without introducing a package dependency
  * cycle. These declarations are copied verbatim from:
  *
- *   opensensor/openimp@aa9686ffc0f89e607bc99093a231a6a3a162da69
+ *   opensensor/openimp@e236efffed2b2399e9d04dc159ece14a345b6e69
  *   include/openimp/openimp_avc.h
  *
  * That commit is the bridge ABI contract. Update this block and the pinned
@@ -93,6 +93,8 @@ extern int OpenIMP_AVC_Release(OpenIMPAVCEncoder *encoder, OpenIMPAVCPacket *pac
 extern int OpenIMP_AVC_RequestIDR(OpenIMPAVCEncoder *encoder) __attribute__((weak));
 extern int OpenIMP_AVC_SetBitrate(OpenIMPAVCEncoder *encoder, uint32_t bitrate)
     __attribute__((weak));
+extern int OpenIMP_AVC_SetGopLength(OpenIMPAVCEncoder *encoder, uint32_t gop_length)
+    __attribute__((weak));
 extern int OpenIMP_AVC_ImportDMABuf(int dma_buf_fd, uint32_t size, uint32_t *physical_address)
     __attribute__((weak));
 
@@ -123,6 +125,8 @@ struct rss_v4l2_h264 {
     int warned_key_mismatch;
     atomic_uint pending_bitrate;
     atomic_uint target_bitrate;
+    atomic_uint pending_gop;
+    atomic_uint target_gop;
     atomic_uint average_bitrate;
     uint64_t bitrate_window_start;
     uint64_t bitrate_window_bits;
@@ -185,6 +189,23 @@ static int apply_pending_bitrate(rss_v4l2_h264_t *backend)
         unsigned int empty = 0;
 
         atomic_compare_exchange_strong(&backend->pending_bitrate, &empty, bitrate);
+        return -EIO;
+    }
+    return 0;
+}
+
+static int apply_pending_gop(rss_v4l2_h264_t *backend)
+{
+    unsigned int gop = atomic_exchange(&backend->pending_gop, 0);
+
+    if (!gop)
+        return 0;
+    if (!OpenIMP_AVC_SetGopLength)
+        return -ENOTSUP;
+    if (OpenIMP_AVC_SetGopLength(backend->encoder, gop) != 0) {
+        unsigned int empty = 0;
+
+        atomic_compare_exchange_strong(&backend->pending_gop, &empty, gop);
         return -EIO;
     }
     return 0;
@@ -334,6 +355,8 @@ int rss_v4l2_h264_create(rss_v4l2_h264_t **backend_out, const char *video_device
     backend->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     atomic_init(&backend->pending_bitrate, 0);
     atomic_init(&backend->target_bitrate, config->bitrate);
+    atomic_init(&backend->pending_gop, 0);
+    atomic_init(&backend->target_gop, config->gop_length);
     atomic_init(&backend->average_bitrate, 0);
     for (index = 0; index < RSS_V4L2_BUFFER_COUNT; ++index)
         backend->buffers[index].dma_fd = -1;
@@ -542,6 +565,9 @@ int rss_v4l2_h264_poll(rss_v4l2_h264_t *backend, uint32_t timeout_ms)
     ret = apply_pending_bitrate(backend);
     if (ret)
         return ret;
+    ret = apply_pending_gop(backend);
+    if (ret)
+        return ret;
     poll_fd.fd = backend->video_fd;
     poll_fd.events = POLLIN;
     poll_fd.revents = 0;
@@ -676,5 +702,24 @@ int rss_v4l2_h264_get_bitrate(rss_v4l2_h264_t *backend, uint32_t *target_bitrate
         *target_bitrate = atomic_load(&backend->target_bitrate);
     if (average_bitrate)
         *average_bitrate = atomic_load(&backend->average_bitrate);
+    return 0;
+}
+
+int rss_v4l2_h264_set_gop(rss_v4l2_h264_t *backend, uint32_t gop_length)
+{
+    if (!backend || !gop_length)
+        return -EINVAL;
+    if (!OpenIMP_AVC_SetGopLength)
+        return -ENOTSUP;
+    atomic_store(&backend->target_gop, gop_length);
+    atomic_store(&backend->pending_gop, gop_length);
+    return 0;
+}
+
+int rss_v4l2_h264_get_gop(rss_v4l2_h264_t *backend, uint32_t *gop_length)
+{
+    if (!backend || !gop_length)
+        return -EINVAL;
+    *gop_length = atomic_load(&backend->target_gop);
     return 0;
 }

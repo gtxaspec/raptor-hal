@@ -710,6 +710,8 @@ int rss_v4l2_h264_request_idr(rss_v4l2_h264_t *backend);
 int rss_v4l2_h264_set_bitrate(rss_v4l2_h264_t *backend, uint32_t bitrate);
 int rss_v4l2_h264_get_bitrate(rss_v4l2_h264_t *backend, uint32_t *target_bitrate,
                               uint32_t *average_bitrate);
+int rss_v4l2_h264_set_gop(rss_v4l2_h264_t *backend, uint32_t gop_length);
+int rss_v4l2_h264_get_gop(rss_v4l2_h264_t *backend, uint32_t *gop_length);
 
 /* ================================================================
  * Operations Vtable
