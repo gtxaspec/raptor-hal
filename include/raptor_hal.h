@@ -707,6 +707,9 @@ int rss_v4l2_h264_poll(rss_v4l2_h264_t *backend, uint32_t timeout_ms);
 int rss_v4l2_h264_get_frame(rss_v4l2_h264_t *backend, rss_frame_t *frame);
 int rss_v4l2_h264_release_frame(rss_v4l2_h264_t *backend, rss_frame_t *frame);
 int rss_v4l2_h264_request_idr(rss_v4l2_h264_t *backend);
+int rss_v4l2_h264_set_bitrate(rss_v4l2_h264_t *backend, uint32_t bitrate);
+int rss_v4l2_h264_get_bitrate(rss_v4l2_h264_t *backend, uint32_t *target_bitrate,
+                              uint32_t *average_bitrate);
 
 /* ================================================================
  * Operations Vtable

@@ -12,6 +12,7 @@
 #include <linux/videodev2.h>
 #include <limits.h>
 #include <poll.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,7 +34,7 @@
  * header is not available here without introducing a package dependency
  * cycle. These declarations are copied verbatim from:
  *
- *   opensensor/openimp@7c6ca718170a01a86c6222a3af21b662efa6bbd9
+ *   opensensor/openimp@aa9686ffc0f89e607bc99093a231a6a3a162da69
  *   include/openimp/openimp_avc.h
  *
  * That commit is the bridge ABI contract. Update this block and the pinned
@@ -90,6 +91,8 @@ extern int OpenIMP_AVC_Dequeue(OpenIMPAVCEncoder *encoder, OpenIMPAVCPacket *pac
 extern int OpenIMP_AVC_Release(OpenIMPAVCEncoder *encoder, OpenIMPAVCPacket *packet)
     __attribute__((weak));
 extern int OpenIMP_AVC_RequestIDR(OpenIMPAVCEncoder *encoder) __attribute__((weak));
+extern int OpenIMP_AVC_SetBitrate(OpenIMPAVCEncoder *encoder, uint32_t bitrate)
+    __attribute__((weak));
 extern int OpenIMP_AVC_ImportDMABuf(int dma_buf_fd, uint32_t size, uint32_t *physical_address)
     __attribute__((weak));
 
@@ -118,6 +121,11 @@ struct rss_v4l2_h264 {
     int source_requeue_pending;
     int packet_valid;
     int warned_key_mismatch;
+    atomic_uint pending_bitrate;
+    atomic_uint target_bitrate;
+    atomic_uint average_bitrate;
+    uint64_t bitrate_window_start;
+    uint64_t bitrate_window_bits;
 };
 
 static uint64_t monotonic_ms(void)
@@ -163,6 +171,45 @@ static int openimp_symbols_available(void)
 {
     return OpenIMP_AVC_Create && OpenIMP_AVC_Destroy && OpenIMP_AVC_Submit && OpenIMP_AVC_Dequeue &&
            OpenIMP_AVC_Release && OpenIMP_AVC_RequestIDR && OpenIMP_AVC_ImportDMABuf;
+}
+
+static int apply_pending_bitrate(rss_v4l2_h264_t *backend)
+{
+    unsigned int bitrate = atomic_exchange(&backend->pending_bitrate, 0);
+
+    if (!bitrate)
+        return 0;
+    if (!OpenIMP_AVC_SetBitrate)
+        return -ENOTSUP;
+    if (OpenIMP_AVC_SetBitrate(backend->encoder, bitrate) != 0) {
+        unsigned int empty = 0;
+
+        atomic_compare_exchange_strong(&backend->pending_bitrate, &empty, bitrate);
+        return -EIO;
+    }
+    return 0;
+}
+
+static void update_average_bitrate(rss_v4l2_h264_t *backend)
+{
+    uint64_t timestamp = backend->packet.timestamp;
+    uint64_t elapsed;
+    uint64_t bitrate;
+
+    if (!backend->bitrate_window_start || timestamp <= backend->bitrate_window_start) {
+        backend->bitrate_window_start = timestamp;
+        backend->bitrate_window_bits = 0;
+        return;
+    }
+    backend->bitrate_window_bits += (uint64_t)backend->packet.length * 8U;
+    elapsed = timestamp - backend->bitrate_window_start;
+    if (elapsed < 1000000U)
+        return;
+    bitrate = backend->bitrate_window_bits * 1000000U / elapsed;
+    atomic_store(&backend->average_bitrate,
+                 bitrate > UINT32_MAX ? UINT32_MAX : (unsigned int)bitrate);
+    backend->bitrate_window_start = timestamp;
+    backend->bitrate_window_bits = 0;
 }
 
 static int queue_buffer(rss_v4l2_h264_t *backend, uint32_t index)
@@ -285,6 +332,9 @@ int rss_v4l2_h264_create(rss_v4l2_h264_t **backend_out, const char *video_device
         return -ENOMEM;
     backend->video_fd = -1;
     backend->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    atomic_init(&backend->pending_bitrate, 0);
+    atomic_init(&backend->target_bitrate, config->bitrate);
+    atomic_init(&backend->average_bitrate, 0);
     for (index = 0; index < RSS_V4L2_BUFFER_COUNT; ++index)
         backend->buffers[index].dma_fd = -1;
 
@@ -489,6 +539,9 @@ int rss_v4l2_h264_poll(rss_v4l2_h264_t *backend, uint32_t timeout_ms)
             backend->packet_valid = 1;
         return ret;
     }
+    ret = apply_pending_bitrate(backend);
+    if (ret)
+        return ret;
     poll_fd.fd = backend->video_fd;
     poll_fd.events = POLLIN;
     poll_fd.revents = 0;
@@ -574,6 +627,7 @@ int rss_v4l2_h264_get_frame(rss_v4l2_h264_t *backend, rss_frame_t *frame)
     frame->seq = backend->sequence;
     frame->is_key = is_key != 0;
     frame->_priv = backend;
+    update_average_bitrate(backend);
     return 0;
 }
 
@@ -600,4 +654,27 @@ int rss_v4l2_h264_request_idr(rss_v4l2_h264_t *backend)
     if (!backend)
         return -EINVAL;
     return OpenIMP_AVC_RequestIDR(backend->encoder);
+}
+
+int rss_v4l2_h264_set_bitrate(rss_v4l2_h264_t *backend, uint32_t bitrate)
+{
+    if (!backend || !bitrate)
+        return -EINVAL;
+    if (!OpenIMP_AVC_SetBitrate)
+        return -ENOTSUP;
+    atomic_store(&backend->target_bitrate, bitrate);
+    atomic_store(&backend->pending_bitrate, bitrate);
+    return 0;
+}
+
+int rss_v4l2_h264_get_bitrate(rss_v4l2_h264_t *backend, uint32_t *target_bitrate,
+                              uint32_t *average_bitrate)
+{
+    if (!backend || (!target_bitrate && !average_bitrate))
+        return -EINVAL;
+    if (target_bitrate)
+        *target_bitrate = atomic_load(&backend->target_bitrate);
+    if (average_bitrate)
+        *average_bitrate = atomic_load(&backend->average_bitrate);
+    return 0;
 }
