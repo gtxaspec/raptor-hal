@@ -589,13 +589,18 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
     }
     /* T32 does not have gopAttr; GOP is set via SetDefaultParam's uGopLength arg */
 #else
-    /* Override SDK defaults from SetDefaultParam.
-     * When cfg value is -1 (unset), apply proven defaults matching prudynt.
-     * SDK defaults (MinQP=15, MaxQP=48, MaxPictureSize=2*bitrate) produce
-     * worse quality than prudynt's values. */
+    /* Override SDK defaults from SetDefaultParam when the config sets
+     * a value; -1 falls back to the built-in defaults below.
+     *
+     * CBR min QP must leave the rate control room to reach the target:
+     * a floor of 34 caps the bitrate at whatever QP34 produces for the
+     * scene, regardless of the configured target (measured on T31 at
+     * 1440p: 2.7 Mbps achieved against an 8 Mbps target; a floor of 15
+     * reaches 7.96). Max stays 51 so a hard scene can still be
+     * compressed down to hold the target instead of overshooting. */
     {
         int32_t br_kbps = cfg->bitrate / 1000;
-        int16_t cbr_min = (cfg->min_qp >= 0) ? (int16_t)cfg->min_qp : 34;
+        int16_t cbr_min = (cfg->min_qp >= 0) ? (int16_t)cfg->min_qp : 15;
         int16_t cbr_max = (cfg->max_qp >= 0) ? (int16_t)cfg->max_qp : 51;
         int16_t vbr_min = (cfg->min_qp >= 0) ? (int16_t)cfg->min_qp : 20;
         int16_t vbr_max = (cfg->max_qp >= 0) ? (int16_t)cfg->max_qp : 45;
