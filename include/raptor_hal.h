@@ -499,6 +499,17 @@ typedef struct {
     int stitch_mode;
 } rss_multi_sensor_config_t;
 
+/* Exposure fields whose reads succeeded.  A measured value of zero is data,
+ * not an availability sentinel (a black frame legitimately has ae_luma=0). */
+enum {
+    RSS_EXPOSURE_VALID_TOTAL_GAIN = 1U << 0,
+    RSS_EXPOSURE_VALID_TIME = 1U << 1,
+    RSS_EXPOSURE_VALID_AE_LUMA = 1U << 2,
+    RSS_EXPOSURE_VALID_EV = 1U << 3,
+    RSS_EXPOSURE_VALID_WB_RGAIN = 1U << 4,
+    RSS_EXPOSURE_VALID_WB_BGAIN = 1U << 5,
+};
+
 /* Exposure info (for IR-cut control) */
 typedef struct {
     uint32_t total_gain;
@@ -507,6 +518,7 @@ typedef struct {
     uint32_t ev;       /* EV from GetEVAttr (T20-T31) */
     uint16_t wb_rgain; /* AWB red gain from GetWB_Statis (T20-T31) */
     uint16_t wb_bgain; /* AWB blue gain from GetWB_Statis (T20-T31) */
+    uint32_t valid_mask;
 } rss_exposure_t;
 
 /* White balance mode (matches ISP_CORE_WB_MODE_* from libimp) */

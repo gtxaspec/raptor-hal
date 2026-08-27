@@ -348,7 +348,7 @@ int hal_isp_set_wb(void *ctx, const rss_wb_config_t *wb_cfg)
  * ================================================================ */
 
 #if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-static uint32_t ae_luma_from_statistics(const IMPISPAEStatisInfo *statistics)
+static bool ae_luma_from_statistics(const IMPISPAEStatisInfo *statistics, uint32_t *luma)
 {
     uint64_t pixel_count = 0;
     uint64_t weighted_sum = 0;
@@ -360,9 +360,10 @@ static uint32_t ae_luma_from_statistics(const IMPISPAEStatisInfo *statistics)
     }
 
     if (pixel_count == 0)
-        return 0;
+        return false;
 
-    return (uint32_t)((weighted_sum + pixel_count / 2) / pixel_count);
+    *luma = (uint32_t)((weighted_sum + pixel_count / 2) / pixel_count);
+    return true;
 }
 #endif
 
@@ -390,6 +391,7 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
         return ret;
 
     exposure->exposure_time = expr_info.AeIntegrationTime;
+    exposure->valid_mask |= RSS_EXPOSURE_VALID_TIME;
 #if defined(PLATFORM_T40) || defined(PLATFORM_T41)
     /* T40/T41 AEExprInfo has TotalGainDb (read-only dB total gain) */
     exposure->total_gain = expr_info.TotalGainDb;
@@ -397,12 +399,14 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
     /* T32 AEExprInfo lacks TotalGainDb; approximate from analog gain */
     exposure->total_gain = expr_info.AeAGain;
 #endif
+    exposure->valid_mask |= RSS_EXPOSURE_VALID_TOTAL_GAIN;
     /* AEExprInfo has no luma, so calculate the mean from the AE histogram. */
     IMPISPAEStatisInfo ae_statis;
     memset(&ae_statis, 0, sizeof(ae_statis));
     ret = IMP_ISP_Tuning_GetAeStatistics(IMPVI_MAIN, &ae_statis);
     if (ret == 0) {
-        exposure->ae_luma = ae_luma_from_statistics(&ae_statis);
+        if (ae_luma_from_statistics(&ae_statis, &exposure->ae_luma))
+            exposure->valid_mask |= RSS_EXPOSURE_VALID_AE_LUMA;
     } else {
         /* Warn once, not per RIC poll: luma stays 0 and day/night
          * falls back to gain-only behavior. */
@@ -415,6 +419,7 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
 
 #if defined(PLATFORM_T40) || defined(PLATFORM_T41)
     exposure->ev = (uint32_t)expr_info.ExposureValue;
+    exposure->valid_mask |= RSS_EXPOSURE_VALID_EV;
 #endif
 
     /* AWB R/B gain from GetAwbGlobalStatistics */
@@ -424,6 +429,8 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
     if (ret == 0) {
         exposure->wb_rgain = (uint16_t)awb_statis.statis_gol_gain.rgain;
         exposure->wb_bgain = (uint16_t)awb_statis.statis_gol_gain.bgain;
+        exposure->valid_mask |=
+            RSS_EXPOSURE_VALID_WB_RGAIN | RSS_EXPOSURE_VALID_WB_BGAIN;
     } else {
         static bool awb_statis_warned;
         if (!awb_statis_warned) {
@@ -443,6 +450,7 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
     if (ret != 0)
         return ret;
     exposure->total_gain = total_gain;
+    exposure->valid_mask |= RSS_EXPOSURE_VALID_TOTAL_GAIN;
 
     /* Exposure time from GetExpr */
     IMPISPExpr expr;
@@ -453,6 +461,8 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
     /* g_attr.one_line_expr_in_us * integration_time gives microseconds */
     exposure->exposure_time =
         (uint32_t)expr.g_attr.integration_time * (uint32_t)expr.g_attr.one_line_expr_in_us;
+    if (exposure->exposure_time > 0)
+        exposure->valid_mask |= RSS_EXPOSURE_VALID_TIME;
 
     /* AE luma + EV */
     IMPISPEVAttr ev_attr;
@@ -460,16 +470,22 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
     ret = IMP_ISP_Tuning_GetEVAttr(&ev_attr);
     if (ret == 0) {
         exposure->ev = ev_attr.ev;
+        exposure->valid_mask |= RSS_EXPOSURE_VALID_EV;
         /* The GetExpr product above reads 0 on T20: one_line_expr_in_us
          * is unpopulated there. EVAttr carries microseconds directly. */
-        if (exposure->exposure_time == 0)
+        if (exposure->exposure_time == 0) {
             exposure->exposure_time = ev_attr.expr_us;
+            if (exposure->exposure_time > 0)
+                exposure->valid_mask |= RSS_EXPOSURE_VALID_TIME;
+        }
     }
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
     int luma = 0;
     ret = IMP_ISP_Tuning_GetAeLuma(&luma);
-    if (ret == 0)
+    if (ret == 0) {
         exposure->ae_luma = (uint32_t)luma;
+        exposure->valid_mask |= RSS_EXPOSURE_VALID_AE_LUMA;
+    }
 #elif defined(PLATFORM_T10) || defined(PLATFORM_T20) || defined(PLATFORM_T21) ||                   \
     defined(PLATFORM_T30)
     /* No GetAeLuma on these SDKs. Estimate the mean from the 5-bin AE
@@ -499,8 +515,10 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
                 count_sum += hist.ae_hist[b];
                 lo = hi;
             }
-            if (count_sum > 0)
+            if (count_sum > 0) {
                 exposure->ae_luma = (uint32_t)((weighted + count_sum / 2) / count_sum);
+                exposure->valid_mask |= RSS_EXPOSURE_VALID_AE_LUMA;
+            }
         }
     }
 #endif
@@ -512,6 +530,8 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
     if (ret == 0) {
         exposure->wb_rgain = wb_statis.rgain;
         exposure->wb_bgain = wb_statis.bgain;
+        exposure->valid_mask |=
+            RSS_EXPOSURE_VALID_WB_RGAIN | RSS_EXPOSURE_VALID_WB_BGAIN;
     }
 
     return RSS_OK;
@@ -3491,12 +3511,13 @@ int hal_isp_get_exposure_n(void *ctx, int sensor_idx, rss_exposure_t *exposure)
     if (ret != 0)
         return ret;
     exposure->exposure_time = expr_info.AeIntegrationTime;
+    exposure->valid_mask |= RSS_EXPOSURE_VALID_TIME;
 #if defined(PLATFORM_T40) || defined(PLATFORM_T41)
     exposure->total_gain = expr_info.TotalGainDb;
 #else
     exposure->total_gain = expr_info.AeAGain;
 #endif
-    exposure->ae_luma = 0;
+    exposure->valid_mask |= RSS_EXPOSURE_VALID_TOTAL_GAIN;
     return 0;
 #elif defined(HAL_T23_MULTICAM)
     {
@@ -3505,6 +3526,7 @@ int hal_isp_get_exposure_n(void *ctx, int sensor_idx, rss_exposure_t *exposure)
         if (ret != 0)
             return ret;
         exposure->total_gain = gain;
+        exposure->valid_mask |= RSS_EXPOSURE_VALID_TOTAL_GAIN;
         return 0;
     }
 #else
