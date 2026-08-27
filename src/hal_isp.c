@@ -429,8 +429,7 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
     if (ret == 0) {
         exposure->wb_rgain = (uint16_t)awb_statis.statis_gol_gain.rgain;
         exposure->wb_bgain = (uint16_t)awb_statis.statis_gol_gain.bgain;
-        exposure->valid_mask |=
-            RSS_EXPOSURE_VALID_WB_RGAIN | RSS_EXPOSURE_VALID_WB_BGAIN;
+        exposure->valid_mask |= RSS_EXPOSURE_VALID_WB_RGAIN | RSS_EXPOSURE_VALID_WB_BGAIN;
     } else {
         static bool awb_statis_warned;
         if (!awb_statis_warned) {
@@ -530,8 +529,7 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
     if (ret == 0) {
         exposure->wb_rgain = wb_statis.rgain;
         exposure->wb_bgain = wb_statis.bgain;
-        exposure->valid_mask |=
-            RSS_EXPOSURE_VALID_WB_RGAIN | RSS_EXPOSURE_VALID_WB_BGAIN;
+        exposure->valid_mask |= RSS_EXPOSURE_VALID_WB_RGAIN | RSS_EXPOSURE_VALID_WB_BGAIN;
     }
 
     return RSS_OK;
