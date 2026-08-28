@@ -601,3 +601,277 @@ int rss_v4l2_h264_request_idr(rss_v4l2_h264_t *backend)
         return -EINVAL;
     return OpenIMP_AVC_RequestIDR(backend->encoder);
 }
+
+/* ================================================================
+ * The "v4l2" backend ops table
+ *
+ * Composed from the IMP table: ISP, sensor and system ops are
+ * inherited verbatim (on an OpenIMP system libimp IS OpenIMP, the
+ * same ABI the tuning path already talks), the encoder slots mount
+ * this file's capture/encode queue, and the subsystems this backend
+ * does not have (framesource graph, OSD, IVS, JPEG, the IMP encoder
+ * feature surface) are NULL so RSS_HAL_CALL answers RSS_ERR_NOTSUP
+ * without any caller-side allowlist.
+ * ================================================================ */
+
+static int v4l2_ops_enc_create_channel(void *vctx, int chn, const rss_video_config_t *cfg)
+{
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)vctx;
+
+    if (chn != 0)
+        return RSS_ERR_NOTSUP; /* single H.264 channel */
+    if (c->v4l2)
+        return -EBUSY;
+    return rss_v4l2_h264_create(&c->v4l2, c->v4l2_device[0] ? c->v4l2_device : "/dev/video0", cfg);
+}
+
+static int v4l2_ops_enc_destroy_channel(void *vctx, int chn)
+{
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)vctx;
+
+    if (chn != 0 || !c->v4l2)
+        return -EINVAL;
+    rss_v4l2_h264_destroy(c->v4l2);
+    c->v4l2 = NULL;
+    return 0;
+}
+
+#define V4L2_OPS_WRAP(name, call)                                                                  \
+    static int v4l2_ops_##name(void *vctx, int chn)                                                \
+    {                                                                                              \
+        rss_hal_ctx_t *c = (rss_hal_ctx_t *)vctx;                                                  \
+        if (chn != 0 || !c->v4l2)                                                                  \
+            return -EINVAL;                                                                        \
+        return call(c->v4l2);                                                                      \
+    }
+
+V4L2_OPS_WRAP(enc_start, rss_v4l2_h264_start)
+V4L2_OPS_WRAP(enc_stop, rss_v4l2_h264_stop)
+V4L2_OPS_WRAP(enc_request_idr, rss_v4l2_h264_request_idr)
+
+static int v4l2_ops_enc_poll(void *vctx, int chn, uint32_t timeout_ms)
+{
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)vctx;
+
+    if (chn != 0 || !c->v4l2)
+        return -EINVAL;
+    return rss_v4l2_h264_poll(c->v4l2, timeout_ms);
+}
+
+static int v4l2_ops_enc_get_frame(void *vctx, int chn, rss_frame_t *frame)
+{
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)vctx;
+
+    if (chn != 0 || !c->v4l2)
+        return -EINVAL;
+    return rss_v4l2_h264_get_frame(c->v4l2, frame);
+}
+
+static int v4l2_ops_enc_release_frame(void *vctx, int chn, rss_frame_t *frame)
+{
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)vctx;
+
+    if (chn != 0 || !c->v4l2)
+        return -EINVAL;
+    return rss_v4l2_h264_release_frame(c->v4l2, frame);
+}
+
+/* deinit: the encoder instance goes first, then the inherited IMP
+ * teardown releases the sensor and ISP it brought up in init. */
+static int v4l2_ops_deinit(void *vctx)
+{
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)vctx;
+
+    if (c->v4l2) {
+        rss_v4l2_h264_destroy(c->v4l2);
+        c->v4l2 = NULL;
+    }
+    return hal_imp_ops()->deinit(vctx);
+}
+
+void rss_hal_v4l2_set_device(rss_hal_ctx_t *ctx, const char *device)
+{
+    if (ctx && device)
+        snprintf(ctx->v4l2_device, sizeof(ctx->v4l2_device), "%s", device);
+}
+
+const rss_hal_ops_t *hal_v4l2_backend_ops(void)
+{
+    static rss_hal_ops_t table;
+    static bool built;
+    rss_hal_ops_t *ops = &table;
+
+    if (built)
+        return &table;
+
+    table = *hal_imp_ops();
+
+    /* Absent subsystems answer RSS_ERR_NOTSUP via the NULL-slot rule. */
+    ops->bind = NULL;
+    ops->enc_create_group = NULL;
+    ops->enc_destroy_group = NULL;
+    ops->enc_flush_stream = NULL;
+    ops->enc_get_avg_bitrate = NULL;
+    ops->enc_get_channel_attr = NULL;
+    ops->enc_get_chn_ave_bitrate = NULL;
+    ops->enc_get_chn_enc_type = NULL;
+    ops->enc_get_chn_gop_attr = NULL;
+    ops->enc_get_color2grey = NULL;
+    ops->enc_get_crop = NULL;
+    ops->enc_get_denoise = NULL;
+    ops->enc_get_eval_info = NULL;
+    ops->enc_get_fd = NULL;
+    ops->enc_get_fps = NULL;
+    ops->enc_get_gdr = NULL;
+    ops->enc_get_gop_attr = NULL;
+    ops->enc_get_gop_mode = NULL;
+    ops->enc_get_h264_trans = NULL;
+    ops->enc_get_h264_vui = NULL;
+    ops->enc_get_h265_trans = NULL;
+    ops->enc_get_h265_vui = NULL;
+    ops->enc_get_jpeg_ql = NULL;
+    ops->enc_get_jpeg_qp = NULL;
+    ops->enc_get_max_same_scene_cnt = NULL;
+    ops->enc_get_max_stream_cnt = NULL;
+    ops->enc_get_mbrc = NULL;
+    ops->enc_get_pool = NULL;
+    ops->enc_get_pskip = NULL;
+    ops->enc_get_qpg_mode = NULL;
+    ops->enc_get_rc_options = NULL;
+    ops->enc_get_rmem_info = NULL;
+    ops->enc_get_roi = NULL;
+    ops->enc_get_srd = NULL;
+    ops->enc_get_stream_buf_size = NULL;
+    ops->enc_get_super_frame = NULL;
+    ops->enc_inject_stream_shm = NULL;
+    ops->enc_insert_userdata = NULL;
+    ops->enc_poll_module_stream = NULL;
+    ops->enc_query = NULL;
+    ops->enc_register_channel = NULL;
+    ops->enc_request_gdr = NULL;
+    ops->enc_request_pskip = NULL;
+    ops->enc_set_bitrate = NULL;
+    ops->enc_set_bufshare = NULL;
+    ops->enc_set_chn_entropy_mode = NULL;
+    ops->enc_set_chn_gop_attr = NULL;
+    ops->enc_set_color2grey = NULL;
+    ops->enc_set_crop = NULL;
+    ops->enc_set_denoise = NULL;
+    ops->enc_set_fps = NULL;
+    ops->enc_set_gdr = NULL;
+    ops->enc_set_gop = NULL;
+    ops->enc_set_gop_attr = NULL;
+    ops->enc_set_gop_mode = NULL;
+    ops->enc_set_h264_trans = NULL;
+    ops->enc_set_h264_vui = NULL;
+    ops->enc_set_h265_trans = NULL;
+    ops->enc_set_h265_vui = NULL;
+    ops->enc_set_jpeg_ql = NULL;
+    ops->enc_set_jpeg_qp = NULL;
+    ops->enc_set_map_roi = NULL;
+    ops->enc_set_max_pic_size = NULL;
+    ops->enc_set_max_psnr = NULL;
+    ops->enc_set_max_same_scene_cnt = NULL;
+    ops->enc_set_max_stream_cnt = NULL;
+    ops->enc_set_mbrc = NULL;
+    ops->enc_set_pool = NULL;
+    ops->enc_set_pskip = NULL;
+    ops->enc_set_qp = NULL;
+    ops->enc_set_qp_bounds = NULL;
+    ops->enc_set_qp_bounds_per_frame = NULL;
+    ops->enc_set_qp_ip_delta = NULL;
+    ops->enc_set_qp_pb_delta = NULL;
+    ops->enc_set_qpg_ai = NULL;
+    ops->enc_set_qpg_mode = NULL;
+    ops->enc_set_rc_mode = NULL;
+    ops->enc_set_rc_options = NULL;
+    ops->enc_set_resize_mode = NULL;
+    ops->enc_set_roi = NULL;
+    ops->enc_set_srd = NULL;
+    ops->enc_set_stream_buf_size = NULL;
+    ops->enc_set_super_frame = NULL;
+    ops->enc_unregister_channel = NULL;
+    ops->fs_chn_stat_query = NULL;
+    ops->fs_create_channel = NULL;
+    ops->fs_destroy_channel = NULL;
+    ops->fs_disable_channel = NULL;
+    ops->fs_disable_chn_undistort = NULL;
+    ops->fs_enable_channel = NULL;
+    ops->fs_enable_chn_undistort = NULL;
+    ops->fs_get_delay = NULL;
+    ops->fs_get_fifo = NULL;
+    ops->fs_get_frame = NULL;
+    ops->fs_get_frame_depth = NULL;
+    ops->fs_get_max_delay = NULL;
+    ops->fs_get_pool = NULL;
+    ops->fs_get_timed_frame = NULL;
+    ops->fs_release_frame = NULL;
+    ops->fs_set_channel_attr = NULL;
+    ops->fs_set_delay = NULL;
+    ops->fs_set_fifo = NULL;
+    ops->fs_set_frame_depth = NULL;
+    ops->fs_set_frame_offset = NULL;
+    ops->fs_set_max_delay = NULL;
+    ops->fs_set_pool = NULL;
+    ops->fs_set_rotation = NULL;
+    ops->fs_snap_frame = NULL;
+    ops->isp_osd_create_region = NULL;
+    ops->isp_osd_destroy_region = NULL;
+    ops->isp_osd_set_mask = NULL;
+    ops->isp_osd_set_pool_size = NULL;
+    ops->isp_osd_set_region_attr = NULL;
+    ops->isp_osd_show_region = NULL;
+    ops->ivs_create_base_move_interface = NULL;
+    ops->ivs_create_channel = NULL;
+    ops->ivs_create_group = NULL;
+    ops->ivs_create_jzdl_interface = NULL;
+    ops->ivs_create_move_interface = NULL;
+    ops->ivs_create_persondet_interface = NULL;
+    ops->ivs_destroy_base_move_interface = NULL;
+    ops->ivs_destroy_channel = NULL;
+    ops->ivs_destroy_group = NULL;
+    ops->ivs_destroy_jzdl_interface = NULL;
+    ops->ivs_destroy_move_interface = NULL;
+    ops->ivs_destroy_persondet_interface = NULL;
+    ops->ivs_get_param = NULL;
+    ops->ivs_get_result = NULL;
+    ops->ivs_poll_result = NULL;
+    ops->ivs_register_channel = NULL;
+    ops->ivs_release_data = NULL;
+    ops->ivs_release_result = NULL;
+    ops->ivs_set_param = NULL;
+    ops->ivs_start = NULL;
+    ops->ivs_stop = NULL;
+    ops->ivs_unregister_channel = NULL;
+    ops->osd_attach_to_group = NULL;
+    ops->osd_create_group = NULL;
+    ops->osd_create_region = NULL;
+    ops->osd_destroy_group = NULL;
+    ops->osd_destroy_region = NULL;
+    ops->osd_get_group_region_attr = NULL;
+    ops->osd_get_region_attr = NULL;
+    ops->osd_register_region = NULL;
+    ops->osd_set_pool_size = NULL;
+    ops->osd_set_region_attr = NULL;
+    ops->osd_set_region_attr_with_timestamp = NULL;
+    ops->osd_show = NULL;
+    ops->osd_show_region = NULL;
+    ops->osd_start = NULL;
+    ops->osd_stop = NULL;
+    ops->osd_unregister_region = NULL;
+    ops->osd_update_region_data = NULL;
+    ops->unbind = NULL;
+
+    ops->enc_create_channel = v4l2_ops_enc_create_channel;
+    ops->enc_destroy_channel = v4l2_ops_enc_destroy_channel;
+    ops->enc_start = v4l2_ops_enc_start;
+    ops->enc_stop = v4l2_ops_enc_stop;
+    ops->enc_poll = v4l2_ops_enc_poll;
+    ops->enc_get_frame = v4l2_ops_enc_get_frame;
+    ops->enc_release_frame = v4l2_ops_enc_release_frame;
+    ops->enc_request_idr = v4l2_ops_enc_request_idr;
+    ops->deinit = v4l2_ops_deinit;
+
+    built = true;
+    return &table;
+}

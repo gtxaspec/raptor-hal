@@ -1481,16 +1481,46 @@ static const rss_hal_caps_t *hal_get_caps(void *ctx)
  */
 rss_hal_ctx_t *rss_hal_create(void)
 {
+    return rss_hal_create_backend("imp");
+}
+
+const rss_hal_ops_t *hal_imp_ops(void)
+{
+    return &g_ops;
+}
+
+rss_hal_ctx_t *rss_hal_create_backend(const char *backend)
+{
     rss_hal_ctx_t *ctx;
 
     ctx = (rss_hal_ctx_t *)calloc(1, sizeof(*ctx));
     if (!ctx)
         return NULL;
 
-    ctx->ops = &g_ops;
     memcpy(&ctx->caps, &g_hal_caps, sizeof(ctx->caps));
 
-    return ctx;
+    if (!backend || strcmp(backend, "imp") == 0) {
+        ctx->ops = &g_ops;
+        ctx->caps.has_framesource = true;
+        ctx->caps.has_osd = true;
+        ctx->caps.has_ivs = true;
+        ctx->caps.has_jpeg = true;
+        return ctx;
+    }
+#if defined(V4L2_OPENIMP) && defined(HAL_MODULE_VIDEO)
+    /* The audio flavor of this file links without hal_v4l2.o; only the
+     * video library can hand out the composed table. */
+    if (strcmp(backend, "v4l2") == 0) {
+        ctx->ops = hal_v4l2_backend_ops();
+        ctx->caps.single_video_channel = true;
+        return ctx;
+    }
+#endif
+
+    /* Unknown, or a backend this build does not carry: the caller
+     * gets NULL rather than a table that would half-work. */
+    free(ctx);
+    return NULL;
 }
 
 /*

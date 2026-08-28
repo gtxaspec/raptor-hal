@@ -110,6 +110,7 @@ VIDEO_SRCS := src/hal_encoder.c \
 
 ifeq ($(V4L2_OPENIMP),1)
 VIDEO_SRCS += src/hal_v4l2.c
+CFLAGS += -DV4L2_OPENIMP
 endif
 
 AUDIO_SRCS := src/hal_audio.c \

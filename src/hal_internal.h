@@ -280,6 +280,13 @@ struct rss_hal_ctx {
     const rss_hal_ops_t *ops;
     rss_hal_caps_t caps;
 
+#ifdef V4L2_OPENIMP
+    /* "v4l2" backend: the capture/encode instance behind the encoder
+     * ops, and the device node it opens (set before enc_create). */
+    rss_v4l2_h264_t *v4l2;
+    char v4l2_device[64];
+#endif
+
     /* OSD pool size — set via osd_set_pool_size before init */
     uint32_t osd_pool_size;
 
@@ -365,5 +372,13 @@ static inline uint32_t hal_clamp_u32(int val)
         return 0;
     return (uint32_t)val;
 }
+
+/* The IMP ops table, for backends that compose from it. */
+const rss_hal_ops_t *hal_imp_ops(void);
+
+#ifdef V4L2_OPENIMP
+/* The composed "v4l2" backend table (hal_v4l2.c). */
+const rss_hal_ops_t *hal_v4l2_backend_ops(void);
+#endif
 
 #endif /* HAL_INTERNAL_H */
