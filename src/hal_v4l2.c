@@ -838,6 +838,22 @@ static int v4l2_ops_enc_get_gop_attr(void *vctx, int chn, uint32_t *gop_length)
     return rss_v4l2_h264_get_gop(c->v4l2, gop_length);
 }
 
+/* The media clock this backend stamps frames with: CLOCK_MONOTONIC
+ * microseconds (V4L2 buffer timestamps), not IMP system time. The
+ * inherited IMP op would hand consumers a clock the frames are not
+ * on, skewing the UTC mapping rings publish. */
+static int v4l2_ops_sys_get_timestamp(void *vctx, int64_t *ts)
+{
+    struct timespec t;
+
+    (void)vctx;
+    if (!ts)
+        return -EINVAL;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    *ts = (int64_t)t.tv_sec * 1000000 + t.tv_nsec / 1000;
+    return 0;
+}
+
 /* deinit: the encoder instance goes first, then the inherited IMP
  * teardown releases the sensor and ISP it brought up in init. */
 static int v4l2_ops_deinit(void *vctx)
@@ -1036,6 +1052,7 @@ const rss_hal_ops_t *hal_v4l2_backend_ops(void)
     ops->enc_get_avg_bitrate = v4l2_ops_enc_get_avg_bitrate;
     ops->enc_set_gop = v4l2_ops_enc_set_gop;
     ops->enc_get_gop_attr = v4l2_ops_enc_get_gop_attr;
+    ops->sys_get_timestamp = v4l2_ops_sys_get_timestamp;
     ops->deinit = v4l2_ops_deinit;
 
     built = true;
