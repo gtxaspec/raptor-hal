@@ -798,6 +798,46 @@ static int v4l2_ops_enc_release_frame(void *vctx, int chn, rss_frame_t *frame)
     return rss_v4l2_h264_release_frame(c->v4l2, frame);
 }
 
+/* The deferred runtime controls: the setters publish atomic pending
+ * targets, the encoder thread applies them between completed
+ * ownership cycles, so a ctrl request never races Submit/Dequeue/
+ * Release on the single AVPU path. */
+static int v4l2_ops_enc_set_bitrate(void *vctx, int chn, uint32_t bitrate)
+{
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)vctx;
+
+    if (chn != 0 || !c->v4l2)
+        return -EINVAL;
+    return rss_v4l2_h264_set_bitrate(c->v4l2, bitrate);
+}
+
+static int v4l2_ops_enc_get_avg_bitrate(void *vctx, int chn, uint32_t *bitrate)
+{
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)vctx;
+
+    if (chn != 0 || !c->v4l2)
+        return -EINVAL;
+    return rss_v4l2_h264_get_bitrate(c->v4l2, NULL, bitrate);
+}
+
+static int v4l2_ops_enc_set_gop(void *vctx, int chn, uint32_t gop_length)
+{
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)vctx;
+
+    if (chn != 0 || !c->v4l2)
+        return -EINVAL;
+    return rss_v4l2_h264_set_gop(c->v4l2, gop_length);
+}
+
+static int v4l2_ops_enc_get_gop_attr(void *vctx, int chn, uint32_t *gop_length)
+{
+    rss_hal_ctx_t *c = (rss_hal_ctx_t *)vctx;
+
+    if (chn != 0 || !c->v4l2)
+        return -EINVAL;
+    return rss_v4l2_h264_get_gop(c->v4l2, gop_length);
+}
+
 /* deinit: the encoder instance goes first, then the inherited IMP
  * teardown releases the sensor and ISP it brought up in init. */
 static int v4l2_ops_deinit(void *vctx)
@@ -992,6 +1032,10 @@ const rss_hal_ops_t *hal_v4l2_backend_ops(void)
     ops->enc_get_frame = v4l2_ops_enc_get_frame;
     ops->enc_release_frame = v4l2_ops_enc_release_frame;
     ops->enc_request_idr = v4l2_ops_enc_request_idr;
+    ops->enc_set_bitrate = v4l2_ops_enc_set_bitrate;
+    ops->enc_get_avg_bitrate = v4l2_ops_enc_get_avg_bitrate;
+    ops->enc_set_gop = v4l2_ops_enc_set_gop;
+    ops->enc_get_gop_attr = v4l2_ops_enc_get_gop_attr;
     ops->deinit = v4l2_ops_deinit;
 
     built = true;
