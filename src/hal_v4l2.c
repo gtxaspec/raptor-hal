@@ -123,6 +123,7 @@ struct rss_v4l2_h264 {
     int source_requeue_pending;
     int packet_valid;
     int warned_key_mismatch;
+    atomic_uint pending_idr;
     atomic_uint pending_bitrate;
     atomic_uint target_bitrate;
     atomic_uint pending_gop;
@@ -189,6 +190,19 @@ static int apply_pending_bitrate(rss_v4l2_h264_t *backend)
         unsigned int empty = 0;
 
         atomic_compare_exchange_strong(&backend->pending_bitrate, &empty, bitrate);
+        return -EIO;
+    }
+    return 0;
+}
+
+static int apply_pending_idr(rss_v4l2_h264_t *backend)
+{
+    unsigned int pending = atomic_exchange(&backend->pending_idr, 0);
+
+    if (!pending)
+        return 0;
+    if (OpenIMP_AVC_RequestIDR(backend->encoder) != 0) {
+        atomic_store(&backend->pending_idr, 1);
         return -EIO;
     }
     return 0;
@@ -353,6 +367,7 @@ int rss_v4l2_h264_create(rss_v4l2_h264_t **backend_out, const char *video_device
         return -ENOMEM;
     backend->video_fd = -1;
     backend->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    atomic_init(&backend->pending_idr, 0);
     atomic_init(&backend->pending_bitrate, 0);
     atomic_init(&backend->target_bitrate, config->bitrate);
     atomic_init(&backend->pending_gop, 0);
@@ -372,7 +387,10 @@ int rss_v4l2_h264_create(rss_v4l2_h264_t **backend_out, const char *video_device
     format.fmt.pix.width = config->width;
     format.fmt.pix.height = config->height;
     format.fmt.pix.pixelformat = V4L2_PIX_FMT_NV12;
-    format.fmt.pix.field = V4L2_FIELD_NONE;
+    /* Legacy Ingenic queues normalize FIELD_ANY to their native marker even
+     * though the delivered NV12 is progressive.  Newer adapters accept ANY
+     * too, making it the portable negotiation value. */
+    format.fmt.pix.field = V4L2_FIELD_ANY;
     ret = v4l2_ioctl(backend->video_fd, VIDIOC_S_FMT, &format);
     if (ret)
         goto fail;
@@ -568,6 +586,9 @@ int rss_v4l2_h264_poll(rss_v4l2_h264_t *backend, uint32_t timeout_ms)
     ret = apply_pending_gop(backend);
     if (ret)
         return ret;
+    ret = apply_pending_idr(backend);
+    if (ret)
+        return ret;
     poll_fd.fd = backend->video_fd;
     poll_fd.events = POLLIN;
     poll_fd.revents = 0;
@@ -603,7 +624,10 @@ int rss_v4l2_h264_poll(rss_v4l2_h264_t *backend, uint32_t timeout_ms)
     frame.virtual_address = (uintptr_t)backend->buffers[buffer.index].address;
     frame.timestamp =
         (uint64_t)buffer.timestamp.tv_sec * 1000000U + (uint64_t)buffer.timestamp.tv_usec;
-    frame.cookie = (void *)(uintptr_t)buffer.index;
+    /* OpenIMP carries this through its metadata FIFO as an opaque pointer.
+     * A small integer such as buffer index 1 collides with the FIFO's low
+     * sentinel range; the per-buffer object is stable for the session. */
+    frame.cookie = &backend->buffers[buffer.index];
     ret = OpenIMP_AVC_Submit(backend->encoder, &frame);
     if (ret) {
         int queue_ret = requeue_source(backend);
@@ -670,16 +694,15 @@ int rss_v4l2_h264_release_frame(rss_v4l2_h264_t *backend, rss_frame_t *frame)
     return ret;
 }
 
-/* Thread contract: called from RVD's ctrl thread while the encoder
- * thread is concurrently in poll/dequeue on the same handle. No
- * userspace lock on purpose: serialization is the AL codec command
- * path's job, the same interlock the vendor SDK's RequestIDR has
- * relied on in production for years. */
+/* The control thread only records the request.  The capture thread applies it
+ * alongside bitrate/GOP updates, so OpenIMP's codec command path remains
+ * single-threaded.  Repeated requests before the next poll coalesce. */
 int rss_v4l2_h264_request_idr(rss_v4l2_h264_t *backend)
 {
     if (!backend)
         return -EINVAL;
-    return OpenIMP_AVC_RequestIDR(backend->encoder);
+    atomic_store(&backend->pending_idr, 1);
+    return 0;
 }
 
 int rss_v4l2_h264_set_bitrate(rss_v4l2_h264_t *backend, uint32_t bitrate)
