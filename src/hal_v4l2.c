@@ -23,9 +23,10 @@
 
 #include "hal_internal.h"
 
-/* One buffer may be owned by AVPU while the ISP fills the other.  A third
- * full-resolution NV12 allocation adds 5.5 MiB of contiguous pressure on T41
- * without increasing this single-in-flight encoder's throughput. */
+/* Prefer two buffers so the ISP can fill one while AVPU owns the other.  The
+ * adapter itself keeps only one frame in flight, however, so drivers with a
+ * smaller contiguous pool can safely grant one buffer without changing the
+ * capture/encode ownership contract. */
 #define RSS_V4L2_BUFFER_COUNT 2U
 #define OPENIMP_AVC_PIXFMT_NV12 10U
 
@@ -350,9 +351,11 @@ int rss_v4l2_h264_create(rss_v4l2_h264_t **backend_out, const char *video_device
                          const rss_video_config_t *config)
 {
     rss_v4l2_h264_t *backend;
-    struct v4l2_requestbuffers request;
-    struct v4l2_format format;
+    struct v4l2_requestbuffers request = {0};
+    struct v4l2_format format = {0};
     uint32_t index;
+    uint32_t failed_index = UINT32_MAX;
+    const char *stage = "validate";
     int ret = -EINVAL;
 
     if (!backend_out || !config || config->codec != RSS_CODEC_H264 || !config->width ||
@@ -376,6 +379,7 @@ int rss_v4l2_h264_create(rss_v4l2_h264_t **backend_out, const char *video_device
     for (index = 0; index < RSS_V4L2_BUFFER_COUNT; ++index)
         backend->buffers[index].dma_fd = -1;
 
+    stage = "open";
     backend->video_fd =
         open(video_device ? video_device : "/dev/video0", O_RDWR | O_NONBLOCK | O_CLOEXEC);
     if (backend->video_fd < 0) {
@@ -391,6 +395,7 @@ int rss_v4l2_h264_create(rss_v4l2_h264_t **backend_out, const char *video_device
      * though the delivered NV12 is progressive.  Newer adapters accept ANY
      * too, making it the portable negotiation value. */
     format.fmt.pix.field = V4L2_FIELD_ANY;
+    stage = "s_fmt";
     ret = v4l2_ioctl(backend->video_fd, VIDIOC_S_FMT, &format);
     if (ret)
         goto fail;
@@ -407,23 +412,46 @@ int rss_v4l2_h264_create(rss_v4l2_h264_t **backend_out, const char *video_device
     request.count = RSS_V4L2_BUFFER_COUNT;
     request.type = backend->type;
     request.memory = V4L2_MEMORY_MMAP;
+    stage = "reqbufs";
     ret = v4l2_ioctl(backend->video_fd, VIDIOC_REQBUFS, &request);
+    if (ret == -ENOMEM && request.count > 0U) {
+        /* Legacy vb2 allocators may report the successfully allocated prefix
+         * with -ENOMEM.  Release that partial queue before requesting the one
+         * buffer this synchronous bridge can operate with. */
+        memset(&request, 0, sizeof(request));
+        request.type = backend->type;
+        request.memory = V4L2_MEMORY_MMAP;
+        stage = "reqbufs_release_partial";
+        ret = v4l2_ioctl(backend->video_fd, VIDIOC_REQBUFS, &request);
+        if (ret)
+            goto fail;
+        request.count = 1U;
+        stage = "reqbufs_single";
+        ret = v4l2_ioctl(backend->video_fd, VIDIOC_REQBUFS, &request);
+    }
     if (ret)
         goto fail;
-    if (request.count < RSS_V4L2_BUFFER_COUNT) {
+    if (!request.count) {
         ret = -ENOMEM;
         goto fail;
     }
-    backend->buffer_count = RSS_V4L2_BUFFER_COUNT;
+    if (request.count < RSS_V4L2_BUFFER_COUNT)
+        HAL_LOG_WARN("V4L2 buffer pool granted %u of %u buffers; using one-buffer mode",
+                     request.count, RSS_V4L2_BUFFER_COUNT);
+    backend->buffer_count = request.count < RSS_V4L2_BUFFER_COUNT
+                                ? request.count
+                                : RSS_V4L2_BUFFER_COUNT;
 
     for (index = 0; index < backend->buffer_count; ++index) {
         struct v4l2_exportbuffer export;
         struct v4l2_buffer buffer;
 
+        failed_index = index;
         memset(&buffer, 0, sizeof(buffer));
         buffer.type = backend->type;
         buffer.memory = V4L2_MEMORY_MMAP;
         buffer.index = index;
+        stage = "querybuf";
         ret = v4l2_ioctl(backend->video_fd, VIDIOC_QUERYBUF, &buffer);
         if (ret)
             goto fail;
@@ -431,6 +459,7 @@ int rss_v4l2_h264_create(rss_v4l2_h264_t **backend_out, const char *video_device
         export.type = backend->type;
         export.index = index;
         export.flags = O_CLOEXEC;
+        stage = "expbuf";
         ret = v4l2_ioctl(backend->video_fd, VIDIOC_EXPBUF, &export);
         if (ret)
             goto fail;
@@ -440,9 +469,11 @@ int rss_v4l2_h264_create(rss_v4l2_h264_t **backend_out, const char *video_device
             mmap(NULL, buffer.length, PROT_READ, MAP_SHARED, export.fd, 0);
         if (backend->buffers[index].address == MAP_FAILED) {
             backend->buffers[index].address = NULL;
+            stage = "mmap";
             ret = -errno;
             goto fail;
         }
+        stage = "import_dmabuf";
         ret = OpenIMP_AVC_ImportDMABuf(export.fd, buffer.length,
                                        &backend->buffers[index].physical_address);
         if (ret)
@@ -475,6 +506,8 @@ int rss_v4l2_h264_create(rss_v4l2_h264_t **backend_out, const char *video_device
             .entropy_coding = config->profile != 0,
         };
 
+        failed_index = UINT32_MAX;
+        stage = "avc_create";
         ret = OpenIMP_AVC_Create(&backend->encoder, &avc);
         if (ret)
             goto fail;
@@ -486,6 +519,11 @@ int rss_v4l2_h264_create(rss_v4l2_h264_t **backend_out, const char *video_device
     return 0;
 
 fail:
+    HAL_LOG_ERR("V4L2 AVC create failed: stage=%s device=%s request=%ux%u "
+                "negotiated=%ux%u size=%u buffers=%u index=%u ret=%d",
+                stage, video_device ? video_device : "/dev/video0", config->width,
+                config->height, format.fmt.pix.width, format.fmt.pix.height,
+                format.fmt.pix.sizeimage, request.count, failed_index, ret);
     rss_v4l2_h264_destroy(backend);
     return ret;
 }
