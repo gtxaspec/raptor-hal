@@ -23,9 +23,10 @@
 
 #include "hal_internal.h"
 
-/* One buffer may be owned by AVPU while the ISP fills the other.  A third
- * full-resolution NV12 allocation adds 5.5 MiB of contiguous pressure on T41
- * without increasing this single-in-flight encoder's throughput. */
+/* Prefer two buffers so the ISP can fill one while AVPU owns the other.  The
+ * adapter itself keeps only one frame in flight, however, so drivers with a
+ * smaller contiguous pool can safely grant one buffer without changing the
+ * capture/encode ownership contract. */
 #define RSS_V4L2_BUFFER_COUNT 2U
 #define OPENIMP_AVC_PIXFMT_NV12 10U
 
@@ -123,6 +124,7 @@ struct rss_v4l2_h264 {
     int source_requeue_pending;
     int packet_valid;
     int warned_key_mismatch;
+    atomic_uint pending_idr;
     atomic_uint pending_bitrate;
     atomic_uint target_bitrate;
     atomic_uint pending_gop;
@@ -189,6 +191,19 @@ static int apply_pending_bitrate(rss_v4l2_h264_t *backend)
         unsigned int empty = 0;
 
         atomic_compare_exchange_strong(&backend->pending_bitrate, &empty, bitrate);
+        return -EIO;
+    }
+    return 0;
+}
+
+static int apply_pending_idr(rss_v4l2_h264_t *backend)
+{
+    unsigned int pending = atomic_exchange(&backend->pending_idr, 0);
+
+    if (!pending)
+        return 0;
+    if (OpenIMP_AVC_RequestIDR(backend->encoder) != 0) {
+        atomic_store(&backend->pending_idr, 1);
         return -EIO;
     }
     return 0;
@@ -336,9 +351,11 @@ int rss_v4l2_h264_create(rss_v4l2_h264_t **backend_out, const char *video_device
                          const rss_video_config_t *config)
 {
     rss_v4l2_h264_t *backend;
-    struct v4l2_requestbuffers request;
-    struct v4l2_format format;
+    struct v4l2_requestbuffers request = {0};
+    struct v4l2_format format = {0};
     uint32_t index;
+    uint32_t failed_index = UINT32_MAX;
+    const char *stage = "validate";
     int ret = -EINVAL;
 
     if (!backend_out || !config || config->codec != RSS_CODEC_H264 || !config->width ||
@@ -353,6 +370,7 @@ int rss_v4l2_h264_create(rss_v4l2_h264_t **backend_out, const char *video_device
         return -ENOMEM;
     backend->video_fd = -1;
     backend->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    atomic_init(&backend->pending_idr, 0);
     atomic_init(&backend->pending_bitrate, 0);
     atomic_init(&backend->target_bitrate, config->bitrate);
     atomic_init(&backend->pending_gop, 0);
@@ -361,6 +379,7 @@ int rss_v4l2_h264_create(rss_v4l2_h264_t **backend_out, const char *video_device
     for (index = 0; index < RSS_V4L2_BUFFER_COUNT; ++index)
         backend->buffers[index].dma_fd = -1;
 
+    stage = "open";
     backend->video_fd =
         open(video_device ? video_device : "/dev/video0", O_RDWR | O_NONBLOCK | O_CLOEXEC);
     if (backend->video_fd < 0) {
@@ -372,7 +391,11 @@ int rss_v4l2_h264_create(rss_v4l2_h264_t **backend_out, const char *video_device
     format.fmt.pix.width = config->width;
     format.fmt.pix.height = config->height;
     format.fmt.pix.pixelformat = V4L2_PIX_FMT_NV12;
-    format.fmt.pix.field = V4L2_FIELD_NONE;
+    /* Legacy Ingenic queues normalize FIELD_ANY to their native marker even
+     * though the delivered NV12 is progressive.  Newer adapters accept ANY
+     * too, making it the portable negotiation value. */
+    format.fmt.pix.field = V4L2_FIELD_ANY;
+    stage = "s_fmt";
     ret = v4l2_ioctl(backend->video_fd, VIDIOC_S_FMT, &format);
     if (ret)
         goto fail;
@@ -389,23 +412,45 @@ int rss_v4l2_h264_create(rss_v4l2_h264_t **backend_out, const char *video_device
     request.count = RSS_V4L2_BUFFER_COUNT;
     request.type = backend->type;
     request.memory = V4L2_MEMORY_MMAP;
+    stage = "reqbufs";
     ret = v4l2_ioctl(backend->video_fd, VIDIOC_REQBUFS, &request);
+    if (ret == -ENOMEM && request.count > 0U) {
+        /* Legacy vb2 allocators may report the successfully allocated prefix
+         * with -ENOMEM.  Release that partial queue before requesting the one
+         * buffer this synchronous bridge can operate with. */
+        memset(&request, 0, sizeof(request));
+        request.type = backend->type;
+        request.memory = V4L2_MEMORY_MMAP;
+        stage = "reqbufs_release_partial";
+        ret = v4l2_ioctl(backend->video_fd, VIDIOC_REQBUFS, &request);
+        if (ret)
+            goto fail;
+        request.count = 1U;
+        stage = "reqbufs_single";
+        ret = v4l2_ioctl(backend->video_fd, VIDIOC_REQBUFS, &request);
+    }
     if (ret)
         goto fail;
-    if (request.count < RSS_V4L2_BUFFER_COUNT) {
+    if (!request.count) {
         ret = -ENOMEM;
         goto fail;
     }
-    backend->buffer_count = RSS_V4L2_BUFFER_COUNT;
+    if (request.count < RSS_V4L2_BUFFER_COUNT)
+        HAL_LOG_WARN("V4L2 buffer pool granted %u of %u buffers; using one-buffer mode",
+                     request.count, RSS_V4L2_BUFFER_COUNT);
+    backend->buffer_count =
+        request.count < RSS_V4L2_BUFFER_COUNT ? request.count : RSS_V4L2_BUFFER_COUNT;
 
     for (index = 0; index < backend->buffer_count; ++index) {
         struct v4l2_exportbuffer export;
         struct v4l2_buffer buffer;
 
+        failed_index = index;
         memset(&buffer, 0, sizeof(buffer));
         buffer.type = backend->type;
         buffer.memory = V4L2_MEMORY_MMAP;
         buffer.index = index;
+        stage = "querybuf";
         ret = v4l2_ioctl(backend->video_fd, VIDIOC_QUERYBUF, &buffer);
         if (ret)
             goto fail;
@@ -413,6 +458,7 @@ int rss_v4l2_h264_create(rss_v4l2_h264_t **backend_out, const char *video_device
         export.type = backend->type;
         export.index = index;
         export.flags = O_CLOEXEC;
+        stage = "expbuf";
         ret = v4l2_ioctl(backend->video_fd, VIDIOC_EXPBUF, &export);
         if (ret)
             goto fail;
@@ -422,9 +468,11 @@ int rss_v4l2_h264_create(rss_v4l2_h264_t **backend_out, const char *video_device
             mmap(NULL, buffer.length, PROT_READ, MAP_SHARED, export.fd, 0);
         if (backend->buffers[index].address == MAP_FAILED) {
             backend->buffers[index].address = NULL;
+            stage = "mmap";
             ret = -errno;
             goto fail;
         }
+        stage = "import_dmabuf";
         ret = OpenIMP_AVC_ImportDMABuf(export.fd, buffer.length,
                                        &backend->buffers[index].physical_address);
         if (ret)
@@ -457,6 +505,8 @@ int rss_v4l2_h264_create(rss_v4l2_h264_t **backend_out, const char *video_device
             .entropy_coding = config->profile != 0,
         };
 
+        failed_index = UINT32_MAX;
+        stage = "avc_create";
         ret = OpenIMP_AVC_Create(&backend->encoder, &avc);
         if (ret)
             goto fail;
@@ -468,6 +518,11 @@ int rss_v4l2_h264_create(rss_v4l2_h264_t **backend_out, const char *video_device
     return 0;
 
 fail:
+    HAL_LOG_ERR("V4L2 AVC create failed: stage=%s device=%s request=%ux%u "
+                "negotiated=%ux%u size=%u buffers=%u index=%u ret=%d",
+                stage, video_device ? video_device : "/dev/video0", config->width, config->height,
+                format.fmt.pix.width, format.fmt.pix.height, format.fmt.pix.sizeimage,
+                request.count, failed_index, ret);
     rss_v4l2_h264_destroy(backend);
     return ret;
 }
@@ -568,6 +623,9 @@ int rss_v4l2_h264_poll(rss_v4l2_h264_t *backend, uint32_t timeout_ms)
     ret = apply_pending_gop(backend);
     if (ret)
         return ret;
+    ret = apply_pending_idr(backend);
+    if (ret)
+        return ret;
     poll_fd.fd = backend->video_fd;
     poll_fd.events = POLLIN;
     poll_fd.revents = 0;
@@ -603,7 +661,10 @@ int rss_v4l2_h264_poll(rss_v4l2_h264_t *backend, uint32_t timeout_ms)
     frame.virtual_address = (uintptr_t)backend->buffers[buffer.index].address;
     frame.timestamp =
         (uint64_t)buffer.timestamp.tv_sec * 1000000U + (uint64_t)buffer.timestamp.tv_usec;
-    frame.cookie = (void *)(uintptr_t)buffer.index;
+    /* OpenIMP carries this through its metadata FIFO as an opaque pointer.
+     * A small integer such as buffer index 1 collides with the FIFO's low
+     * sentinel range; the per-buffer object is stable for the session. */
+    frame.cookie = &backend->buffers[buffer.index];
     ret = OpenIMP_AVC_Submit(backend->encoder, &frame);
     if (ret) {
         int queue_ret = requeue_source(backend);
@@ -670,16 +731,15 @@ int rss_v4l2_h264_release_frame(rss_v4l2_h264_t *backend, rss_frame_t *frame)
     return ret;
 }
 
-/* Thread contract: called from RVD's ctrl thread while the encoder
- * thread is concurrently in poll/dequeue on the same handle. No
- * userspace lock on purpose: serialization is the AL codec command
- * path's job, the same interlock the vendor SDK's RequestIDR has
- * relied on in production for years. */
+/* The control thread only records the request.  The capture thread applies it
+ * alongside bitrate/GOP updates, so OpenIMP's codec command path remains
+ * single-threaded.  Repeated requests before the next poll coalesce. */
 int rss_v4l2_h264_request_idr(rss_v4l2_h264_t *backend)
 {
     if (!backend)
         return -EINVAL;
-    return OpenIMP_AVC_RequestIDR(backend->encoder);
+    atomic_store(&backend->pending_idr, 1);
+    return 0;
 }
 
 int rss_v4l2_h264_set_bitrate(rss_v4l2_h264_t *backend, uint32_t bitrate)
