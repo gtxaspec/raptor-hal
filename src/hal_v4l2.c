@@ -438,9 +438,8 @@ int rss_v4l2_h264_create(rss_v4l2_h264_t **backend_out, const char *video_device
     if (request.count < RSS_V4L2_BUFFER_COUNT)
         HAL_LOG_WARN("V4L2 buffer pool granted %u of %u buffers; using one-buffer mode",
                      request.count, RSS_V4L2_BUFFER_COUNT);
-    backend->buffer_count = request.count < RSS_V4L2_BUFFER_COUNT
-                                ? request.count
-                                : RSS_V4L2_BUFFER_COUNT;
+    backend->buffer_count =
+        request.count < RSS_V4L2_BUFFER_COUNT ? request.count : RSS_V4L2_BUFFER_COUNT;
 
     for (index = 0; index < backend->buffer_count; ++index) {
         struct v4l2_exportbuffer export;
@@ -521,9 +520,9 @@ int rss_v4l2_h264_create(rss_v4l2_h264_t **backend_out, const char *video_device
 fail:
     HAL_LOG_ERR("V4L2 AVC create failed: stage=%s device=%s request=%ux%u "
                 "negotiated=%ux%u size=%u buffers=%u index=%u ret=%d",
-                stage, video_device ? video_device : "/dev/video0", config->width,
-                config->height, format.fmt.pix.width, format.fmt.pix.height,
-                format.fmt.pix.sizeimage, request.count, failed_index, ret);
+                stage, video_device ? video_device : "/dev/video0", config->width, config->height,
+                format.fmt.pix.width, format.fmt.pix.height, format.fmt.pix.sizeimage,
+                request.count, failed_index, ret);
     rss_v4l2_h264_destroy(backend);
     return ret;
 }
