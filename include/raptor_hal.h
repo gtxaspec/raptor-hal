@@ -480,6 +480,16 @@ typedef struct {
 /* Maximum number of sensors supported (IMPVI_MAIN, SEC, THR) */
 #define RSS_MAX_SENSORS 3
 
+/* T40 dual-sensor ISP input modes (IMPISPDualSensorMode) */
+typedef enum {
+    RSS_DUAL_MODE_DEFAULT = 0,  /* platform default: ALLCACHED on T40 */
+    RSS_DUAL_MODE_BYPASS,       /* dual-sensor module off */
+    RSS_DUAL_MODE_DIRECT,       /* no raw frame cache */
+    RSS_DUAL_MODE_SELECT,       /* output one sensor at a time */
+    RSS_DUAL_MODE_SINGLECACHED, /* cache one sensor's raw frames */
+    RSS_DUAL_MODE_ALLCACHED,    /* cache both sensors' raw frames */
+} rss_dual_mode_t;
+
 /* Multi-sensor configuration (passed to hal_init) */
 typedef struct {
     int sensor_count; /* 1, 2, or 3 */
@@ -497,6 +507,10 @@ typedef struct {
 
     /* Image stitching mode (T23 only, 0 = disabled) */
     int stitch_mode;
+
+    /* How the ISP takes frames from two sensors (T40 only) */
+    rss_dual_mode_t dual_mode;
+    int dual_select; /* RSS_DUAL_MODE_SELECT: index of the sensor output */
 } rss_multi_sensor_config_t;
 
 /* Exposure fields whose reads succeeded.  A measured value of zero is data,

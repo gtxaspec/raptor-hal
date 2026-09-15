@@ -1235,16 +1235,38 @@ static int hal_init(void *ctx, const rss_multi_sensor_config_t *multi_cfg)
      * AddSensor (imp_isp.h: "Have to call this function before
      * IMP_ISP_AddSensor"). The vendor samples call it right after
      * IMP_ISP_Open() and only for more than one sensor. T32/T33 set just
-     * sensor_num, as their sample does; T40 also selects ALLCACHED, which
-     * the eufy T8416 stock firmware runs. T41 and A1 have no such call.
+     * sensor_num, as their sample does; T40 also sets the dual-sensor mode,
+     * ALLCACHED unless configured (the eufy T8416 stock firmware runs
+     * ALLCACHED). T41 and A1 have no such call.
      */
+#if !defined(PLATFORM_T40)
+    if (c->sensor_count > 1 && multi_cfg->dual_mode != RSS_DUAL_MODE_DEFAULT)
+        HAL_LOG_WARN("dual_mode is T40-only, ignored");
+#endif
 #if defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40)
     if (c->sensor_count > 1) {
         IMPISPCameraInputMode cam_mode;
         memset(&cam_mode, 0, sizeof(cam_mode));
         cam_mode.sensor_num = (c->sensor_count >= 3) ? IMPISP_TOTAL_THR : IMPISP_TOTAL_TWO;
 #if defined(PLATFORM_T40)
-        cam_mode.dual_mode = IMPISP_DUALSENSOR_DUAL_ALLCACHED_MODE;
+        switch (multi_cfg->dual_mode) {
+        case RSS_DUAL_MODE_BYPASS:
+            cam_mode.dual_mode = IMPISP_DUALSENSOR_SIGLE_BYPASS_MODE;
+            break;
+        case RSS_DUAL_MODE_DIRECT:
+            cam_mode.dual_mode = IMPISP_DUALSENSOR_DUAL_DIRECT_MODE;
+            break;
+        case RSS_DUAL_MODE_SELECT:
+            cam_mode.dual_mode = IMPISP_DUALSENSOR_DUAL_SELECT_MODE;
+            break;
+        case RSS_DUAL_MODE_SINGLECACHED:
+            cam_mode.dual_mode = IMPISP_DUALSENSOR_DUAL_SINGLECACHED_MODE;
+            break;
+        default:
+            cam_mode.dual_mode = IMPISP_DUALSENSOR_DUAL_ALLCACHED_MODE;
+            break;
+        }
+        HAL_LOG_INFO("ISP dual sensor mode %d", (int)cam_mode.dual_mode);
 #endif
         HAL_CHECK(IMP_ISP_SetCameraInputMode(&cam_mode), err_isp_close);
     }
@@ -1260,6 +1282,17 @@ static int hal_init(void *ctx, const rss_multi_sensor_config_t *multi_cfg)
     HAL_CHECK(IMP_ISP_AddSensor((IMPVI_NUM)0, &c->imp_sensors[0]), err_isp_close);
     for (int i = 1; i < c->sensor_count; i++)
         HAL_CHECK(IMP_ISP_AddSensor((IMPVI_NUM)i, &c->imp_sensors[i]), err_del_sensors);
+#if defined(PLATFORM_T40)
+    /* select mode only, and after AddSensor (imp_isp.h) */
+    if (c->sensor_count > 1 && multi_cfg->dual_mode == RSS_DUAL_MODE_SELECT) {
+        int sel = multi_cfg->dual_select;
+        if (sel < 0 || sel >= c->sensor_count) {
+            HAL_LOG_WARN("dual_select %d out of range, using 0", sel);
+            sel = 0;
+        }
+        HAL_CHECK(IMP_ISP_SetCameraInputSelect((IMPVI_NUM)sel), err_del_sensors);
+    }
+#endif
     for (int i = 0; i < c->sensor_count; i++)
         HAL_CHECK(IMP_ISP_EnableSensor((IMPVI_NUM)i, &c->imp_sensors[i]), err_del_sensors);
 #elif defined(HAL_T23_MULTICAM)
