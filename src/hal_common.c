@@ -1250,13 +1250,18 @@ static int hal_init(void *ctx, const rss_multi_sensor_config_t *multi_cfg)
     }
 #endif
 
-    /* T32/T40/T41: IMPVI_NUM per sensor */
+    /*
+     * T32/T33/T40/T41: IMPVI_NUM per sensor. Register every sensor before
+     * enabling any, as the vendor T40 1.3.1 and T32/T33 2.2.0 samples do
+     * (AddSensor MAIN/SEC/THR, then EnableSensor). With sensor 0 enabled
+     * before the second AddSensor, the eufy T8416's second MIPI CSI host was
+     * never released from reset and its stream start failed.
+     */
     HAL_CHECK(IMP_ISP_AddSensor((IMPVI_NUM)0, &c->imp_sensors[0]), err_isp_close);
-    HAL_CHECK(IMP_ISP_EnableSensor((IMPVI_NUM)0, &c->imp_sensors[0]), err_del_sensors);
-    for (int i = 1; i < c->sensor_count; i++) {
+    for (int i = 1; i < c->sensor_count; i++)
         HAL_CHECK(IMP_ISP_AddSensor((IMPVI_NUM)i, &c->imp_sensors[i]), err_del_sensors);
+    for (int i = 0; i < c->sensor_count; i++)
         HAL_CHECK(IMP_ISP_EnableSensor((IMPVI_NUM)i, &c->imp_sensors[i]), err_del_sensors);
-    }
 #elif defined(HAL_T23_MULTICAM)
     /* T23 1.3.0: MIPI switch GPIO config must precede AddSensor */
     if (multi_cfg->mipi_switch.enable && c->sensor_count <= 1)
