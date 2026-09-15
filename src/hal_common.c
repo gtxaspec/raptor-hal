@@ -1230,6 +1230,26 @@ static int hal_init(void *ctx, const rss_multi_sensor_config_t *multi_cfg)
 
     /* Step 3: add and enable sensors */
 #if defined(HAL_MULTI_SENSOR)
+    /*
+     * Multi-sensor: the ISP needs the sensor count before the first
+     * AddSensor (imp_isp.h: "Have to call this function before
+     * IMP_ISP_AddSensor"). The vendor samples call it right after
+     * IMP_ISP_Open() and only for more than one sensor. T32/T33 set just
+     * sensor_num, as their sample does; T40 also selects ALLCACHED, which
+     * the eufy T8416 stock firmware runs. T41 and A1 have no such call.
+     */
+#if defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40)
+    if (c->sensor_count > 1) {
+        IMPISPCameraInputMode cam_mode;
+        memset(&cam_mode, 0, sizeof(cam_mode));
+        cam_mode.sensor_num = (c->sensor_count >= 3) ? IMPISP_TOTAL_THR : IMPISP_TOTAL_TWO;
+#if defined(PLATFORM_T40)
+        cam_mode.dual_mode = IMPISP_DUALSENSOR_DUAL_ALLCACHED_MODE;
+#endif
+        HAL_CHECK(IMP_ISP_SetCameraInputMode(&cam_mode), err_isp_close);
+    }
+#endif
+
     /* T32/T40/T41: IMPVI_NUM per sensor */
     HAL_CHECK(IMP_ISP_AddSensor((IMPVI_NUM)0, &c->imp_sensors[0]), err_isp_close);
     HAL_CHECK(IMP_ISP_EnableSensor((IMPVI_NUM)0, &c->imp_sensors[0]), err_del_sensors);
