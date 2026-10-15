@@ -135,7 +135,11 @@ int hal_isp_set_hflip(void *ctx, int enable)
     IMPISPHVFLIPAttr attr;
     memset(&attr, 0, sizeof(attr));
     attr.sensor_mode = (IMPISPHVFLIP)mode;
-    attr.isp_mode[0] = (IMPISPHVFLIP)mode;
+    /* The vendor tx-isp-t41 tuning core rejects the ioctl when both the
+     * sensor-layer and ISP-layer flips are nonzero at the same time
+     * ("ISP and Sensor are prohibited from using mirror or flip together",
+     * libimp surfaces it as -4090).  Apply the flip on the sensor side
+     * only; isp_mode[] stays zeroed by the memset above. */
     return IMP_ISP_Tuning_SetHVFLIP(IMPVI_MAIN, &attr);
 #endif
 }
@@ -165,7 +169,8 @@ int hal_isp_set_vflip(void *ctx, int enable)
     IMPISPHVFLIPAttr attr;
     memset(&attr, 0, sizeof(attr));
     attr.sensor_mode = (IMPISPHVFLIP)mode;
-    attr.isp_mode[0] = (IMPISPHVFLIP)mode;
+    /* Single-layer flip for the T41 vendor policy, see
+     * hal_isp_set_hflip() for the rationale. */
     return IMP_ISP_Tuning_SetHVFLIP(IMPVI_MAIN, &attr);
 #endif
 }
@@ -3263,7 +3268,8 @@ int hal_isp_set_hflip_n(void *ctx, int sensor_idx, int enable)
         IMPISPHVFLIPAttr attr;
         memset(&attr, 0, sizeof(attr));
         attr.sensor_mode = (IMPISPHVFLIP)mode;
-        attr.isp_mode[0] = (IMPISPHVFLIP)mode;
+        /* Single-layer flip for the T41 vendor policy, see
+         * hal_isp_set_hflip() for the rationale. */
         return IMP_ISP_Tuning_SetHVFLIP((IMPVI_NUM)sensor_idx, &attr);
 #elif defined(HAL_T23_MULTICAM)
         return IMP_ISP_MultiCamera_Tuning_SetHVFLIP((IMPVI_NUM)sensor_idx, mode);
@@ -3300,7 +3306,8 @@ int hal_isp_set_vflip_n(void *ctx, int sensor_idx, int enable)
         IMPISPHVFLIPAttr attr;
         memset(&attr, 0, sizeof(attr));
         attr.sensor_mode = (IMPISPHVFLIP)mode;
-        attr.isp_mode[0] = (IMPISPHVFLIP)mode;
+        /* Single-layer flip for the T41 vendor policy, see
+         * hal_isp_set_hflip() for the rationale. */
         return IMP_ISP_Tuning_SetHVFLIP((IMPVI_NUM)sensor_idx, &attr);
 #elif defined(HAL_T23_MULTICAM)
         return IMP_ISP_MultiCamera_Tuning_SetHVFLIP((IMPVI_NUM)sensor_idx, mode);
