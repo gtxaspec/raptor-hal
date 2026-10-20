@@ -551,9 +551,23 @@ int hal_isp_set_sinter_strength(void *ctx, int val)
     if (!g_hal_caps.has_sinter)
         return RSS_ERR_NOTSUP;
 
-#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
+#if defined(HAL_T23_MULTICAM)
+    return IMP_ISP_MultiCamera_Tuning_SetSinterStrength(IMPVI_MAIN, (uint32_t)v);
+#elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
     defined(PLATFORM_T30) || defined(PLATFORM_T31)
     return IMP_ISP_Tuning_SetSinterStrength((uint32_t)v);
+#elif defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) ||                    \
+    defined(PLATFORM_T41)
+    /* Gen3: read-modify-write — SetModule_Ratio commits the whole array, so a
+     * zeroed struct would leave every other module DISABLED (header example is
+     * Get->modify->Set for exactly this reason). */
+    IMPISPModuleRatioAttr ratio;
+    int ret = IMP_ISP_Tuning_GetModule_Ratio(IMPVI_MAIN, &ratio);
+    if (ret != 0)
+        return ret;
+    ratio.ratio_attr[IMP_ISP_MODULE_SINTER].en = IMPISP_TUNING_OPS_MODE_ENABLE;
+    ratio.ratio_attr[IMP_ISP_MODULE_SINTER].ratio = v;
+    return IMP_ISP_Tuning_SetModule_Ratio(IMPVI_MAIN, &ratio);
 #else
     (void)v;
     return RSS_ERR_NOTSUP;
@@ -575,9 +589,21 @@ int hal_isp_set_temper_strength(void *ctx, int val)
     if (!g_hal_caps.has_temper)
         return RSS_ERR_NOTSUP;
 
-#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
+#if defined(HAL_T23_MULTICAM)
+    return IMP_ISP_MultiCamera_Tuning_SetTemperStrength(IMPVI_MAIN, (uint32_t)v);
+#elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
     defined(PLATFORM_T30) || defined(PLATFORM_T31)
     return IMP_ISP_Tuning_SetTemperStrength((uint32_t)v);
+#elif defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) ||                    \
+    defined(PLATFORM_T41)
+    /* Gen3: read-modify-write — see hal_isp_set_sinter_strength */
+    IMPISPModuleRatioAttr ratio;
+    int ret = IMP_ISP_Tuning_GetModule_Ratio(IMPVI_MAIN, &ratio);
+    if (ret != 0)
+        return ret;
+    ratio.ratio_attr[IMP_ISP_MODULE_TEMPER].en = IMPISP_TUNING_OPS_MODE_ENABLE;
+    ratio.ratio_attr[IMP_ISP_MODULE_TEMPER].ratio = v;
+    return IMP_ISP_Tuning_SetModule_Ratio(IMPVI_MAIN, &ratio);
 #else
     (void)v;
     return RSS_ERR_NOTSUP;
@@ -626,6 +652,16 @@ int hal_isp_set_dpc_strength(void *ctx, int val)
 
 #if defined(PLATFORM_T23) || defined(PLATFORM_T31)
     return IMP_ISP_Tuning_SetDPC_Strength((unsigned int)v);
+#elif defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) ||                    \
+    defined(PLATFORM_T41)
+    /* Gen3: read-modify-write — see hal_isp_set_sinter_strength */
+    IMPISPModuleRatioAttr ratio;
+    int ret = IMP_ISP_Tuning_GetModule_Ratio(IMPVI_MAIN, &ratio);
+    if (ret != 0)
+        return ret;
+    ratio.ratio_attr[IMP_ISP_MODULE_DPC].en = IMPISP_TUNING_OPS_MODE_ENABLE;
+    ratio.ratio_attr[IMP_ISP_MODULE_DPC].ratio = v;
+    return IMP_ISP_Tuning_SetModule_Ratio(IMPVI_MAIN, &ratio);
 #else
     (void)v;
     return RSS_ERR_NOTSUP;
@@ -649,6 +685,16 @@ int hal_isp_set_drc_strength(void *ctx, int val)
 
 #if defined(PLATFORM_T21) || defined(PLATFORM_T23) || defined(PLATFORM_T31)
     return IMP_ISP_Tuning_SetDRC_Strength((unsigned int)v);
+#elif defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) ||                    \
+    defined(PLATFORM_T41)
+    /* Gen3: read-modify-write — see hal_isp_set_sinter_strength */
+    IMPISPModuleRatioAttr ratio;
+    int ret = IMP_ISP_Tuning_GetModule_Ratio(IMPVI_MAIN, &ratio);
+    if (ret != 0)
+        return ret;
+    ratio.ratio_attr[IMP_ISP_MODULE_DRC].en = IMPISP_TUNING_OPS_MODE_ENABLE;
+    ratio.ratio_attr[IMP_ISP_MODULE_DRC].ratio = v;
+    return IMP_ISP_Tuning_SetModule_Ratio(IMPVI_MAIN, &ratio);
 #else
     (void)v;
     return RSS_ERR_NOTSUP;
@@ -1193,9 +1239,28 @@ int hal_isp_get_sinter_strength(void *ctx, uint8_t *val)
     if (!val)
         return RSS_ERR_INVAL;
 
-    /* No getter API available on any generation for sinter strength */
+    if (!g_hal_caps.has_sinter)
+        return RSS_ERR_NOTSUP;
+
+#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    /* No getter API on Gen1/Gen2 for sinter strength */
     (void)val;
     return RSS_ERR_NOTSUP;
+#elif defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) ||                   \
+    defined(PLATFORM_T41)
+    /* Gen3: read back from the module ratio array */
+    IMPISPModuleRatioAttr ratio;
+    memset(&ratio, 0, sizeof(ratio));
+    int ret = IMP_ISP_Tuning_GetModule_Ratio(IMPVI_MAIN, &ratio);
+    if (ret != 0)
+        return ret;
+    *val = ratio.ratio_attr[IMP_ISP_MODULE_SINTER].ratio;
+    return RSS_OK;
+#else
+    (void)val;
+    return RSS_ERR_NOTSUP;
+#endif
 }
 
 int hal_isp_get_temper_strength(void *ctx, uint8_t *val)
@@ -1204,9 +1269,28 @@ int hal_isp_get_temper_strength(void *ctx, uint8_t *val)
     if (!val)
         return RSS_ERR_INVAL;
 
-    /* No getter API available on any generation for temper strength */
+    if (!g_hal_caps.has_temper)
+        return RSS_ERR_NOTSUP;
+
+#if defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                     \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    /* No getter API on Gen1/Gen2 for temper strength */
     (void)val;
     return RSS_ERR_NOTSUP;
+#elif defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) ||                   \
+    defined(PLATFORM_T41)
+    /* Gen3: read back from the module ratio array */
+    IMPISPModuleRatioAttr ratio;
+    memset(&ratio, 0, sizeof(ratio));
+    int ret = IMP_ISP_Tuning_GetModule_Ratio(IMPVI_MAIN, &ratio);
+    if (ret != 0)
+        return ret;
+    *val = ratio.ratio_attr[IMP_ISP_MODULE_TEMPER].ratio;
+    return RSS_OK;
+#else
+    (void)val;
+    return RSS_ERR_NOTSUP;
+#endif
 }
 
 int hal_isp_get_defog_strength(void *ctx, uint8_t *val)
@@ -1255,6 +1339,16 @@ int hal_isp_get_dpc_strength(void *ctx, uint8_t *val)
         return ret;
     *val = (uint8_t)ratio;
     return RSS_OK;
+#elif defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) ||                   \
+    defined(PLATFORM_T41)
+    /* Gen3: read back from the module ratio array */
+    IMPISPModuleRatioAttr ratio;
+    memset(&ratio, 0, sizeof(ratio));
+    int ret = IMP_ISP_Tuning_GetModule_Ratio(IMPVI_MAIN, &ratio);
+    if (ret != 0)
+        return ret;
+    *val = ratio.ratio_attr[IMP_ISP_MODULE_DPC].ratio;
+    return RSS_OK;
 #else
     (void)val;
     return RSS_ERR_NOTSUP;
@@ -1273,6 +1367,16 @@ int hal_isp_get_drc_strength(void *ctx, uint8_t *val)
     if (ret != 0)
         return ret;
     *val = (uint8_t)ratio;
+    return RSS_OK;
+#elif defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) ||                   \
+    defined(PLATFORM_T41)
+    /* Gen3: read back from the module ratio array */
+    IMPISPModuleRatioAttr ratio;
+    memset(&ratio, 0, sizeof(ratio));
+    int ret = IMP_ISP_Tuning_GetModule_Ratio(IMPVI_MAIN, &ratio);
+    if (ret != 0)
+        return ret;
+    *val = ratio.ratio_attr[IMP_ISP_MODULE_DRC].ratio;
     return RSS_OK;
 #else
     (void)val;
@@ -3405,7 +3509,7 @@ int hal_isp_set_sinter_strength_n(void *ctx, int sensor_idx, int val)
 {
     (void)ctx;
     uint8_t v = hal_clamp_u8(val);
-    /* Sinter only on T20-T31; T32/T40/T41 use SetModule_Ratio instead */
+    /* Sinter: Gen1/Gen2 direct tuning; Gen3 via SetModule_Ratio per sensor */
 #if defined(HAL_T23_MULTICAM)
     return IMP_ISP_MultiCamera_Tuning_SetSinterStrength((IMPVI_NUM)sensor_idx, v);
 #elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                   \
@@ -3413,6 +3517,16 @@ int hal_isp_set_sinter_strength_n(void *ctx, int sensor_idx, int val)
     if (sensor_idx != 0)
         return RSS_ERR_NOTSUP;
     return IMP_ISP_Tuning_SetSinterStrength((uint32_t)v);
+#elif defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) ||                   \
+    defined(PLATFORM_T41)
+    /* Gen3: read-modify-write — see hal_isp_set_sinter_strength */
+    IMPISPModuleRatioAttr ratio;
+    int ret = IMP_ISP_Tuning_GetModule_Ratio((IMPVI_NUM)sensor_idx, &ratio);
+    if (ret != 0)
+        return ret;
+    ratio.ratio_attr[IMP_ISP_MODULE_SINTER].en = IMPISP_TUNING_OPS_MODE_ENABLE;
+    ratio.ratio_attr[IMP_ISP_MODULE_SINTER].ratio = v;
+    return IMP_ISP_Tuning_SetModule_Ratio((IMPVI_NUM)sensor_idx, &ratio);
 #else
     (void)sensor_idx;
     (void)v;
@@ -3424,7 +3538,7 @@ int hal_isp_set_temper_strength_n(void *ctx, int sensor_idx, int val)
 {
     (void)ctx;
     uint8_t v = hal_clamp_u8(val);
-    /* Temper only on T20-T31; T32/T40/T41 use SetModule_Ratio instead */
+    /* Temper: Gen1/Gen2 direct tuning; Gen3 via SetModule_Ratio per sensor */
 #if defined(HAL_T23_MULTICAM)
     return IMP_ISP_MultiCamera_Tuning_SetTemperStrength((IMPVI_NUM)sensor_idx, v);
 #elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                   \
@@ -3432,6 +3546,16 @@ int hal_isp_set_temper_strength_n(void *ctx, int sensor_idx, int val)
     if (sensor_idx != 0)
         return RSS_ERR_NOTSUP;
     return IMP_ISP_Tuning_SetTemperStrength((uint32_t)v);
+#elif defined(PLATFORM_T32) || defined(PLATFORM_T33) || defined(PLATFORM_T40) ||                   \
+    defined(PLATFORM_T41)
+    /* Gen3: read-modify-write — see hal_isp_set_sinter_strength */
+    IMPISPModuleRatioAttr ratio;
+    int ret = IMP_ISP_Tuning_GetModule_Ratio((IMPVI_NUM)sensor_idx, &ratio);
+    if (ret != 0)
+        return ret;
+    ratio.ratio_attr[IMP_ISP_MODULE_TEMPER].en = IMPISP_TUNING_OPS_MODE_ENABLE;
+    ratio.ratio_attr[IMP_ISP_MODULE_TEMPER].ratio = v;
+    return IMP_ISP_Tuning_SetModule_Ratio((IMPVI_NUM)sensor_idx, &ratio);
 #else
     (void)sensor_idx;
     (void)v;
