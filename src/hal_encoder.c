@@ -1072,9 +1072,17 @@ int hal_enc_request_idr(void *ctx, int chn)
     int ret = IMP_Encoder_RequestIDR(chn);
     if (ret != 0)
         HAL_LOG_ERR("IMP_Encoder_RequestIDR(%d) failed: %d", chn, ret);
+    /*
+     * No flush on T10/T20: their FlushStream discards as many frames as
+     * there are pictures still waiting to be encoded (leftPics, where later
+     * SDKs count leftStreamFrames), so with input queued it throws away the
+     * IDR just requested and the stream carries on without one.
+     */
+#if !defined(PLATFORM_T10) && !defined(PLATFORM_T20)
     int flush_ret = IMP_Encoder_FlushStream(chn);
     if (flush_ret != 0)
         HAL_LOG_ERR("IMP_Encoder_FlushStream(%d) failed: %d", chn, flush_ret);
+#endif
     return ret;
 }
 
