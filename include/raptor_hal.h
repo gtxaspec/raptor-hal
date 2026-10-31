@@ -1206,6 +1206,7 @@ typedef struct rss_hal_ops {
     int (*ivs_poll_result)(void *ctx, int chn, uint32_t timeout_ms);
     int (*ivs_get_result)(void *ctx, int chn, void **result);
     int (*ivs_release_result)(void *ctx, int chn, void *result);
+    /* param: rss_ivs_move_param_t (move channel only) */
     int (*ivs_get_param)(void *ctx, int chn, void *param);
     int (*ivs_set_param)(void *ctx, int chn, void *param);
     int (*ivs_release_data)(void *ctx, int chn, void *data);

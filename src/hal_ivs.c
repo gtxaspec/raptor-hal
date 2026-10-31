@@ -183,16 +183,51 @@ int hal_ivs_release_result(void *ctx, int chn, void *result)
 /* ================================================================
  * PARAMETER GET / SET
  *
- * Get/set algorithm parameters on a running channel.
- * The param pointer is algorithm-specific (opaque to HAL).
+ * Get/set the parameters of a running motion detection channel.
+ * The param pointer is an rss_ivs_move_param_t.  The SDK reads and
+ * writes a full IMP_IVS_MoveParam, whose size depends on the SoC's
+ * IMPFrameInfo (0x448 to 0x458 bytes, larger than the RSS wrapper),
+ * so both calls go through an SDK-typed buffer and translate.
  * ================================================================ */
+
+#define HAL_IVS_MOVE_ROI_MAX(mp) ((int)(sizeof((mp).roiRect) / sizeof((mp).roiRect[0])))
 
 int hal_ivs_get_param(void *ctx, int chn, void *param)
 {
     (void)ctx;
     if (!param)
         return RSS_ERR_INVAL;
-    return IMP_IVS_GetParam(chn, param);
+
+    rss_ivs_move_param_t *rp = (rss_ivs_move_param_t *)param;
+    IMP_IVS_MoveParam mp;
+    memset(&mp, 0, sizeof(mp));
+
+    int ret = IMP_IVS_GetParam(chn, &mp);
+    if (ret != 0)
+        return ret;
+
+    int max = HAL_IVS_MOVE_ROI_MAX(mp);
+    if (max > RSS_IVS_MAX_ROI)
+        max = RSS_IVS_MAX_ROI;
+
+    memset(rp, 0, sizeof(*rp));
+    for (int i = 0; i < max; i++)
+        rp->sense[i] = mp.sense[i];
+    rp->skip_frame_count = mp.skipFrameCnt;
+    rp->width = mp.frameInfo.width;
+    rp->height = mp.frameInfo.height;
+    rp->roi_count = mp.roiRectCnt;
+    if (rp->roi_count < 0)
+        rp->roi_count = 0;
+    if (rp->roi_count > max)
+        rp->roi_count = max;
+    for (int i = 0; i < rp->roi_count; i++) {
+        rp->roi[i].p0_x = mp.roiRect[i].p0.x;
+        rp->roi[i].p0_y = mp.roiRect[i].p0.y;
+        rp->roi[i].p1_x = mp.roiRect[i].p1.x;
+        rp->roi[i].p1_y = mp.roiRect[i].p1.y;
+    }
+    return RSS_OK;
 }
 
 int hal_ivs_set_param(void *ctx, int chn, void *param)
@@ -200,7 +235,36 @@ int hal_ivs_set_param(void *ctx, int chn, void *param)
     (void)ctx;
     if (!param)
         return RSS_ERR_INVAL;
-    return IMP_IVS_SetParam(chn, param);
+
+    /* Start from the channel's current SDK params so fields the
+     * RSS wrapper does not carry (rest of frameInfo) are kept. */
+    const rss_ivs_move_param_t *rp = (const rss_ivs_move_param_t *)param;
+    IMP_IVS_MoveParam mp;
+    memset(&mp, 0, sizeof(mp));
+
+    int ret = IMP_IVS_GetParam(chn, &mp);
+    if (ret != 0)
+        return ret;
+
+    int max = HAL_IVS_MOVE_ROI_MAX(mp);
+    if (max > RSS_IVS_MAX_ROI)
+        max = RSS_IVS_MAX_ROI;
+    if (rp->roi_count < 0 || rp->roi_count > max)
+        return RSS_ERR_INVAL;
+
+    for (int i = 0; i < max; i++)
+        mp.sense[i] = rp->sense[i];
+    mp.skipFrameCnt = rp->skip_frame_count;
+    mp.frameInfo.width = rp->width;
+    mp.frameInfo.height = rp->height;
+    mp.roiRectCnt = rp->roi_count;
+    for (int i = 0; i < rp->roi_count; i++) {
+        mp.roiRect[i].p0.x = rp->roi[i].p0_x;
+        mp.roiRect[i].p0.y = rp->roi[i].p0_y;
+        mp.roiRect[i].p1.x = rp->roi[i].p1_x;
+        mp.roiRect[i].p1.y = rp->roi[i].p1_y;
+    }
+    return IMP_IVS_SetParam(chn, &mp);
 }
 
 /* ================================================================
