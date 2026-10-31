@@ -283,6 +283,16 @@ int hal_isp_set_antiflicker(void *ctx, rss_antiflicker_t mode)
  * fallback since SetWB is absent.
  * ================================================================ */
 
+#if defined(PLATFORM_T41)
+/* The offsets as they were before manual white balance displaced them.
+ * Leaving manual puts them back: switching to auto only changes the AWB
+ * mode, so without this the manual trim stays in the picture until the
+ * pipeline restarts -- measured, and the reason a crushed green survived
+ * `set-wb auto`. */
+static bool hal_awb_coefft_saved;
+static IMPISPCOEFFTWB hal_awb_coefft_pre_manual;
+#endif
+
 int hal_isp_set_wb(void *ctx, const rss_wb_config_t *wb_cfg)
 {
     (void)ctx;
@@ -292,30 +302,63 @@ int hal_isp_set_wb(void *ctx, const rss_wb_config_t *wb_cfg)
 
 #if defined(PLATFORM_T41)
     /*
-     * T41: Use Awb_SetRgbCoefft for manual gain control.
-     * Scene modes set via SetAwbAttr, manual gains via RgbCoefft.
+     * T41 manual white balance goes through the RGB channel offsets, not
+     * through the AWB gain pair. The header documents IMPISPWBAttr.gain_val
+     * as "awb gain on manual mode", but on this part it is inert: measured
+     * on silicon, rgain 1200 / bgain 40 reads back exactly and leaves the
+     * picture untouched (R/B 1.01, the same as auto), with the algorithm
+     * frozen or not. The offsets do bite -- 1024/1024/256 takes blue from
+     * 126.8 to 7.5. So the offsets are the only manual control there is.
+     *
+     * Read this same control before writing it, so a request that names no
+     * green keeps the green the ISP already has. Nothing fills
+     * rss_wb_config_t.g_gain from the AWB side -- that pair carries red and
+     * blue only -- so green used to arrive as 0, which is black, and no
+     * red/blue pair compensates for it. Zero means "leave this one alone"
+     * rather than a neutral we would have to invent; a freshly started
+     * pipeline reads 1025/1017/1015, so neutral is near 1024 but not on it.
      */
     if (wb_cfg->mode == RSS_WB_MANUAL) {
         IMPISPCOEFFTWB coefft;
         memset(&coefft, 0, sizeof(coefft));
+        int ret = IMP_ISP_Tuning_Awb_GetRgbCoefft(IMPVI_MAIN, &coefft);
+        if (ret != 0)
+            return ret;
+        if (!hal_awb_coefft_saved) {
+            hal_awb_coefft_pre_manual = coefft;
+            hal_awb_coefft_saved = true;
+        }
         coefft.rgb_coefft_wb_r = wb_cfg->r_gain;
         coefft.rgb_coefft_wb_b = wb_cfg->b_gain;
-        coefft.rgb_coefft_wb_g = wb_cfg->g_gain;
+        if (wb_cfg->g_gain)
+            coefft.rgb_coefft_wb_g = wb_cfg->g_gain;
         return IMP_ISP_Tuning_Awb_SetRgbCoefft(IMPVI_MAIN, &coefft);
     }
     {
+        if (hal_awb_coefft_saved) {
+            IMP_ISP_Tuning_Awb_SetRgbCoefft(IMPVI_MAIN, &hal_awb_coefft_pre_manual);
+            hal_awb_coefft_saved = false;
+        }
         IMPISPWBAttr attr;
         memset(&attr, 0, sizeof(attr));
+        int ret = IMP_ISP_Tuning_GetAwbAttr(IMPVI_MAIN, &attr);
+        if (ret != 0)
+            return ret;
         attr.mode = (IMPISPAWBMode)wb_cfg->mode;
         return IMP_ISP_Tuning_SetAwbAttr(IMPVI_MAIN, &attr);
     }
 #elif defined(HAL_HYBRID_SDK) || defined(PLATFORM_T40)
     /*
-     * T32/T40: Use SetAwbAttr for all modes.
+     * T32/T33/T40: the AWB gain pair, for every mode. Read before write --
+     * the struct also carries the freeze flag and the custom
+     * colour-temperature nodes, which a blind write would clear.
      */
     {
         IMPISPWBAttr awb_attr;
         memset(&awb_attr, 0, sizeof(awb_attr));
+        int ret = IMP_ISP_Tuning_GetAwbAttr(IMPVI_MAIN, &awb_attr);
+        if (ret != 0)
+            return ret;
         awb_attr.mode = (IMPISPAWBMode)wb_cfg->mode;
         awb_attr.gain_val.rgain = wb_cfg->r_gain;
         awb_attr.gain_val.bgain = wb_cfg->b_gain;
@@ -1021,6 +1064,23 @@ int hal_isp_get_wb(void *ctx, rss_wb_config_t *wb_cfg)
     wb_cfg->mode = (rss_wb_mode_t)attr.mode;
     wb_cfg->r_gain = attr.gain_val.rgain;
     wb_cfg->b_gain = attr.gain_val.bgain;
+#if defined(PLATFORM_T41)
+    /* Manual goes to the offsets on this part, so report those: otherwise
+     * the answer describes a different control, on a different scale, from
+     * the one the last set wrote. The ISP's own mode stays auto -- writing
+     * the offsets does not change it -- so having displaced them is what
+     * "manual" means here. */
+    if (hal_awb_coefft_saved) {
+        IMPISPCOEFFTWB coefft;
+        memset(&coefft, 0, sizeof(coefft));
+        if (IMP_ISP_Tuning_Awb_GetRgbCoefft(IMPVI_MAIN, &coefft) == 0) {
+            wb_cfg->mode = RSS_WB_MANUAL;
+            wb_cfg->r_gain = coefft.rgb_coefft_wb_r;
+            wb_cfg->g_gain = coefft.rgb_coefft_wb_g;
+            wb_cfg->b_gain = coefft.rgb_coefft_wb_b;
+        }
+    }
+#endif
     return RSS_OK;
 #else
     IMPISPWB wb;
@@ -1921,6 +1981,39 @@ int hal_isp_get_awb_rgb_coefft(void *ctx, uint16_t *rgain, uint16_t *ggain, uint
     *bgain = coefft.rgb_coefft_wb_b;
     return RSS_OK;
 #else
+    return RSS_ERR_NOTSUP;
+#endif
+}
+
+/*
+ * hal_isp_set_awb_rgb_coefft -- the AWB RGB channel offset, a post-AWB
+ * per-channel trim. Not white balance: that is hal_isp_set_wb, which goes
+ * to the AWB gain pair. Neutral is about 1024 on the T41 (measured: a
+ * freshly started pipeline reads 1025/1017/1015).
+ */
+int hal_isp_set_awb_rgb_coefft(void *ctx, uint16_t rgain, uint16_t ggain, uint16_t bgain)
+{
+    (void)ctx;
+
+#if defined(PLATFORM_T41)
+    IMPISPCOEFFTWB coefft;
+    memset(&coefft, 0, sizeof(coefft));
+    coefft.rgb_coefft_wb_r = rgain;
+    coefft.rgb_coefft_wb_g = ggain;
+    coefft.rgb_coefft_wb_b = bgain;
+    return IMP_ISP_Tuning_Awb_SetRgbCoefft(IMPVI_MAIN, &coefft);
+#elif defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23) ||                   \
+    defined(PLATFORM_T30) || defined(PLATFORM_T31)
+    IMPISPCOEFFTWB coefft;
+    memset(&coefft, 0, sizeof(coefft));
+    coefft.rgb_coefft_wb_r = rgain;
+    coefft.rgb_coefft_wb_g = ggain;
+    coefft.rgb_coefft_wb_b = bgain;
+    return IMP_ISP_Tuning_Awb_SetRgbCoefft(&coefft);
+#else
+    (void)rgain;
+    (void)ggain;
+    (void)bgain;
     return RSS_ERR_NOTSUP;
 #endif
 }

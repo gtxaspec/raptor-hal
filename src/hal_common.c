@@ -242,6 +242,7 @@ extern int hal_isp_get_awb_zone(void *ctx, uint8_t zone_r[225], uint8_t zone_g[2
                                 uint8_t zone_b[225]);
 extern int hal_isp_get_awb_ct(void *ctx, uint32_t *color_temp);
 extern int hal_isp_get_awb_rgb_coefft(void *ctx, uint16_t *rgain, uint16_t *ggain, uint16_t *bgain);
+extern int hal_isp_set_awb_rgb_coefft(void *ctx, uint16_t rgain, uint16_t ggain, uint16_t bgain);
 extern int hal_isp_get_awb_hist(void *ctx, void *hist_data);
 extern int hal_isp_set_gamma(void *ctx, const uint16_t gamma[129]);
 extern int hal_isp_get_gamma(void *ctx, uint16_t gamma[129]);
@@ -860,6 +861,7 @@ static const rss_hal_ops_t g_ops = {
     .isp_get_awb_zone = hal_isp_get_awb_zone,
     .isp_get_awb_ct = hal_isp_get_awb_ct,
     .isp_get_awb_rgb_coefft = hal_isp_get_awb_rgb_coefft,
+    .isp_set_awb_rgb_coefft = hal_isp_set_awb_rgb_coefft,
     .isp_get_awb_hist = hal_isp_get_awb_hist,
 
     /* ISP gamma / CCM / WDR */

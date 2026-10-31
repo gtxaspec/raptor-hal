@@ -989,6 +989,7 @@ typedef struct rss_hal_ops {
                             uint8_t zone_b[225]);
     int (*isp_get_awb_ct)(void *ctx, uint32_t *color_temp);
     int (*isp_get_awb_rgb_coefft)(void *ctx, uint16_t *rgain, uint16_t *ggain, uint16_t *bgain);
+    int (*isp_set_awb_rgb_coefft)(void *ctx, uint16_t rgain, uint16_t ggain, uint16_t bgain);
     int (*isp_get_awb_hist)(void *ctx, void *hist_data);
 
     /* ISP gamma / CCM / WDR */
