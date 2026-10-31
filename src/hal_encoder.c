@@ -2088,6 +2088,27 @@ int hal_enc_get_rmem_info(void *ctx, uintptr_t *virt_base, uint32_t *size, uint3
 }
 
 /*
+ * OpenIMP can use rmem for DMA while returning a finalized stream from normal
+ * process memory.  Its optional runtime hook distinguishes that case.  The
+ * vendor library has no hook and returns its stream directly from /dev/rmem,
+ * so retain the mapping check for that ABI.
+ */
+extern int OpenIMP_Encoder_StreamIsRmem(int chn) __attribute__((weak));
+
+int hal_enc_stream_is_rmem(void *ctx, int chn)
+{
+    uintptr_t virt_base;
+    uint32_t size;
+    uint32_t mmap_offset;
+
+    if (OpenIMP_Encoder_StreamIsRmem)
+        return OpenIMP_Encoder_StreamIsRmem(chn) ? RSS_OK : RSS_ERR_NOTSUP;
+
+    return hal_enc_get_rmem_info(ctx, &virt_base, &size, &mmap_offset) == RSS_OK ? RSS_OK
+                                                                                 : RSS_ERR_NOTSUP;
+}
+
+/*
  * hal_enc_inject_stream_shm -- inject POSIX SHM as encoder output buffer.
  *
  * Runtime-probes the libimp channel struct by writing a marker via
