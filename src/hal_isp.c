@@ -231,7 +231,9 @@ int hal_isp_set_antiflicker(void *ctx, rss_antiflicker_t mode)
         memset(&attr, 0, sizeof(attr));
         switch (mode) {
         case RSS_ANTIFLICKER_50HZ:
-            attr.mode = IMPISP_ANTIFLICKER_NORMAL_MODE;
+            /* AUTO preserves short bright-scene exposures while still
+             * quantizing longer integrations to the selected mains rate. */
+            attr.mode = IMPISP_ANTIFLICKER_AUTO_MODE;
 #if defined(HAL_HYBRID_SDK)
             attr.freq = IMPISP_ANTIFLICKER_FREQ_50HZ;
 #else
@@ -239,7 +241,7 @@ int hal_isp_set_antiflicker(void *ctx, rss_antiflicker_t mode)
 #endif
             break;
         case RSS_ANTIFLICKER_60HZ:
-            attr.mode = IMPISP_ANTIFLICKER_NORMAL_MODE;
+            attr.mode = IMPISP_ANTIFLICKER_AUTO_MODE;
 #if defined(HAL_HYBRID_SDK)
             attr.freq = IMPISP_ANTIFLICKER_FREQ_60HZ;
 #else
@@ -3357,7 +3359,8 @@ int hal_isp_set_antiflicker_n(void *ctx, int sensor_idx, rss_antiflicker_t mode)
         memset(&attr, 0, sizeof(attr));
         switch (mode) {
         case RSS_ANTIFLICKER_50HZ:
-            attr.mode = IMPISP_ANTIFLICKER_NORMAL_MODE;
+            /* Match the single-sensor Gen3 policy above. */
+            attr.mode = IMPISP_ANTIFLICKER_AUTO_MODE;
 #if defined(HAL_HYBRID_SDK)
             attr.freq = IMPISP_ANTIFLICKER_FREQ_50HZ;
 #else
@@ -3365,7 +3368,7 @@ int hal_isp_set_antiflicker_n(void *ctx, int sensor_idx, rss_antiflicker_t mode)
 #endif
             break;
         case RSS_ANTIFLICKER_60HZ:
-            attr.mode = IMPISP_ANTIFLICKER_NORMAL_MODE;
+            attr.mode = IMPISP_ANTIFLICKER_AUTO_MODE;
 #if defined(HAL_HYBRID_SDK)
             attr.freq = IMPISP_ANTIFLICKER_FREQ_60HZ;
 #else
