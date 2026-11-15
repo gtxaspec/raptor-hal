@@ -218,6 +218,12 @@ int hal_isp_set_sensor_fps(void *ctx, uint32_t fps_num, uint32_t fps_den)
  *
  * Gen1/Gen2: SetAntiFlickerAttr(IMPISPAntiflickerAttr attr)  -- by value
  * Gen3:      SetAntiFlickerAttr(IMPVI_NUM, IMPISPAntiflickerAttr*)
+ *
+ * Gen3 uses AUTO_MODE, not NORMAL_MODE.  NORMAL never lets integration
+ * time drop below one flicker period (10 ms at 50 Hz, 8.3 ms at 60 Hz),
+ * so a sunlit scene saturates with gain already at minimum.  AUTO keeps
+ * the flicker-period steps for longer exposures but may go down to the
+ * sensor minimum when the scene is bright enough not to need them.
  * ================================================================ */
 
 int hal_isp_set_antiflicker(void *ctx, rss_antiflicker_t mode)
@@ -231,7 +237,7 @@ int hal_isp_set_antiflicker(void *ctx, rss_antiflicker_t mode)
         memset(&attr, 0, sizeof(attr));
         switch (mode) {
         case RSS_ANTIFLICKER_50HZ:
-            attr.mode = IMPISP_ANTIFLICKER_NORMAL_MODE;
+            attr.mode = IMPISP_ANTIFLICKER_AUTO_MODE;
 #if defined(HAL_HYBRID_SDK)
             attr.freq = IMPISP_ANTIFLICKER_FREQ_50HZ;
 #else
@@ -239,7 +245,7 @@ int hal_isp_set_antiflicker(void *ctx, rss_antiflicker_t mode)
 #endif
             break;
         case RSS_ANTIFLICKER_60HZ:
-            attr.mode = IMPISP_ANTIFLICKER_NORMAL_MODE;
+            attr.mode = IMPISP_ANTIFLICKER_AUTO_MODE;
 #if defined(HAL_HYBRID_SDK)
             attr.freq = IMPISP_ANTIFLICKER_FREQ_60HZ;
 #else
@@ -3450,7 +3456,7 @@ int hal_isp_set_antiflicker_n(void *ctx, int sensor_idx, rss_antiflicker_t mode)
         memset(&attr, 0, sizeof(attr));
         switch (mode) {
         case RSS_ANTIFLICKER_50HZ:
-            attr.mode = IMPISP_ANTIFLICKER_NORMAL_MODE;
+            attr.mode = IMPISP_ANTIFLICKER_AUTO_MODE;
 #if defined(HAL_HYBRID_SDK)
             attr.freq = IMPISP_ANTIFLICKER_FREQ_50HZ;
 #else
@@ -3458,7 +3464,7 @@ int hal_isp_set_antiflicker_n(void *ctx, int sensor_idx, rss_antiflicker_t mode)
 #endif
             break;
         case RSS_ANTIFLICKER_60HZ:
-            attr.mode = IMPISP_ANTIFLICKER_NORMAL_MODE;
+            attr.mode = IMPISP_ANTIFLICKER_AUTO_MODE;
 #if defined(HAL_HYBRID_SDK)
             attr.freq = IMPISP_ANTIFLICKER_FREQ_60HZ;
 #else
