@@ -106,7 +106,27 @@ int hal_isp_set_hue(void *ctx, int val)
  *
  * The HAL exposes separate set_hflip / set_vflip.  We cache both
  * states in the context and re-apply the combined flip on each call.
+ *
+ * T32/T41: the SDK forbids sensor and ISP flip at the same time
+ * ("Sensor and ISP cannot mirror or flip at the same time"); the
+ * kernel rejects such a request with "ISP and Sensor are prohibited
+ * from using mirr or flip together!!!" and libimp returns -4090.
+ * Many sensor drivers (e.g. os04d10) have no sensor flip at all, so
+ * flip in the ISP only, on every ISP channel so the main stream and
+ * the substream agree.
  * ================================================================ */
+
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T41)
+static void hal_isp_hvflip_attr_fill(IMPISPHVFLIPAttr *attr, int mode)
+{
+    size_t i;
+
+    memset(attr, 0, sizeof(*attr));
+    attr->sensor_mode = IMPISP_FLIP_NORMAL_MODE;
+    for (i = 0; i < sizeof(attr->isp_mode) / sizeof(attr->isp_mode[0]); i++)
+        attr->isp_mode[i] = (IMPISPHVFLIP)mode;
+}
+#endif
 
 int hal_isp_set_hflip(void *ctx, int enable)
 {
@@ -133,9 +153,7 @@ int hal_isp_set_hflip(void *ctx, int enable)
 #elif defined(HAL_HYBRID_SDK) || defined(PLATFORM_T41)
     int mode = (c->hflip_state[0] ? 1 : 0) | (c->vflip_state[0] ? 2 : 0);
     IMPISPHVFLIPAttr attr;
-    memset(&attr, 0, sizeof(attr));
-    attr.sensor_mode = (IMPISPHVFLIP)mode;
-    attr.isp_mode[0] = (IMPISPHVFLIP)mode;
+    hal_isp_hvflip_attr_fill(&attr, mode);
     return IMP_ISP_Tuning_SetHVFLIP(IMPVI_MAIN, &attr);
 #endif
 }
@@ -163,9 +181,7 @@ int hal_isp_set_vflip(void *ctx, int enable)
 #elif defined(HAL_HYBRID_SDK) || defined(PLATFORM_T41)
     int mode = (c->hflip_state[0] ? 1 : 0) | (c->vflip_state[0] ? 2 : 0);
     IMPISPHVFLIPAttr attr;
-    memset(&attr, 0, sizeof(attr));
-    attr.sensor_mode = (IMPISPHVFLIP)mode;
-    attr.isp_mode[0] = (IMPISPHVFLIP)mode;
+    hal_isp_hvflip_attr_fill(&attr, mode);
     return IMP_ISP_Tuning_SetHVFLIP(IMPVI_MAIN, &attr);
 #endif
 }
@@ -929,8 +945,11 @@ int hal_isp_get_hvflip(void *ctx, int *hflip, int *vflip)
     int ret = IMP_ISP_Tuning_GetHVFLIP(IMPVI_MAIN, &attr);
     if (ret != 0)
         return ret;
-    *hflip = ((int)attr.sensor_mode & 1) ? 1 : 0;
-    *vflip = ((int)attr.sensor_mode & 2) ? 1 : 0;
+    /* Flips are applied in the ISP (see hal_isp_hvflip_attr_fill); also
+     * honour a sensor-side flip in case something else set one. */
+    int mode = (int)attr.isp_mode[0] | (int)attr.sensor_mode;
+    *hflip = (mode & 1) ? 1 : 0;
+    *vflip = (mode & 2) ? 1 : 0;
     return RSS_OK;
 #endif
 }
@@ -3354,9 +3373,7 @@ int hal_isp_set_hflip_n(void *ctx, int sensor_idx, int enable)
         return IMP_ISP_Tuning_SetHVFLIP((IMPVI_NUM)sensor_idx, &hvflip);
 #elif defined(HAL_HYBRID_SDK) || defined(PLATFORM_T41)
         IMPISPHVFLIPAttr attr;
-        memset(&attr, 0, sizeof(attr));
-        attr.sensor_mode = (IMPISPHVFLIP)mode;
-        attr.isp_mode[0] = (IMPISPHVFLIP)mode;
+        hal_isp_hvflip_attr_fill(&attr, mode);
         return IMP_ISP_Tuning_SetHVFLIP((IMPVI_NUM)sensor_idx, &attr);
 #elif defined(HAL_T23_MULTICAM)
         return IMP_ISP_MultiCamera_Tuning_SetHVFLIP((IMPVI_NUM)sensor_idx, mode);
@@ -3391,9 +3408,7 @@ int hal_isp_set_vflip_n(void *ctx, int sensor_idx, int enable)
         return IMP_ISP_Tuning_SetHVFLIP((IMPVI_NUM)sensor_idx, &hvflip);
 #elif defined(HAL_HYBRID_SDK) || defined(PLATFORM_T41)
         IMPISPHVFLIPAttr attr;
-        memset(&attr, 0, sizeof(attr));
-        attr.sensor_mode = (IMPISPHVFLIP)mode;
-        attr.isp_mode[0] = (IMPISPHVFLIP)mode;
+        hal_isp_hvflip_attr_fill(&attr, mode);
         return IMP_ISP_Tuning_SetHVFLIP((IMPVI_NUM)sensor_idx, &attr);
 #elif defined(HAL_T23_MULTICAM)
         return IMP_ISP_MultiCamera_Tuning_SetHVFLIP((IMPVI_NUM)sensor_idx, mode);
