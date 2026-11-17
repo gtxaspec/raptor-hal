@@ -99,6 +99,7 @@ struct rss_hal_ctx {
     HD_PATH_ID prc_ctrl;
     bool cap_configured;
     int running;
+    uint32_t cap_fps;
     int hflip, vflip;
     uint32_t base_mirror, base_flip;
     /* Image controls, raptor's 0-255 scale (128 = neutral); -1 = unset. */
@@ -540,6 +541,7 @@ static int cap_configure(rss_hal_ctx_t *ctx, const rss_video_config_t *cfg)
     if (hd_videocap_set(ctx->cap_path, HD_VIDEOCAP_PARAM_OUT, &out) != HD_OK)
         return RSS_ERR_INVAL;
     ctx->cap_configured = true;
+    ctx->cap_fps = cfg->fps_den ? cfg->fps_num / cfg->fps_den : cfg->fps_num;
     return RSS_OK;
 }
 
@@ -635,6 +637,13 @@ static int set_enc_out(nvt_chn_t *c)
 {
     HD_VIDEOENC_OUT out = {0};
 
+    if (c->cfg.codec == RSS_CODEC_JPEG) {
+        out.codec_type = HD_CODEC_TYPE_JPEG;
+        out.jpeg.image_quality = c->cfg.init_qp > 0 ? (UINT32)c->cfg.init_qp : 75;
+        return hd_videoenc_set(c->enc, HD_VIDEOENC_PARAM_OUT_ENC_PARAM, &out) == HD_OK
+                   ? RSS_OK
+                   : RSS_ERR_INVAL;
+    }
     if (c->cfg.codec == RSS_CODEC_H265) {
         out.codec_type = HD_CODEC_TYPE_H265;
         out.h26x.profile = HD_H265E_MAIN_PROFILE;
@@ -669,7 +678,8 @@ static int nvt_enc_create_channel(void *vctx, int chn, const rss_video_config_t 
         return RSS_ERR_BUSY;
     if (c->open)
         return RSS_ERR_BUSY;
-    if (cfg->codec != RSS_CODEC_H264 && cfg->codec != RSS_CODEC_H265)
+    if (cfg->codec != RSS_CODEC_H264 && cfg->codec != RSS_CODEC_H265 &&
+        cfg->codec != RSS_CODEC_JPEG)
         return RSS_ERR_NOTSUP;
 
     pthread_mutex_lock(&ctx->lock);
@@ -692,6 +702,10 @@ static int nvt_enc_create_channel(void *vctx, int chn, const rss_video_config_t 
     pout.pxlfmt = HD_VIDEO_PXLFMT_YUV420;
     pout.dir = HD_VIDEO_DIR_NONE;
     pout.frc = HD_VIDEO_FRC_RATIO(1, 1);
+    /* A snapshot channel takes only every n-th frame from the ISP, so the
+     * JPEG engine never sees the full sensor rate. */
+    if (cfg->codec == RSS_CODEC_JPEG && ctx->cap_fps > c->cfg.fps_num)
+        pout.frc = HD_VIDEO_FRC_RATIO(c->cfg.fps_num, ctx->cap_fps);
     if (hd_videoproc_set(c->prc, HD_VIDEOPROC_PARAM_OUT, &pout) != HD_OK) {
         LOG_ERR("chn%d: videoproc output %ux%u rejected", chn, cfg->width, cfg->height);
         goto close_prc;
@@ -699,11 +713,14 @@ static int nvt_enc_create_channel(void *vctx, int chn, const rss_video_config_t 
 
     if (hd_videoenc_open(HD_VIDEOENC_IN(0, chn), HD_VIDEOENC_OUT(0, chn), &c->enc) != HD_OK)
         goto close_prc;
-    pcfg.max_mem.codec_type =
-        cfg->codec == RSS_CODEC_H265 ? HD_CODEC_TYPE_H265 : HD_CODEC_TYPE_H264;
+    pcfg.max_mem.codec_type = cfg->codec == RSS_CODEC_JPEG   ? HD_CODEC_TYPE_JPEG
+                              : cfg->codec == RSS_CODEC_H265 ? HD_CODEC_TYPE_H265
+                                                             : HD_CODEC_TYPE_H264;
     pcfg.max_mem.max_dim.w = cfg->width;
     pcfg.max_mem.max_dim.h = cfg->height;
     pcfg.max_mem.bitrate = cfg->max_bitrate > cfg->bitrate ? cfg->max_bitrate : cfg->bitrate;
+    if (!pcfg.max_mem.bitrate) /* JPEG: size the buffer as for a busy stream */
+        pcfg.max_mem.bitrate = 8000000;
     pcfg.max_mem.enc_buf_ms = 3000;
     pcfg.max_mem.svc_layer = HD_SVC_DISABLE;
     pcfg.max_mem.ltr = FALSE;
@@ -718,7 +735,8 @@ static int nvt_enc_create_channel(void *vctx, int chn, const rss_video_config_t 
     ein.dim.h = cfg->height;
     ein.frc = HD_VIDEO_FRC_RATIO(1, 1);
     if (hd_videoenc_set(c->enc, HD_VIDEOENC_PARAM_IN, &ein) != HD_OK || set_enc_out(c) != RSS_OK ||
-        set_rc(c, cfg->rc_mode, cfg->bitrate ? cfg->bitrate : 4000000) != RSS_OK) {
+        (cfg->codec != RSS_CODEC_JPEG &&
+         set_rc(c, cfg->rc_mode, cfg->bitrate ? cfg->bitrate : 4000000) != RSS_OK)) {
         LOG_ERR("chn%d: encoder parameters rejected", chn);
         goto close_enc;
     }
@@ -728,8 +746,10 @@ static int nvt_enc_create_channel(void *vctx, int chn, const rss_video_config_t 
     c->open = true;
     ret = RSS_OK;
     LOG_INFO("chn%d: %s %ux%u %u/%u fps %u bps", chn,
-             cfg->codec == RSS_CODEC_H265 ? "H.265" : "H.264", cfg->width, cfg->height,
-             c->cfg.fps_num, c->cfg.fps_den, c->cfg.bitrate);
+             cfg->codec == RSS_CODEC_JPEG   ? "JPEG"
+             : cfg->codec == RSS_CODEC_H265 ? "H.265"
+                                            : "H.264",
+             cfg->width, cfg->height, c->cfg.fps_num, c->cfg.fps_den, c->cfg.bitrate);
     goto out;
 
 close_enc:
@@ -850,6 +870,8 @@ static int nvt_enc_poll(void *vctx, int chn, uint32_t timeout_ms)
 
 static rss_nal_type_t nal_type(rss_codec_t codec, HD_NALU_TYPE t)
 {
+    if (codec == RSS_CODEC_JPEG)
+        return RSS_NAL_JPEG_FRAME;
     if (codec == RSS_CODEC_H265) {
         switch (t.h265_type) {
         case H265_NALU_TYPE_VPS:
@@ -915,7 +937,8 @@ static int nvt_enc_get_frame(void *vctx, int chn, rss_frame_t *frame)
     frame->codec = c->cfg.codec;
     frame->timestamp = (int64_t)c->bs.timestamp;
     frame->seq = c->seq++;
-    frame->is_key = c->bs.frame_type == HD_FRAME_TYPE_IDR || c->bs.frame_type == HD_FRAME_TYPE_I;
+    frame->is_key = c->cfg.codec == RSS_CODEC_JPEG || c->bs.frame_type == HD_FRAME_TYPE_IDR ||
+                    c->bs.frame_type == HD_FRAME_TYPE_I;
     frame->_priv = c;
     return RSS_OK;
 }
@@ -1181,6 +1204,62 @@ static int nvt_isp_set_running_mode(void *ctx, rss_isp_mode_t mode)
     return img_set(ctx, NVT_IMG_NIGHT, mode == RSS_ISP_NIGHT);
 }
 
+/* Getters answer from the cache; unset controls read as neutral. */
+static int img_get(void *vctx, int which)
+{
+    rss_hal_ctx_t *ctx = vctx;
+    int v;
+
+    pthread_mutex_lock(&ctx->lock);
+    v = ctx->img[which];
+    pthread_mutex_unlock(&ctx->lock);
+    return v;
+}
+
+#define NVT_IMG_GETTER_U8(fn, which)                                                               \
+    static int fn(void *ctx, uint8_t *val)                                                         \
+    {                                                                                              \
+        int v = img_get(ctx, which);                                                               \
+        if (!val)                                                                                  \
+            return RSS_ERR_INVAL;                                                                  \
+        *val = (uint8_t)(v < 0 ? 128 : v > 255 ? 255 : v);                                         \
+        return RSS_OK;                                                                             \
+    }
+
+NVT_IMG_GETTER_U8(nvt_isp_get_brightness, NVT_IMG_BRIGHTNESS)
+NVT_IMG_GETTER_U8(nvt_isp_get_contrast, NVT_IMG_CONTRAST)
+NVT_IMG_GETTER_U8(nvt_isp_get_saturation, NVT_IMG_SATURATION)
+NVT_IMG_GETTER_U8(nvt_isp_get_sharpness, NVT_IMG_SHARPNESS)
+NVT_IMG_GETTER_U8(nvt_isp_get_hue, NVT_IMG_HUE)
+NVT_IMG_GETTER_U8(nvt_isp_get_sinter, NVT_IMG_NR)
+NVT_IMG_GETTER_U8(nvt_isp_get_temper, NVT_IMG_3DNR)
+
+static int nvt_isp_get_ae_comp(void *ctx, int *val)
+{
+    int v = img_get(ctx, NVT_IMG_AE_COMP);
+    if (!val)
+        return RSS_ERR_INVAL;
+    *val = v < 0 ? 128 : v;
+    return RSS_OK;
+}
+
+static int nvt_isp_get_running_mode(void *ctx, rss_isp_mode_t *mode)
+{
+    if (!mode)
+        return RSS_ERR_INVAL;
+    *mode = img_get(ctx, NVT_IMG_NIGHT) > 0 ? RSS_ISP_NIGHT : RSS_ISP_DAY;
+    return RSS_OK;
+}
+
+static int nvt_isp_get_antiflicker(void *ctx, rss_antiflicker_t *mode)
+{
+    int v = img_get(ctx, NVT_IMG_ANTIFLICKER);
+    if (!mode)
+        return RSS_ERR_INVAL;
+    *mode = v < 0 ? RSS_ANTIFLICKER_OFF : (rss_antiflicker_t)v;
+    return RSS_OK;
+}
+
 static int nvt_isp_set_hflip(void *vctx, int enable)
 {
     rss_hal_ctx_t *ctx = vctx;
@@ -1234,6 +1313,16 @@ static const rss_hal_ops_t nvt_ops = {
     .isp_set_ae_comp = nvt_isp_set_ae_comp,
     .isp_set_antiflicker = nvt_isp_set_antiflicker,
     .isp_set_running_mode = nvt_isp_set_running_mode,
+    .isp_get_brightness = nvt_isp_get_brightness,
+    .isp_get_contrast = nvt_isp_get_contrast,
+    .isp_get_saturation = nvt_isp_get_saturation,
+    .isp_get_sharpness = nvt_isp_get_sharpness,
+    .isp_get_hue = nvt_isp_get_hue,
+    .isp_get_sinter_strength = nvt_isp_get_sinter,
+    .isp_get_temper_strength = nvt_isp_get_temper,
+    .isp_get_ae_comp = nvt_isp_get_ae_comp,
+    .isp_get_running_mode = nvt_isp_get_running_mode,
+    .isp_get_antiflicker = nvt_isp_get_antiflicker,
 };
 
 /* ── public API ── */
@@ -1258,6 +1347,7 @@ rss_hal_ctx_t *rss_hal_create_backend(const char *backend)
     ctx->caps.has_h265 = true;
     ctx->caps.has_set_bitrate = true;
     ctx->caps.has_gop_attr = true;
+    ctx->caps.has_jpeg = true;
     ctx->caps.max_sensors = 1;
     return ctx;
 }
