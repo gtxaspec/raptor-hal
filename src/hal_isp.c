@@ -410,6 +410,41 @@ static bool ae_luma_from_statistics(const IMPISPAEStatisInfo *statistics, uint32
 }
 #endif
 
+#if defined(PLATFORM_T40) || defined(PLATFORM_T41)
+/*
+ * TotalGainDb is documented as "unit is dB", but the value is log2 of
+ * the linear total gain in 16.16 fixed point. Measured on a T41
+ * (os04d10), it matches log2(ExposureValue / AeIntegrationTime) * 65536
+ * to within 3 counts. Every other platform reports total_gain as the
+ * linear [24.8] value from IMP_ISP_Tuning_GetTotalGain, and the IR-cut
+ * thresholds (night_gain, day_gain_pct, probe_gain_pct) assume that
+ * scale. Convert here so total_gain means the same thing on every SoC:
+ * 256 * 2^(log2q16 / 65536), saturating at UINT32_MAX.
+ */
+static uint32_t total_gain_log2q16_to_linear_q8(uint32_t log2q16)
+{
+    /* 2^(2^-k) in Q30, k = 1..16 */
+    static const uint32_t pow2_frac_q30[16] = {
+        1518500250u, 1276901417u, 1170923762u, 1121280436u, 1097253708u, 1085434106u,
+        1079572136u, 1076653033u, 1075196443u, 1074468888u, 1074105294u, 1073923544u,
+        1073832680u, 1073787251u, 1073764537u, 1073753181u,
+    };
+    uint32_t ip = log2q16 >> 16;
+    uint32_t fp = log2q16 & 0xffffu;
+    uint64_t r = 1ull << 30; /* 1.0 in Q30 */
+
+    if (ip >= 24)
+        return UINT32_MAX;
+    for (int k = 0; k < 16; k++) {
+        if (fp & (0x8000u >> k))
+            r = (r * pow2_frac_q30[k] + (1ull << 29)) >> 30;
+    }
+    /* scale by the integer stops (< 2^54, fits), then Q30 -> Q8 */
+    r = ((r << ip) + (1ull << 21)) >> 22;
+    return r > UINT32_MAX ? UINT32_MAX : (uint32_t)r;
+}
+#endif
+
 int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
 {
     (void)ctx;
@@ -436,8 +471,8 @@ int hal_isp_get_exposure(void *ctx, rss_exposure_t *exposure)
     exposure->exposure_time = expr_info.AeIntegrationTime;
     exposure->valid_mask |= RSS_EXPOSURE_VALID_TIME;
 #if defined(PLATFORM_T40) || defined(PLATFORM_T41)
-    /* T40/T41 AEExprInfo has TotalGainDb (read-only dB total gain) */
-    exposure->total_gain = expr_info.TotalGainDb;
+    /* T40/T41 AEExprInfo has TotalGainDb (log2 Q16, see the helper) */
+    exposure->total_gain = total_gain_log2q16_to_linear_q8(expr_info.TotalGainDb);
 #else
     /* T32 AEExprInfo lacks TotalGainDb; approximate from analog gain */
     exposure->total_gain = expr_info.AeAGain;
@@ -3604,7 +3639,7 @@ int hal_isp_get_exposure_n(void *ctx, int sensor_idx, rss_exposure_t *exposure)
     exposure->exposure_time = expr_info.AeIntegrationTime;
     exposure->valid_mask |= RSS_EXPOSURE_VALID_TIME;
 #if defined(PLATFORM_T40) || defined(PLATFORM_T41)
-    exposure->total_gain = expr_info.TotalGainDb;
+    exposure->total_gain = total_gain_log2q16_to_linear_q8(expr_info.TotalGainDb);
 #else
     exposure->total_gain = expr_info.AeAGain;
 #endif
