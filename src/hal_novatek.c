@@ -58,6 +58,20 @@ void rss_hal_set_log_func(rss_hal_log_func_t func)
     log_fn = func ? func : hal_log_stderr;
 }
 
+enum {
+    NVT_IMG_BRIGHTNESS,
+    NVT_IMG_CONTRAST,
+    NVT_IMG_SATURATION,
+    NVT_IMG_SHARPNESS,
+    NVT_IMG_HUE,
+    NVT_IMG_NR,
+    NVT_IMG_3DNR,
+    NVT_IMG_AE_COMP,
+    NVT_IMG_ANTIFLICKER,
+    NVT_IMG_NIGHT,
+    NVT_IMG_MAX
+};
+
 typedef struct {
     bool open;
     bool started;
@@ -87,6 +101,8 @@ struct rss_hal_ctx {
     int running;
     int hflip, vflip;
     uint32_t base_mirror, base_flip;
+    /* Image controls, raptor's 0-255 scale (128 = neutral); -1 = unset. */
+    int img[NVT_IMG_MAX];
     bool tuned;
 
     nvt_chn_t chn[NVT_MAX_CHN];
@@ -536,6 +552,8 @@ typedef struct {
     uint32_t mirror, flip;
 } nvt_sen_dir_t;
 
+static void img_apply_all(rss_hal_ctx_t *ctx);
+
 static void cap_apply_dir(rss_hal_ctx_t *ctx, bool first)
 {
     nvt_sen_dir_t dir = {0};
@@ -766,6 +784,7 @@ static int nvt_enc_start(void *vctx, int chn)
     if (!ctx->tuned) {
         load_tuning(ctx->sensor);
         ctx->tuned = true;
+        img_apply_all(ctx);
     }
     if (hd_videoproc_start(c->prc) != HD_OK || hd_videoenc_start(c->enc) != HD_OK) {
         LOG_ERR("chn%d: start failed", chn);
@@ -1009,6 +1028,159 @@ static int nvt_sys_get_timestamp(void *vctx, int64_t *ts)
 
 /* Mirror and flip are capture-path direction flags; they take effect on
  * the next capture configuration. */
+/* ── image controls ── */
+
+/* vendor_isp items (HDAL 2.0): IQT_ITEM_* and AET_ITEM_*. All take
+ * {UINT32 id; UINT32 value}. IQ levels run 0..200 with 100 = default. */
+#define NVT_IQT_NR_LV 10
+#define NVT_IQT_SHARPNESS_LV 11
+#define NVT_IQT_SATURATION_LV 12
+#define NVT_IQT_CONTRAST_LV 13
+#define NVT_IQT_BRIGHTNESS_LV 14
+#define NVT_IQT_NIGHT_MODE 15
+#define NVT_IQT_HUE_SHIFT 20
+#define NVT_IQT_3DNR_LV 22
+#define NVT_AET_FREQUENCY 12
+#define NVT_AET_EV 14
+#define NVT_AE_EV_0 16 /* AE_EV_00 of 33 steps, AE_EV_N4..AE_EV_P4 */
+
+static uint32_t to_lv(int v)
+{
+    v = v < 0 ? 0 : v > 255 ? 255 : v;
+    return (uint32_t)(v * 200 + 127) / 255;
+}
+
+static void img_apply(rss_hal_ctx_t *ctx, int which)
+{
+    struct {
+        uint32_t id, val;
+    } p = {0, 0};
+    int v = ctx->img[which];
+    HD_RESULT r = HD_OK;
+
+    if (v < 0 || !ctx->running || vendor_isp_init() != HD_OK)
+        return;
+    switch (which) {
+    case NVT_IMG_BRIGHTNESS:
+        p.val = to_lv(v);
+        r = vendor_isp_set_iq(NVT_IQT_BRIGHTNESS_LV, &p);
+        break;
+    case NVT_IMG_CONTRAST:
+        p.val = to_lv(v);
+        r = vendor_isp_set_iq(NVT_IQT_CONTRAST_LV, &p);
+        break;
+    case NVT_IMG_SATURATION:
+        p.val = to_lv(v);
+        r = vendor_isp_set_iq(NVT_IQT_SATURATION_LV, &p);
+        break;
+    case NVT_IMG_SHARPNESS:
+        p.val = to_lv(v);
+        r = vendor_isp_set_iq(NVT_IQT_SHARPNESS_LV, &p);
+        break;
+    case NVT_IMG_NR:
+        p.val = to_lv(v);
+        r = vendor_isp_set_iq(NVT_IQT_NR_LV, &p);
+        break;
+    case NVT_IMG_3DNR:
+        p.val = to_lv(v);
+        r = vendor_isp_set_iq(NVT_IQT_3DNR_LV, &p);
+        break;
+    case NVT_IMG_HUE:
+        /* 128 = no shift; the 0..255 range spans -180..+180 degrees */
+        p.val = (uint32_t)((((v - 128) * 180 / 128) + 360) % 360);
+        r = vendor_isp_set_iq(NVT_IQT_HUE_SHIFT, &p);
+        break;
+    case NVT_IMG_NIGHT:
+        p.val = v ? 1 : 0;
+        r = vendor_isp_set_iq(NVT_IQT_NIGHT_MODE, &p);
+        break;
+    case NVT_IMG_AE_COMP: {
+        /* IMP's ae_comp is centred on 128 (90..250); map onto EV steps */
+        int step = NVT_AE_EV_0 + (v - 128) * NVT_AE_EV_0 / 122;
+        p.val = (uint32_t)(step < 0 ? 0 : step > 2 * NVT_AE_EV_0 ? 2 * NVT_AE_EV_0 : step);
+        r = vendor_isp_set_ae(NVT_AET_EV, &p);
+        break;
+    }
+    case NVT_IMG_ANTIFLICKER:
+        if (v == RSS_ANTIFLICKER_OFF)
+            break; /* the AE has no "off": keep the current band */
+        p.val = v == RSS_ANTIFLICKER_50HZ ? 0 : 1;
+        r = vendor_isp_set_ae(NVT_AET_FREQUENCY, &p);
+        break;
+    }
+    if (r != HD_OK)
+        LOG_WARN("image control %d = %d rejected (%d)", which, v, r);
+    vendor_isp_uninit();
+}
+
+static void img_apply_all(rss_hal_ctx_t *ctx)
+{
+    for (int i = 0; i < NVT_IMG_MAX; i++)
+        img_apply(ctx, i);
+}
+
+static int img_set(void *vctx, int which, int val)
+{
+    rss_hal_ctx_t *ctx = vctx;
+
+    pthread_mutex_lock(&ctx->lock);
+    ctx->img[which] = val;
+    if (ctx->tuned)
+        img_apply(ctx, which);
+    pthread_mutex_unlock(&ctx->lock);
+    return RSS_OK;
+}
+
+static int nvt_isp_set_brightness(void *ctx, int v)
+{
+    return img_set(ctx, NVT_IMG_BRIGHTNESS, v);
+}
+
+static int nvt_isp_set_contrast(void *ctx, int v)
+{
+    return img_set(ctx, NVT_IMG_CONTRAST, v);
+}
+
+static int nvt_isp_set_saturation(void *ctx, int v)
+{
+    return img_set(ctx, NVT_IMG_SATURATION, v);
+}
+
+static int nvt_isp_set_sharpness(void *ctx, int v)
+{
+    return img_set(ctx, NVT_IMG_SHARPNESS, v);
+}
+
+static int nvt_isp_set_hue(void *ctx, int v)
+{
+    return img_set(ctx, NVT_IMG_HUE, v);
+}
+
+static int nvt_isp_set_sinter(void *ctx, int v)
+{
+    return img_set(ctx, NVT_IMG_NR, v);
+}
+
+static int nvt_isp_set_temper(void *ctx, int v)
+{
+    return img_set(ctx, NVT_IMG_3DNR, v);
+}
+
+static int nvt_isp_set_ae_comp(void *ctx, int v)
+{
+    return img_set(ctx, NVT_IMG_AE_COMP, v);
+}
+
+static int nvt_isp_set_antiflicker(void *ctx, rss_antiflicker_t mode)
+{
+    return img_set(ctx, NVT_IMG_ANTIFLICKER, (int)mode);
+}
+
+static int nvt_isp_set_running_mode(void *ctx, rss_isp_mode_t mode)
+{
+    return img_set(ctx, NVT_IMG_NIGHT, mode == RSS_ISP_NIGHT);
+}
+
 static int nvt_isp_set_hflip(void *vctx, int enable)
 {
     rss_hal_ctx_t *ctx = vctx;
@@ -1052,6 +1224,16 @@ static const rss_hal_ops_t nvt_ops = {
     .enc_get_fps = nvt_enc_get_fps,
     .isp_set_hflip = nvt_isp_set_hflip,
     .isp_set_vflip = nvt_isp_set_vflip,
+    .isp_set_brightness = nvt_isp_set_brightness,
+    .isp_set_contrast = nvt_isp_set_contrast,
+    .isp_set_saturation = nvt_isp_set_saturation,
+    .isp_set_sharpness = nvt_isp_set_sharpness,
+    .isp_set_hue = nvt_isp_set_hue,
+    .isp_set_sinter_strength = nvt_isp_set_sinter,
+    .isp_set_temper_strength = nvt_isp_set_temper,
+    .isp_set_ae_comp = nvt_isp_set_ae_comp,
+    .isp_set_antiflicker = nvt_isp_set_antiflicker,
+    .isp_set_running_mode = nvt_isp_set_running_mode,
 };
 
 /* ── public API ── */
@@ -1066,6 +1248,8 @@ rss_hal_ctx_t *rss_hal_create_backend(const char *backend)
     if (!ctx)
         return NULL;
     pthread_mutex_init(&ctx->lock, NULL);
+    for (int i = 0; i < NVT_IMG_MAX; i++)
+        ctx->img[i] = -1;
     ctx->ops = &nvt_ops;
     ctx->caps.soc_name = NVT_PLATFORM_NAME;
     ctx->caps.sdk_version = "HDAL";
