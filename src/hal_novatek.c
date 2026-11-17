@@ -86,6 +86,8 @@ struct rss_hal_ctx {
     bool cap_configured;
     int running;
     int hflip, vflip;
+    uint32_t base_mirror, base_flip;
+    bool tuned;
 
     nvt_chn_t chn[NVT_MAX_CHN];
 };
@@ -313,6 +315,185 @@ static const rss_hal_caps_t *nvt_get_caps(void *vctx)
     return &((rss_hal_ctx_t *)vctx)->caps;
 }
 
+/* ── sensor tuning ── */
+
+/*
+ * AE/AWB/IQ tables are a flattened device tree, /etc/sensor/<sensor>_isp.dtb,
+ * as the vendor app ships them: /isp/sensor@0 names each table's node. The
+ * vendor modules only read such files themselves; their AWB reader fails on
+ * this kernel, so AWB is set table by table through the per-item calls.
+ * vendor_isp ABI (HDAL 2.0): item 3 = *_ITEM_RLD_DTSI on all three.
+ */
+typedef struct {
+    uint32_t id;
+    char node_path[256];
+    char file_path[256];
+    uint8_t *buf_addr;
+} nvt_dtsi_info_t;
+
+extern HD_RESULT vendor_isp_init(void);
+extern HD_RESULT vendor_isp_uninit(void);
+extern HD_RESULT vendor_isp_set_ae(uint32_t item, void *p);
+extern HD_RESULT vendor_isp_set_awb(uint32_t item, void *p);
+extern HD_RESULT vendor_isp_set_iq(uint32_t item, void *p);
+extern HD_RESULT vendor_isp_set_common(uint32_t item, void *p);
+extern HD_RESULT vendor_isp_get_common(uint32_t item, void *p);
+
+#define NVT_ITEM_RLD_DTSI 3
+#define NVT_ISPT_ITEM_SENSOR_DIRECTION 44
+
+static uint32_t be32(const uint8_t *p)
+{
+    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
+}
+
+/* Structure-block offset of the node at path, or -1. */
+static long fdt_node(const uint8_t *fdt, size_t len, const char *path)
+{
+    uint32_t off_st = be32(fdt + 8), off_str = be32(fdt + 12), sz = be32(fdt + 36);
+    const uint8_t *p = fdt + off_st, *end = p + sz;
+    char cur[256] = "";
+    size_t depth_len[32];
+    int depth = 0;
+
+    (void)off_str;
+    if (len < 40 || be32(fdt) != 0xd00dfeed || off_st + sz > len)
+        return -1;
+    while (p + 4 <= end) {
+        uint32_t tag = be32(p);
+        const uint8_t *tp = p;
+        p += 4;
+        if (tag == 1) { /* BEGIN_NODE */
+            const char *name = (const char *)p;
+            size_t n = strlen(name);
+            if (depth >= 32)
+                return -1;
+            depth_len[depth++] = strlen(cur);
+            if (depth > 1 && strlen(cur) + n + 2 < sizeof(cur)) {
+                strcat(cur, "/");
+                strcat(cur, name);
+            }
+            if (!strcmp(cur[0] ? cur : "/", path))
+                return tp - fdt;
+            p += (n + 4) & ~3u;
+        } else if (tag == 2) { /* END_NODE */
+            if (depth > 0)
+                cur[depth_len[--depth]] = '\0';
+        } else if (tag == 3) { /* PROP */
+            p += 8 + ((be32(p) + 3) & ~3u);
+        } else if (tag != 4) { /* not NOP */
+            break;
+        }
+    }
+    return -1;
+}
+
+/* Property of the node at node_off (no descent into children). */
+static const uint8_t *fdt_prop(const uint8_t *fdt, long node_off, const char *name, uint32_t *plen)
+{
+    const char *strs = (const char *)fdt + be32(fdt + 12);
+    const uint8_t *p = fdt + node_off + 4;
+
+    p += (strlen((const char *)p) + 4) & ~3u;
+    while (be32(p) == 3 || be32(p) == 4) {
+        if (be32(p) == 4) {
+            p += 4;
+            continue;
+        }
+        uint32_t l = be32(p + 4), nameoff = be32(p + 8);
+        if (!strcmp(strs + nameoff, name)) {
+            *plen = l;
+            return p + 12;
+        }
+        p += 12 + ((l + 3) & ~3u);
+    }
+    return NULL;
+}
+
+static void load_tuning(const char *sensor)
+{
+    static const struct {
+        const char *node;
+        uint32_t item; /* AWBT_ITEM_* */
+    } awb[] = {
+        {"awb_th", 31},       {"awb_lv", 32},           {"awb_ct_weight", 33},
+        {"awb_target", 34},   {"awb_ct_info", 35},      {"awb_mwb", 36},
+        {"awb_converge", 37}, {"awb_expand_block", 38}, {"awb_luma_weight", 43},
+    };
+    char file[96], ae[128] = "", awbp[128] = "", iq[128] = "";
+    uint8_t *fdt = NULL;
+    long n, s0;
+    FILE *f;
+    int awb_ok = 0;
+
+    snprintf(file, sizeof(file), "/etc/sensor/%s_isp.dtb", sensor);
+    f = fopen(file, "rb");
+    if (!f) {
+        LOG_INFO("no %s: ISP runs on its built-in defaults", file);
+        return;
+    }
+    fseek(f, 0, SEEK_END);
+    n = ftell(f);
+    rewind(f);
+    fdt = n > 0 ? malloc(n) : NULL;
+    if (!fdt || fread(fdt, 1, n, f) != (size_t)n) {
+        fclose(f);
+        free(fdt);
+        return;
+    }
+    fclose(f);
+
+    s0 = fdt_node(fdt, n, "/isp/sensor@0");
+    if (s0 >= 0) {
+        uint32_t l;
+        const uint8_t *v;
+        if ((v = fdt_prop(fdt, s0, "ae_path", &l)) && l < sizeof(ae))
+            memcpy(ae, v, l);
+        if ((v = fdt_prop(fdt, s0, "awb_path", &l)) && l < sizeof(awbp))
+            memcpy(awbp, v, l);
+        if ((v = fdt_prop(fdt, s0, "iq_path", &l)) && l < sizeof(iq))
+            memcpy(iq, v, l);
+    }
+    if (vendor_isp_init() != HD_OK) {
+        LOG_WARN("vendor_isp_init failed: tuning not loaded");
+        free(fdt);
+        return;
+    }
+    if (ae[0]) {
+        nvt_dtsi_info_t d = {0};
+        snprintf(d.node_path, sizeof(d.node_path), "%s", ae);
+        snprintf(d.file_path, sizeof(d.file_path), "%s", file);
+        if (vendor_isp_set_ae(NVT_ITEM_RLD_DTSI, &d) != HD_OK)
+            LOG_WARN("AE tuning %s rejected", ae);
+    }
+    if (iq[0]) {
+        nvt_dtsi_info_t d = {0};
+        snprintf(d.node_path, sizeof(d.node_path), "%s", iq);
+        snprintf(d.file_path, sizeof(d.file_path), "%s", file);
+        if (vendor_isp_set_iq(NVT_ITEM_RLD_DTSI, &d) != HD_OK)
+            LOG_WARN("IQ tuning %s rejected", iq);
+    }
+    for (size_t i = 0; awbp[0] && i < sizeof(awb) / sizeof(awb[0]); i++) {
+        char path[192];
+        uint8_t buf[4 + 512] = {0};
+        uint32_t l;
+        const uint8_t *v;
+        long off;
+
+        snprintf(path, sizeof(path), "%s/%s", awbp, awb[i].node);
+        off = fdt_node(fdt, n, path);
+        if (off < 0 || !(v = fdt_prop(fdt, off, "data", &l)) || l > sizeof(buf) - 4)
+            continue;
+        memcpy(buf + 4, v, l); /* {AWB_ID id = 0, table} */
+        if (vendor_isp_set_awb(awb[i].item, buf) == HD_OK)
+            awb_ok++;
+    }
+    vendor_isp_uninit();
+    free(fdt);
+    LOG_INFO("tuning %s: AE %s, IQ %s, AWB %d tables", file, ae[0] ? ae : "-", iq[0] ? iq : "-",
+             awb_ok);
+}
+
 /* ── capture ── */
 
 static int cap_configure(rss_hal_ctx_t *ctx, const rss_video_config_t *cfg)
@@ -340,14 +521,42 @@ static int cap_configure(rss_hal_ctx_t *ctx, const rss_video_config_t *cfg)
     hd_videocap_set(ctx->cap_path, HD_VIDEOCAP_PARAM_IN_CROP, &crop);
     out.pxlfmt = NVT_RAW_FMT;
     out.dir = HD_VIDEO_DIR_NONE;
-    if (ctx->hflip)
-        out.dir |= HD_VIDEO_DIR_MIRRORX;
-    if (ctx->vflip)
-        out.dir |= HD_VIDEO_DIR_MIRRORY;
     if (hd_videocap_set(ctx->cap_path, HD_VIDEOCAP_PARAM_OUT, &out) != HD_OK)
         return RSS_ERR_INVAL;
     ctx->cap_configured = true;
     return RSS_OK;
+}
+
+/* Mirror/flip of a MIPI sensor is its readout direction, set through the
+ * ISP (capture direction is CCIR-only, the ISP outputs refuse mirror in
+ * RAWALL mode). The board's upright direction comes from the sensor's DT
+ * node at stream start; user flips are relative to it. */
+typedef struct {
+    uint32_t id;
+    uint32_t mirror, flip;
+} nvt_sen_dir_t;
+
+static void cap_apply_dir(rss_hal_ctx_t *ctx, bool first)
+{
+    nvt_sen_dir_t dir = {0};
+
+    if (!ctx->running || vendor_isp_init() != HD_OK)
+        return;
+    if (first) {
+        if (vendor_isp_get_common(NVT_ISPT_ITEM_SENSOR_DIRECTION, &dir) == HD_OK) {
+            ctx->base_mirror = dir.mirror;
+            ctx->base_flip = dir.flip;
+        }
+        if (!ctx->hflip && !ctx->vflip)
+            goto out;
+    }
+    dir.id = 0;
+    dir.mirror = !ctx->base_mirror != !ctx->hflip;
+    dir.flip = !ctx->base_flip != !ctx->vflip;
+    if (vendor_isp_set_common(NVT_ISPT_ITEM_SENSOR_DIRECTION, &dir) != HD_OK)
+        LOG_WARN("sensor mirror %u flip %u not applied", dir.mirror, dir.flip);
+out:
+    vendor_isp_uninit();
 }
 
 /* ── encoder ── */
@@ -552,6 +761,12 @@ static int nvt_enc_start(void *vctx, int chn)
         goto out;
     }
     ctx->running++;
+    if (ctx->running == 1)
+        cap_apply_dir(ctx, true);
+    if (!ctx->tuned) {
+        load_tuning(ctx->sensor);
+        ctx->tuned = true;
+    }
     if (hd_videoproc_start(c->prc) != HD_OK || hd_videoenc_start(c->enc) != HD_OK) {
         LOG_ERR("chn%d: start failed", chn);
         goto undo;
@@ -796,13 +1011,23 @@ static int nvt_sys_get_timestamp(void *vctx, int64_t *ts)
  * the next capture configuration. */
 static int nvt_isp_set_hflip(void *vctx, int enable)
 {
-    ((rss_hal_ctx_t *)vctx)->hflip = enable;
+    rss_hal_ctx_t *ctx = vctx;
+
+    pthread_mutex_lock(&ctx->lock);
+    ctx->hflip = enable;
+    cap_apply_dir(ctx, false);
+    pthread_mutex_unlock(&ctx->lock);
     return RSS_OK;
 }
 
 static int nvt_isp_set_vflip(void *vctx, int enable)
 {
-    ((rss_hal_ctx_t *)vctx)->vflip = enable;
+    rss_hal_ctx_t *ctx = vctx;
+
+    pthread_mutex_lock(&ctx->lock);
+    ctx->vflip = enable;
+    cap_apply_dir(ctx, false);
+    pthread_mutex_unlock(&ctx->lock);
     return RSS_OK;
 }
 
