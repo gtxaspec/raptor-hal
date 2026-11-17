@@ -1,16 +1,18 @@
-# Raptor HAL - Hardware Abstraction Layer for Ingenic SoCs
+# Raptor HAL - Hardware Abstraction Layer for Ingenic and Novatek SoCs
 #
 # Usage:
 #   make PLATFORM=T31 CROSS_COMPILE=mipsel-linux-
 #   make PLATFORM=T40 CROSS_COMPILE=mipsel-linux- INGENIC_HEADERS=/path/to/headers
+#   make PLATFORM=NA51055 CROSS_COMPILE=arm-linux- HDAL_INCLUDE=/path/to/hdal/include
 #   make PLATFORM=T31 clean
 #
 # Required variables:
-#   PLATFORM        - Target SoC: T10, T20, T21, T23, T30, T31, T32, T40, T41
+#   PLATFORM        - Target SoC: T10, T20, T21, T23, T30, T31, T32, T40, T41, NA51055
 #   CROSS_COMPILE   - Cross-compiler prefix (e.g. mipsel-linux-)
 #
 # Optional variables:
 #   INGENIC_HEADERS - Path to ingenic-headers repo (default: ../ingenic-headers)
+#   HDAL_INCLUDE    - Path to the Novatek HDAL headers (NA51055 only)
 #   INGENIC_LIB     - Path to ingenic-lib repo (default: ../ingenic-lib)
 #   V4L2_OPENIMP    - Set to 1 for the optional V4L2/OpenIMP AVC bridge
 #   DEBUG           - Set to 1 for debug build
@@ -22,7 +24,7 @@ $(error PLATFORM not set. Use: make PLATFORM=T31)
 endif
 
 # Validate platform
-VALID_PLATFORMS := T10 T20 T21 T23 T30 T31 T32 T33 T40 T41
+VALID_PLATFORMS := T10 T20 T21 T23 T30 T31 T32 T33 T40 T41 NA51055
 ifeq ($(filter $(PLATFORM),$(VALID_PLATFORMS)),)
 $(error Invalid PLATFORM=$(PLATFORM). Valid: $(VALID_PLATFORMS))
 endif
@@ -75,8 +77,15 @@ CFLAGS  += -std=c11
 CFLAGS  += -ffunction-sections -fdata-sections -flto
 CFLAGS  += -fno-asynchronous-unwind-tables -fmerge-all-constants -fno-ident
 CFLAGS  += -DPLATFORM_$(PLATFORM)
+ifeq ($(PLATFORM),NA51055)
+NOVATEK := 1
+HDAL_INCLUDE ?= hdal-include
+# Vendor headers are not -Wextra clean.
+CFLAGS  += -isystem $(HDAL_INCLUDE) -D__LINUX
+else
 CFLAGS  += -I$(SDK_INCLUDE)
 CFLAGS  += -I$(SDK_INCLUDE)/imp
+endif
 CFLAGS  += -Iinclude
 CFLAGS  += -Isrc
 
@@ -122,11 +131,27 @@ CXX_SRCS += src/hal_ivs_jzdl.cpp
 CXXFLAGS := $(filter-out -std=c11,$(CFLAGS)) -std=c++11 -Wno-missing-field-initializers -DJZ_MXU=0 -I$(JZDL_INCLUDE) -fno-exceptions -fno-rtti
 endif
 
+# Novatek: one self-contained backend in both archives, no IMP sources.
+ifeq ($(NOVATEK),1)
+CORE_SRCS  := src/hal_novatek.c
+VIDEO_SRCS :=
+AUDIO_SRCS :=
+CXX_SRCS   :=
+endif
+
 CORE_OBJS  := $(CORE_SRCS:.c=.o)
 VIDEO_OBJS := $(VIDEO_SRCS:.c=.o) $(CXX_SRCS:.cpp=.o)
 AUDIO_OBJS := $(AUDIO_SRCS:.c=.o)
 
-ALL_OBJS := src/hal_common_video.o src/hal_common_audio.o \
+ifeq ($(NOVATEK),1)
+COMMON_VIDEO_OBJ :=
+COMMON_AUDIO_OBJ :=
+else
+COMMON_VIDEO_OBJ := src/hal_common_video.o
+COMMON_AUDIO_OBJ := src/hal_common_audio.o
+endif
+
+ALL_OBJS := $(COMMON_VIDEO_OBJ) $(COMMON_AUDIO_OBJ) \
             $(CORE_OBJS) $(VIDEO_OBJS) $(AUDIO_OBJS)
 DEPS := $(ALL_OBJS:.o=.d)
 
@@ -147,12 +172,12 @@ src/hal_common_audio.o: src/hal_common.c
 	@echo "  CC      $< (audio)"
 	$(Q)$(CC) $(CFLAGS) -DHAL_MODULE_AUDIO -MMD -MP -c $< -o $@
 
-$(LIB_VIDEO): src/hal_common_video.o $(CORE_OBJS) $(VIDEO_OBJS)
+$(LIB_VIDEO): $(COMMON_VIDEO_OBJ) $(CORE_OBJS) $(VIDEO_OBJS)
 	@echo "  AR      $@"
 	$(Q)$(AR) rcs $@ $^
 	$(Q)$(RANLIB) $@
 
-$(LIB_AUDIO): src/hal_common_audio.o $(CORE_OBJS) $(AUDIO_OBJS)
+$(LIB_AUDIO): $(COMMON_AUDIO_OBJ) $(CORE_OBJS) $(AUDIO_OBJS)
 	@echo "  AR      $@"
 	$(Q)$(AR) rcs $@ $^
 	$(Q)$(RANLIB) $@
@@ -167,7 +192,7 @@ $(LIB_AUDIO): src/hal_common_audio.o $(CORE_OBJS) $(AUDIO_OBJS)
 
 clean:
 	@echo "  CLEAN"
-	$(Q)rm -f $(ALL_OBJS) $(DEPS) src/hal_v4l2.o src/hal_v4l2.d \
+	$(Q)rm -f $(ALL_OBJS) $(DEPS) src/hal_v4l2.o src/hal_v4l2.d src/hal_novatek.o src/hal_novatek.d \
 		$(LIB_VIDEO) $(LIB_AUDIO)
 
 info:
