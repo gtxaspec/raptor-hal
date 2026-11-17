@@ -33,6 +33,12 @@
 #define NVT_MAX_H 2160
 #define NVT_RAW_FMT HD_VIDEO_PXLFMT_RAW12
 
+#define NVT_OSD_MAX_RGN 16
+#define NVT_OSD_MAX_STAMPS 16
+#define NVT_OSD_MAX_W 1920
+#define NVT_OSD_MAX_H 128
+#define NVT_OSD_BLK_SIZE (2 * NVT_OSD_MAX_W * NVT_OSD_MAX_H * 2)
+
 static void hal_log_stderr(int level, const char *file, int line, const char *fmt, ...)
     __attribute__((format(printf, 4, 5)));
 static rss_hal_log_func_t log_fn = hal_log_stderr;
@@ -87,6 +93,23 @@ typedef struct {
     uint32_t seq;
 } nvt_chn_t;
 
+typedef struct {
+    bool reg;
+    bool shown;
+    int stamp;
+    HD_PATH_ID path;
+    HD_COMMON_MEM_VB_BLK blk;
+    uint32_t pa;
+} nvt_osd_stamp_t;
+
+typedef struct {
+    bool used;
+    rss_osd_region_t attr;
+    uint16_t *img; /* ARGB4444 */
+    bool have_img;
+    nvt_osd_stamp_t g[NVT_MAX_CHN];
+} nvt_osd_rgn_t;
+
 struct rss_hal_ctx {
     const rss_hal_ops_t *ops;
     rss_hal_caps_t caps;
@@ -107,6 +130,8 @@ struct rss_hal_ctx {
     bool tuned;
 
     nvt_chn_t chn[NVT_MAX_CHN];
+    nvt_osd_rgn_t osd[NVT_OSD_MAX_RGN];
+    uint32_t stamp_used[NVT_MAX_CHN]; /* HD_STAMP index bitmap per encoder */
 };
 
 /* ── board pin config ── */
@@ -213,6 +238,12 @@ static int nvt_mem_init(void)
     mem.pool_info[2].blk_size = yuv_sub;
     mem.pool_info[2].blk_cnt = 4;
     mem.pool_info[2].ddr_id = DDR_ID0;
+    /* OSD stamps: ping-pong ARGB4444 buffers, a strip up to NVT_OSD_MAX_W x
+     * NVT_OSD_MAX_H each. */
+    mem.pool_info[3].type = HD_COMMON_MEM_OSG_POOL;
+    mem.pool_info[3].blk_size = NVT_OSD_BLK_SIZE;
+    mem.pool_info[3].blk_cnt = NVT_OSD_MAX_STAMPS;
+    mem.pool_info[3].ddr_id = DDR_ID0;
     return hd_common_mem_init(&mem) == HD_OK ? RSS_OK : RSS_ERR_NOMEM;
 }
 
@@ -1038,6 +1069,260 @@ static int nvt_enc_get_fps(void *vctx, int chn, uint32_t *num, uint32_t *den)
     return RSS_OK;
 }
 
+/* ── OSD: encoder stamps ── */
+
+/* Each region keeps an ARGB4444 copy of its bitmap; each encoder channel it
+ * is registered on gets its own HD_STAMP path with a ping-pong buffer from
+ * the OSG pool. HDAL copies the image into that buffer on every start. */
+
+static nvt_osd_rgn_t *osd_rgn(rss_hal_ctx_t *ctx, int handle)
+{
+    if (handle < 0 || handle >= NVT_OSD_MAX_RGN || !ctx->osd[handle].used)
+        return NULL;
+    return &ctx->osd[handle];
+}
+
+static void osd_fill(nvt_osd_rgn_t *r, const uint8_t *bgra)
+{
+    int n = r->attr.width * r->attr.height;
+
+    for (int i = 0; i < n; i++) {
+        const uint8_t *p = bgra ? bgra + 4 * i : (const uint8_t *)&r->attr.cover_color;
+        r->img[i] = (uint16_t)((p[3] >> 4) << 12 | (p[2] >> 4) << 8 | (p[1] >> 4) << 4 | p[0] >> 4);
+    }
+    r->have_img = true;
+}
+
+static void osd_stamp_attr(nvt_osd_rgn_t *r, nvt_osd_stamp_t *g)
+{
+    HD_OSG_STAMP_ATTR a = {0};
+
+    a.position.x = r->attr.x & ~1;
+    a.position.y = r->attr.y & ~1;
+    a.alpha = r->attr.global_alpha_en ? r->attr.fg_alpha : 255;
+    a.layer = 0;
+    a.region = (UINT32)g->stamp;
+    hd_videoenc_set(g->path, HD_VIDEOENC_PARAM_IN_STAMP_ATTR, &a);
+}
+
+/* (Re)load the image and, if shown, (re)start the stamp so it takes effect. */
+static void osd_stamp_push(nvt_osd_rgn_t *r, nvt_osd_stamp_t *g)
+{
+    HD_OSG_STAMP_IMG img = {0};
+
+    if (!g->reg || !r->have_img)
+        return;
+    img.fmt = HD_VIDEO_PXLFMT_ARGB4444;
+    img.dim.w = r->attr.width;
+    img.dim.h = r->attr.height;
+    img.p_addr = (UINT32)(uintptr_t)r->img;
+    if (hd_videoenc_set(g->path, HD_VIDEOENC_PARAM_IN_STAMP_IMG, &img) != HD_OK)
+        return;
+    if (g->shown)
+        hd_videoenc_start(g->path);
+}
+
+static int nvt_osd_create_region(void *vctx, int *handle, const rss_osd_region_t *attr)
+{
+    rss_hal_ctx_t *ctx = vctx;
+    int h = -1;
+
+    if (!handle || !attr || attr->width <= 0 || attr->height <= 0 || attr->width > NVT_OSD_MAX_W ||
+        attr->height > NVT_OSD_MAX_H)
+        return RSS_ERR_INVAL;
+    pthread_mutex_lock(&ctx->lock);
+    for (int i = 0; i < NVT_OSD_MAX_RGN && h < 0; i++)
+        if (!ctx->osd[i].used)
+            h = i;
+    if (h >= 0) {
+        nvt_osd_rgn_t *r = &ctx->osd[h];
+        memset(r, 0, sizeof(*r));
+        r->img = calloc((size_t)NVT_OSD_MAX_W * NVT_OSD_MAX_H, sizeof(uint16_t));
+        if (r->img) {
+            r->used = true;
+            r->attr = *attr;
+            if (attr->type == RSS_OSD_COVER)
+                osd_fill(r, NULL);
+            else if (attr->bitmap_data)
+                osd_fill(r, attr->bitmap_data);
+        } else {
+            h = -1;
+        }
+    }
+    pthread_mutex_unlock(&ctx->lock);
+    if (h < 0)
+        return RSS_ERR_NOMEM;
+    *handle = h;
+    return RSS_OK;
+}
+
+static int nvt_osd_unregister_region(void *vctx, int handle, int grp);
+
+static int nvt_osd_destroy_region(void *vctx, int handle)
+{
+    rss_hal_ctx_t *ctx = vctx;
+    nvt_osd_rgn_t *r = osd_rgn(ctx, handle);
+
+    if (!r)
+        return RSS_ERR_INVAL;
+    for (int g = 0; g < NVT_MAX_CHN; g++)
+        if (r->g[g].reg)
+            nvt_osd_unregister_region(vctx, handle, g);
+    pthread_mutex_lock(&ctx->lock);
+    free(r->img);
+    memset(r, 0, sizeof(*r));
+    pthread_mutex_unlock(&ctx->lock);
+    return RSS_OK;
+}
+
+static int nvt_osd_register_region(void *vctx, int handle, int grp)
+{
+    rss_hal_ctx_t *ctx = vctx;
+    nvt_osd_rgn_t *r = osd_rgn(ctx, handle);
+    HD_OSG_STAMP_BUF buf = {0};
+    nvt_osd_stamp_t *g;
+    int idx = -1, ret = RSS_ERR_IO;
+
+    if (!r || grp < 0 || grp >= NVT_MAX_CHN || !ctx->chn[grp].open)
+        return RSS_ERR_INVAL;
+    g = &r->g[grp];
+    if (g->reg)
+        return RSS_OK;
+    pthread_mutex_lock(&ctx->lock);
+    for (int i = 0; i < 32 && idx < 0; i++)
+        if (!(ctx->stamp_used[grp] & (1u << i)))
+            idx = i;
+    if (idx < 0)
+        goto out;
+    g->blk = hd_common_mem_get_block(HD_COMMON_MEM_OSG_POOL, NVT_OSD_BLK_SIZE, DDR_ID0);
+    if (g->blk == HD_COMMON_MEM_VB_INVALID_BLK)
+        goto out;
+    g->pa = hd_common_mem_blk2pa(g->blk);
+    if (!g->pa || hd_videoenc_open(HD_VIDEOENC_IN(0, grp), HD_STAMP(idx), &g->path) != HD_OK) {
+        hd_common_mem_release_block(g->blk);
+        goto out;
+    }
+    buf.type = HD_OSG_BUF_TYPE_PING_PONG;
+    buf.p_addr = g->pa;
+    buf.size = NVT_OSD_BLK_SIZE;
+    if (hd_videoenc_set(g->path, HD_VIDEOENC_PARAM_IN_STAMP_BUF, &buf) != HD_OK) {
+        hd_videoenc_close(g->path);
+        hd_common_mem_release_block(g->blk);
+        goto out;
+    }
+    g->stamp = idx;
+    g->reg = true;
+    ctx->stamp_used[grp] |= 1u << idx;
+    /* Image before attr: HDAL checks overlap against the image size. */
+    osd_stamp_push(r, g);
+    osd_stamp_attr(r, g);
+    ret = RSS_OK;
+out:
+    pthread_mutex_unlock(&ctx->lock);
+    if (ret != RSS_OK)
+        LOG_WARN("osd region %d on chn%d: no stamp", handle, grp);
+    return ret;
+}
+
+static int nvt_osd_unregister_region(void *vctx, int handle, int grp)
+{
+    rss_hal_ctx_t *ctx = vctx;
+    nvt_osd_rgn_t *r = osd_rgn(ctx, handle);
+    nvt_osd_stamp_t *g;
+
+    if (!r || grp < 0 || grp >= NVT_MAX_CHN)
+        return RSS_ERR_INVAL;
+    g = &r->g[grp];
+    if (!g->reg)
+        return RSS_OK;
+    pthread_mutex_lock(&ctx->lock);
+    if (g->shown)
+        hd_videoenc_stop(g->path);
+    hd_videoenc_close(g->path);
+    hd_common_mem_release_block(g->blk);
+    ctx->stamp_used[grp] &= ~(1u << g->stamp);
+    memset(g, 0, sizeof(*g));
+    pthread_mutex_unlock(&ctx->lock);
+    return RSS_OK;
+}
+
+static int nvt_osd_set_region_attr(void *vctx, int handle, const rss_osd_region_t *attr)
+{
+    rss_hal_ctx_t *ctx = vctx;
+    nvt_osd_rgn_t *r = osd_rgn(ctx, handle);
+
+    if (!r || !attr || attr->width <= 0 || attr->height <= 0 || attr->width > NVT_OSD_MAX_W ||
+        attr->height > NVT_OSD_MAX_H)
+        return RSS_ERR_INVAL;
+    pthread_mutex_lock(&ctx->lock);
+    r->attr = *attr;
+    if (attr->type == RSS_OSD_COVER)
+        osd_fill(r, NULL);
+    else if (attr->bitmap_data)
+        osd_fill(r, attr->bitmap_data);
+    for (int g = 0; g < NVT_MAX_CHN; g++) {
+        if (!r->g[g].reg)
+            continue;
+        osd_stamp_push(r, &r->g[g]);
+        osd_stamp_attr(r, &r->g[g]);
+    }
+    pthread_mutex_unlock(&ctx->lock);
+    return RSS_OK;
+}
+
+static int nvt_osd_update_region_data(void *vctx, int handle, const uint8_t *data)
+{
+    rss_hal_ctx_t *ctx = vctx;
+    nvt_osd_rgn_t *r = osd_rgn(ctx, handle);
+
+    if (!r || !data)
+        return RSS_ERR_INVAL;
+    pthread_mutex_lock(&ctx->lock);
+    osd_fill(r, data);
+    for (int g = 0; g < NVT_MAX_CHN; g++)
+        osd_stamp_push(r, &r->g[g]);
+    pthread_mutex_unlock(&ctx->lock);
+    return RSS_OK;
+}
+
+static int nvt_osd_show_region(void *vctx, int handle, int grp, int show, int layer)
+{
+    rss_hal_ctx_t *ctx = vctx;
+    nvt_osd_rgn_t *r = osd_rgn(ctx, handle);
+    nvt_osd_stamp_t *g;
+
+    (void)layer;
+    if (!r || grp < 0 || grp >= NVT_MAX_CHN)
+        return RSS_ERR_INVAL;
+    g = &r->g[grp];
+    if (!g->reg)
+        return RSS_ERR_INVAL;
+    pthread_mutex_lock(&ctx->lock);
+    if (show && !g->shown) {
+        g->shown = true;
+        osd_stamp_push(r, g);
+    } else if (!show && g->shown) {
+        hd_videoenc_stop(g->path);
+        g->shown = false;
+    }
+    pthread_mutex_unlock(&ctx->lock);
+    return RSS_OK;
+}
+
+static int nvt_osd_noop_grp(void *vctx, int grp)
+{
+    (void)vctx;
+    (void)grp;
+    return RSS_OK;
+}
+
+static int nvt_osd_set_pool_size(void *vctx, uint32_t bytes)
+{
+    (void)vctx;
+    (void)bytes;
+    return RSS_OK;
+}
+
 /* ── system / ISP ── */
 
 static int nvt_sys_get_timestamp(void *vctx, int64_t *ts)
@@ -1313,6 +1598,18 @@ static const rss_hal_ops_t nvt_ops = {
     .isp_set_ae_comp = nvt_isp_set_ae_comp,
     .isp_set_antiflicker = nvt_isp_set_antiflicker,
     .isp_set_running_mode = nvt_isp_set_running_mode,
+    .osd_set_pool_size = nvt_osd_set_pool_size,
+    .osd_create_group = nvt_osd_noop_grp,
+    .osd_destroy_group = nvt_osd_noop_grp,
+    .osd_start = nvt_osd_noop_grp,
+    .osd_stop = nvt_osd_noop_grp,
+    .osd_create_region = nvt_osd_create_region,
+    .osd_destroy_region = nvt_osd_destroy_region,
+    .osd_register_region = nvt_osd_register_region,
+    .osd_unregister_region = nvt_osd_unregister_region,
+    .osd_set_region_attr = nvt_osd_set_region_attr,
+    .osd_update_region_data = nvt_osd_update_region_data,
+    .osd_show_region = nvt_osd_show_region,
     .isp_get_brightness = nvt_isp_get_brightness,
     .isp_get_contrast = nvt_isp_get_contrast,
     .isp_get_saturation = nvt_isp_get_saturation,
@@ -1348,6 +1645,9 @@ rss_hal_ctx_t *rss_hal_create_backend(const char *backend)
     ctx->caps.has_set_bitrate = true;
     ctx->caps.has_gop_attr = true;
     ctx->caps.has_jpeg = true;
+    ctx->caps.has_osd = true;
+    ctx->caps.max_osd_groups = NVT_MAX_CHN;
+    ctx->caps.max_osd_regions = NVT_OSD_MAX_RGN;
     ctx->caps.max_sensors = 1;
     return ctx;
 }
