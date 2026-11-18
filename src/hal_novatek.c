@@ -10,7 +10,14 @@
  * live in /etc/sensor/<sensor>.pinmux, key=value.
  */
 
+#define _POSIX_C_SOURCE 200809L
+
 #include <errno.h>
+#include <fcntl.h>
+#include <math.h>
+#include <time.h>
+#include <sys/ioctl.h>
+#include <sound/asound.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -18,6 +25,8 @@
 #include <string.h>
 #include <dirent.h>
 #include <pthread.h>
+#include <poll.h>
+#include <unistd.h>
 
 #include "hdal.h"
 #include "hd_util.h"
@@ -32,6 +41,8 @@
 #define NVT_MAX_W 3840
 #define NVT_MAX_H 2160
 #define NVT_RAW_FMT HD_VIDEO_PXLFMT_RAW12
+
+#define NVT_PCM_MAX_SPF 1024
 
 #define NVT_OSD_MAX_RGN 16
 #define NVT_OSD_MAX_STAMPS 16
@@ -131,8 +142,30 @@ struct rss_hal_ctx {
 
     nvt_chn_t chn[NVT_MAX_CHN];
     nvt_osd_rgn_t osd[NVT_OSD_MAX_RGN];
+    /* HDAL timestamps run ahead of CLOCK_MONOTONIC by a fixed offset; video
+     * is reported on the monotonic clock so it lines up with ALSA audio. */
+    int64_t hd_mono_offset_us;
+
+    /* audio (ALSA; only used by rad) */
+    int ai_fd, ao_fd;
+    unsigned ai_spf, ai_rate, ao_spf;
+    uint32_t ai_seq;
+    int ai_vol, ao_vol;
+    int32_t ai_q16, ao_q16;
+    bool ai_muted, ao_muted;
+    int16_t ai_st[2 * NVT_PCM_MAX_SPF], ai_mono[NVT_PCM_MAX_SPF];
+    int16_t ao_st[2 * NVT_PCM_MAX_SPF];
+    int spk_gpio; /* speaker amp enable, -1 = none */
+    bool spk_active_low;
+    pthread_mutex_t amp_lock;
+    pthread_t amp_thr;
+    bool amp_thr_on, amp_is_on;
+    volatile bool amp_stop;
+    int64_t amp_last_us;
     uint32_t stamp_used[NVT_MAX_CHN]; /* HD_STAMP index bitmap per encoder */
 };
+
+static int64_t nvt_now_us(void);
 
 /* ── board pin config ── */
 
@@ -285,6 +318,7 @@ static int nvt_init(void *vctx, const rss_multi_sensor_config_t *multi)
         LOG_ERR("HDAL module init failed");
         goto fail;
     }
+    ctx->hd_mono_offset_us = (int64_t)hd_gettime_us() - nvt_now_us();
 
     snprintf(drv.sen_cfg.sen_dev.driver_name, HD_VIDEOCAP_SEN_NAME_LEN - 1, "nvt_sen_%s",
              ctx->sensor);
@@ -966,7 +1000,7 @@ static int nvt_enc_get_frame(void *vctx, int chn, rss_frame_t *frame)
     frame->nals = c->nals;
     frame->nal_count = c->bs.pack_num < VENC_BS_PACK_MAX ? c->bs.pack_num : VENC_BS_PACK_MAX;
     frame->codec = c->cfg.codec;
-    frame->timestamp = (int64_t)c->bs.timestamp;
+    frame->timestamp = (int64_t)c->bs.timestamp - ((rss_hal_ctx_t *)vctx)->hd_mono_offset_us;
     frame->seq = c->seq++;
     frame->is_key = c->cfg.codec == RSS_CODEC_JPEG || c->bs.frame_type == HD_FRAME_TYPE_IDR ||
                     c->bs.frame_type == HD_FRAME_TYPE_I;
@@ -1323,6 +1357,439 @@ static int nvt_osd_set_pool_size(void *vctx, uint32_t bytes)
     return RSS_OK;
 }
 
+/* ── audio ── */
+
+/* Audio goes through the kernel's ALSA driver for the embedded codec
+ * (CONFIG_SND_SOC_NVT), not HDAL: HDAL audio units can only be opened by the
+ * process that owns HDAL (rvd), while rad is a separate process. Raw PCM
+ * ioctls, no alsa-lib. Both directions are stereo in hardware; the mic is
+ * the left channel, the speaker gets the mono stream on both. */
+
+#define NVT_PCM_CAPTURE "/dev/snd/pcmC0D0c"
+#define NVT_PCM_PLAYBACK "/dev/snd/pcmC1D0p"
+#define NVT_PCM_PERIODS 8
+
+static int64_t nvt_now_us(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
+static void pcm_mask(struct snd_pcm_hw_params *p, int n, unsigned v)
+{
+    struct snd_mask *m = &p->masks[n - SNDRV_PCM_HW_PARAM_FIRST_MASK];
+
+    memset(m, 0, sizeof(*m));
+    m->bits[v >> 5] |= 1u << (v & 31);
+}
+
+static void pcm_interval(struct snd_pcm_hw_params *p, int n, unsigned v)
+{
+    struct snd_interval *i = &p->intervals[n - SNDRV_PCM_HW_PARAM_FIRST_INTERVAL];
+
+    i->min = i->max = v;
+    i->integer = 1;
+}
+
+static int pcm_open(const char *dev, unsigned rate, unsigned spf, unsigned start)
+{
+    struct snd_pcm_hw_params hw;
+    struct snd_pcm_sw_params sw;
+    int fd = open(dev, O_RDWR | O_CLOEXEC);
+
+    if (fd < 0) {
+        LOG_ERR("audio: %s: %s", dev, strerror(errno));
+        return -1;
+    }
+    memset(&hw, 0, sizeof(hw));
+    for (int n = SNDRV_PCM_HW_PARAM_FIRST_MASK; n <= SNDRV_PCM_HW_PARAM_LAST_MASK; n++)
+        memset(&hw.masks[n - SNDRV_PCM_HW_PARAM_FIRST_MASK], 0xff, sizeof(struct snd_mask));
+    for (int n = SNDRV_PCM_HW_PARAM_FIRST_INTERVAL; n <= SNDRV_PCM_HW_PARAM_LAST_INTERVAL; n++)
+        hw.intervals[n - SNDRV_PCM_HW_PARAM_FIRST_INTERVAL].max = ~0u;
+    hw.rmask = ~0u;
+    pcm_mask(&hw, SNDRV_PCM_HW_PARAM_ACCESS, SNDRV_PCM_ACCESS_RW_INTERLEAVED);
+    pcm_mask(&hw, SNDRV_PCM_HW_PARAM_FORMAT, SNDRV_PCM_FORMAT_S16_LE);
+    pcm_mask(&hw, SNDRV_PCM_HW_PARAM_SUBFORMAT, SNDRV_PCM_SUBFORMAT_STD);
+    pcm_interval(&hw, SNDRV_PCM_HW_PARAM_CHANNELS, 2);
+    pcm_interval(&hw, SNDRV_PCM_HW_PARAM_RATE, rate);
+    pcm_interval(&hw, SNDRV_PCM_HW_PARAM_PERIOD_SIZE, spf);
+    pcm_interval(&hw, SNDRV_PCM_HW_PARAM_PERIODS, NVT_PCM_PERIODS);
+    if (ioctl(fd, SNDRV_PCM_IOCTL_HW_PARAMS, &hw) < 0) {
+        LOG_ERR("audio: %s: %u Hz/%u frames rejected: %s", dev, rate, spf, strerror(errno));
+        close(fd);
+        return -1;
+    }
+    memset(&sw, 0, sizeof(sw));
+    sw.period_step = 1;
+    sw.avail_min = spf;
+    sw.start_threshold = start;
+    sw.stop_threshold = spf * NVT_PCM_PERIODS;
+    sw.boundary = spf * NVT_PCM_PERIODS;
+    while (sw.boundary * 2 <= 0x7fffffffu - spf * NVT_PCM_PERIODS)
+        sw.boundary *= 2;
+    if (ioctl(fd, SNDRV_PCM_IOCTL_SW_PARAMS, &sw) < 0 || ioctl(fd, SNDRV_PCM_IOCTL_PREPARE) < 0) {
+        LOG_ERR("audio: %s: setup failed: %s", dev, strerror(errno));
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+/* raptor volume [-30..120] is 0.5 dB steps around 60 = unity, as on IMP. */
+static int32_t nvt_vol_q16(int vol)
+{
+    if (vol <= -30)
+        return 0;
+    return (int32_t)(65536.0 * pow(10.0, (vol - 60) * 0.5 / 20.0));
+}
+
+static int16_t nvt_scale(int16_t s, int32_t q16)
+{
+    int32_t v = (int32_t)(((int64_t)s * q16) >> 16);
+
+    return (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+}
+
+/* The speaker amp is powered only while sound plays, as stock does: on with
+ * the first frame after silence, off after NVT_AMP_IDLE_US without one. */
+#define NVT_AMP_IDLE_US 1000000
+
+static void spk_write(const char *path, const char *val)
+{
+    FILE *f = fopen(path, "w");
+
+    if (f) {
+        fputs(val, f);
+        fclose(f);
+    }
+}
+
+static void spk_amp(rss_hal_ctx_t *ctx, bool on)
+{
+    char path[64];
+
+    if (ctx->spk_gpio < 0)
+        return;
+    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/direction", ctx->spk_gpio);
+    spk_write(path, on != ctx->spk_active_low ? "high" : "low");
+}
+
+/* The amp gpio (gpio.speaker in thingino.json) via /etc/hdal-board.conf. */
+static void spk_init(rss_hal_ctx_t *ctx)
+{
+    FILE *f = fopen("/etc/hdal-board.conf", "r");
+    char line[64], path[48];
+    int v;
+
+    ctx->spk_gpio = -1;
+    ctx->spk_active_low = false;
+    if (!f)
+        return;
+    while (fgets(line, sizeof(line), f)) {
+        if (sscanf(line, "spk_gpio=%d", &v) == 1)
+            ctx->spk_gpio = v;
+        else if (sscanf(line, "spk_active_low=%d", &v) == 1)
+            ctx->spk_active_low = v != 0;
+    }
+    fclose(f);
+    if (ctx->spk_gpio < 0)
+        return;
+    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d", ctx->spk_gpio);
+    if (access(path, F_OK) != 0) {
+        snprintf(line, sizeof(line), "%d", ctx->spk_gpio);
+        spk_write("/sys/class/gpio/export", line);
+    }
+    spk_amp(ctx, false);
+}
+
+static void *amp_thread(void *arg)
+{
+    rss_hal_ctx_t *ctx = arg;
+
+    while (!ctx->amp_stop) {
+        poll(NULL, 0, 200);
+        pthread_mutex_lock(&ctx->amp_lock);
+        if (ctx->amp_is_on && nvt_now_us() - ctx->amp_last_us > NVT_AMP_IDLE_US) {
+            spk_amp(ctx, false);
+            ctx->amp_is_on = false;
+        }
+        pthread_mutex_unlock(&ctx->amp_lock);
+    }
+    return NULL;
+}
+
+static void amp_activity(rss_hal_ctx_t *ctx)
+{
+    if (ctx->spk_gpio < 0)
+        return;
+    pthread_mutex_lock(&ctx->amp_lock);
+    ctx->amp_last_us = nvt_now_us();
+    if (!ctx->amp_is_on) {
+        spk_amp(ctx, true);
+        ctx->amp_is_on = true;
+    }
+    pthread_mutex_unlock(&ctx->amp_lock);
+}
+
+static int nvt_audio_init(void *vctx, const rss_audio_config_t *cfg)
+{
+    rss_hal_ctx_t *ctx = vctx;
+    unsigned spf;
+
+    if (!cfg)
+        return RSS_ERR_INVAL;
+    if (ctx->ai_fd >= 0)
+        return RSS_OK;
+    spf = cfg->samples_per_frame > 0 ? (unsigned)cfg->samples_per_frame
+                                     : (unsigned)cfg->sample_rate / 50;
+    if (spf > NVT_PCM_MAX_SPF)
+        return RSS_ERR_INVAL;
+    ctx->ai_fd = pcm_open(NVT_PCM_CAPTURE, (unsigned)cfg->sample_rate, spf, spf);
+    if (ctx->ai_fd < 0)
+        return RSS_ERR_IO;
+    ctx->ai_spf = spf;
+    ctx->ai_rate = (unsigned)cfg->sample_rate;
+    ctx->ai_vol = cfg->ai_vol;
+    ctx->ai_q16 = nvt_vol_q16(cfg->ai_vol);
+    ctx->ai_muted = false;
+    ctx->ai_seq = 0;
+    if (ioctl(ctx->ai_fd, SNDRV_PCM_IOCTL_START) < 0)
+        LOG_WARN("audio in: start: %s", strerror(errno));
+    LOG_INFO("audio in: %s %u Hz, %u samples/frame", NVT_PCM_CAPTURE, ctx->ai_rate, spf);
+    return RSS_OK;
+}
+
+static int nvt_audio_deinit(void *vctx)
+{
+    rss_hal_ctx_t *ctx = vctx;
+
+    if (ctx->ai_fd >= 0) {
+        ioctl(ctx->ai_fd, SNDRV_PCM_IOCTL_DROP);
+        close(ctx->ai_fd);
+        ctx->ai_fd = -1;
+    }
+    return RSS_OK;
+}
+
+static int nvt_audio_read_frame(void *vctx, int dev, int chn, rss_audio_frame_t *frame, bool block)
+{
+    rss_hal_ctx_t *ctx = vctx;
+    struct snd_xferi x = {.buf = ctx->ai_st, .frames = ctx->ai_spf};
+    struct pollfd p;
+    int32_t q16;
+
+    (void)dev;
+    (void)chn;
+    if (!frame || ctx->ai_fd < 0)
+        return RSS_ERR_INVAL;
+    p.fd = ctx->ai_fd;
+    p.events = POLLIN;
+    if (poll(&p, 1, block ? 500 : 0) <= 0)
+        return RSS_ERR_TIMEOUT;
+    if (ioctl(ctx->ai_fd, SNDRV_PCM_IOCTL_READI_FRAMES, &x) < 0) {
+        if (errno == EPIPE) {
+            ioctl(ctx->ai_fd, SNDRV_PCM_IOCTL_PREPARE);
+            ioctl(ctx->ai_fd, SNDRV_PCM_IOCTL_START);
+        }
+        return RSS_ERR_TIMEOUT;
+    }
+    q16 = ctx->ai_muted ? 0 : ctx->ai_q16;
+    for (unsigned i = 0; i < (unsigned)x.result; i++)
+        ctx->ai_mono[i] = nvt_scale(ctx->ai_st[2 * i], q16);
+    frame->data = ctx->ai_mono;
+    frame->length = (uint32_t)x.result * 2;
+    /* The last sample of the period was taken just now. */
+    frame->timestamp = nvt_now_us() - (int64_t)x.result * 1000000 / ctx->ai_rate;
+    frame->seq = ctx->ai_seq++;
+    frame->_priv = NULL;
+    return RSS_OK;
+}
+
+static int nvt_audio_release_frame(void *vctx, int dev, int chn, rss_audio_frame_t *frame)
+{
+    (void)vctx;
+    (void)dev;
+    (void)chn;
+    (void)frame;
+    return RSS_OK;
+}
+
+static int nvt_audio_set_volume(void *vctx, int dev, int chn, int vol)
+{
+    rss_hal_ctx_t *ctx = vctx;
+
+    (void)dev;
+    (void)chn;
+    ctx->ai_vol = vol;
+    ctx->ai_q16 = nvt_vol_q16(vol);
+    return RSS_OK;
+}
+
+static int nvt_audio_get_volume(void *vctx, int dev, int chn, int *vol)
+{
+    rss_hal_ctx_t *ctx = vctx;
+
+    (void)dev;
+    (void)chn;
+    if (!vol)
+        return RSS_ERR_INVAL;
+    *vol = ctx->ai_vol;
+    return RSS_OK;
+}
+
+/* The codec's analog gain stays at the driver's setting; volume covers it. */
+static int nvt_audio_set_gain(void *vctx, int dev, int chn, int gain)
+{
+    (void)vctx;
+    (void)dev;
+    (void)chn;
+    (void)gain;
+    return RSS_OK;
+}
+
+static int nvt_audio_set_mute(void *vctx, int dev, int chn, int mute)
+{
+    rss_hal_ctx_t *ctx = vctx;
+
+    (void)dev;
+    (void)chn;
+    ctx->ai_muted = mute != 0;
+    return RSS_OK;
+}
+
+static int nvt_ao_init(void *vctx, const rss_audio_config_t *cfg)
+{
+    rss_hal_ctx_t *ctx = vctx;
+    unsigned spf;
+
+    if (!cfg)
+        return RSS_ERR_INVAL;
+    if (ctx->ao_fd >= 0)
+        return RSS_OK;
+    spf = cfg->samples_per_frame > 0 ? (unsigned)cfg->samples_per_frame
+                                     : (unsigned)cfg->sample_rate / 50;
+    if (spf > NVT_PCM_MAX_SPF)
+        return RSS_ERR_INVAL;
+    /* Start playback with 4 periods queued: rad feeds 20 ms frames as they
+     * arrive, and starting on the first one underruns on any jitter. */
+    ctx->ao_fd = pcm_open(NVT_PCM_PLAYBACK, (unsigned)cfg->sample_rate, spf, spf * 4);
+    if (ctx->ao_fd < 0)
+        return RSS_ERR_IO;
+    ctx->ao_spf = spf;
+    ctx->ao_vol = 60;
+    ctx->ao_q16 = nvt_vol_q16(60);
+    ctx->ao_muted = false;
+    spk_init(ctx);
+    ctx->amp_is_on = false;
+    ctx->amp_stop = false;
+    if (ctx->spk_gpio >= 0)
+        ctx->amp_thr_on = pthread_create(&ctx->amp_thr, NULL, amp_thread, ctx) == 0;
+    LOG_INFO("audio out: %s %u Hz, %u samples/frame", NVT_PCM_PLAYBACK, (unsigned)cfg->sample_rate,
+             spf);
+    return RSS_OK;
+}
+
+static int nvt_ao_deinit(void *vctx)
+{
+    rss_hal_ctx_t *ctx = vctx;
+
+    if (ctx->ao_fd < 0)
+        return RSS_OK;
+    if (ctx->amp_thr_on) {
+        ctx->amp_stop = true;
+        pthread_join(ctx->amp_thr, NULL);
+        ctx->amp_thr_on = false;
+    }
+    spk_amp(ctx, false);
+    ctx->amp_is_on = false;
+    ioctl(ctx->ao_fd, SNDRV_PCM_IOCTL_DROP);
+    close(ctx->ao_fd);
+    ctx->ao_fd = -1;
+    return RSS_OK;
+}
+
+static int nvt_ao_send_frame(void *vctx, const int16_t *data, uint32_t len, bool block)
+{
+    rss_hal_ctx_t *ctx = vctx;
+    uint32_t n = len / 2;
+
+    (void)block;
+    if (!data || ctx->ao_fd < 0)
+        return RSS_ERR_INVAL;
+    amp_activity(ctx);
+    while (n) {
+        uint32_t chunk = n < NVT_PCM_MAX_SPF ? n : NVT_PCM_MAX_SPF;
+        int32_t q16 = ctx->ao_muted ? 0 : ctx->ao_q16;
+        struct snd_xferi x = {.buf = ctx->ao_st, .frames = chunk};
+
+        for (uint32_t i = 0; i < chunk; i++)
+            ctx->ao_st[2 * i] = ctx->ao_st[2 * i + 1] = nvt_scale(data[i], q16);
+        if (ioctl(ctx->ao_fd, SNDRV_PCM_IOCTL_WRITEI_FRAMES, &x) < 0) {
+            if (errno != EPIPE)
+                return RSS_ERR_IO;
+            /* Underrun between sounds; restart and resend this chunk. */
+            ioctl(ctx->ao_fd, SNDRV_PCM_IOCTL_PREPARE);
+            continue;
+        }
+        data += x.result;
+        n -= (uint32_t)x.result;
+    }
+    return RSS_OK;
+}
+
+static int nvt_ao_set_volume(void *vctx, int vol)
+{
+    rss_hal_ctx_t *ctx = vctx;
+
+    ctx->ao_vol = vol;
+    ctx->ao_q16 = nvt_vol_q16(vol);
+    return RSS_OK;
+}
+
+static int nvt_ao_get_volume(void *vctx, int *vol)
+{
+    rss_hal_ctx_t *ctx = vctx;
+
+    if (!vol)
+        return RSS_ERR_INVAL;
+    *vol = ctx->ao_vol;
+    return RSS_OK;
+}
+
+static int nvt_ao_set_mute(void *vctx, int mute)
+{
+    rss_hal_ctx_t *ctx = vctx;
+
+    ctx->ao_muted = mute != 0;
+    return RSS_OK;
+}
+
+static int nvt_ao_clear_buf(void *vctx)
+{
+    rss_hal_ctx_t *ctx = vctx;
+
+    if (ctx->ao_fd < 0)
+        return RSS_OK;
+    ioctl(ctx->ao_fd, SNDRV_PCM_IOCTL_DROP);
+    ioctl(ctx->ao_fd, SNDRV_PCM_IOCTL_PREPARE);
+    return RSS_OK;
+}
+
+static int nvt_ao_noop(void *vctx)
+{
+    (void)vctx;
+    return RSS_OK;
+}
+
+static int nvt_ao_set_gain(void *vctx, int gain)
+{
+    (void)vctx;
+    (void)gain;
+    return RSS_OK;
+}
+
 /* ── system / ISP ── */
 
 static int nvt_sys_get_timestamp(void *vctx, int64_t *ts)
@@ -1330,7 +1797,7 @@ static int nvt_sys_get_timestamp(void *vctx, int64_t *ts)
     (void)vctx;
     if (!ts)
         return RSS_ERR_INVAL;
-    *ts = (int64_t)hd_gettime_us();
+    *ts = nvt_now_us();
     return RSS_OK;
 }
 
@@ -1610,6 +2077,25 @@ static const rss_hal_ops_t nvt_ops = {
     .osd_set_region_attr = nvt_osd_set_region_attr,
     .osd_update_region_data = nvt_osd_update_region_data,
     .osd_show_region = nvt_osd_show_region,
+    .audio_init = nvt_audio_init,
+    .audio_deinit = nvt_audio_deinit,
+    .audio_read_frame = nvt_audio_read_frame,
+    .audio_release_frame = nvt_audio_release_frame,
+    .audio_set_volume = nvt_audio_set_volume,
+    .audio_get_volume = nvt_audio_get_volume,
+    .audio_set_gain = nvt_audio_set_gain,
+    .audio_set_mute = nvt_audio_set_mute,
+    .ao_init = nvt_ao_init,
+    .ao_deinit = nvt_ao_deinit,
+    .ao_send_frame = nvt_ao_send_frame,
+    .ao_set_volume = nvt_ao_set_volume,
+    .ao_get_volume = nvt_ao_get_volume,
+    .ao_set_gain = nvt_ao_set_gain,
+    .ao_set_mute = nvt_ao_set_mute,
+    .ao_pause = nvt_ao_noop,
+    .ao_resume = nvt_ao_noop,
+    .ao_clear_buf = nvt_ao_clear_buf,
+    .ao_flush_buf = nvt_ao_noop,
     .isp_get_brightness = nvt_isp_get_brightness,
     .isp_get_contrast = nvt_isp_get_contrast,
     .isp_get_saturation = nvt_isp_get_saturation,
@@ -1634,6 +2120,10 @@ rss_hal_ctx_t *rss_hal_create_backend(const char *backend)
     if (!ctx)
         return NULL;
     pthread_mutex_init(&ctx->lock, NULL);
+    pthread_mutex_init(&ctx->amp_lock, NULL);
+    ctx->spk_gpio = -1;
+    ctx->ai_fd = -1;
+    ctx->ao_fd = -1;
     for (int i = 0; i < NVT_IMG_MAX; i++)
         ctx->img[i] = -1;
     ctx->ops = &nvt_ops;
