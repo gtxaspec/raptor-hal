@@ -1289,16 +1289,29 @@ static int nvt_osd_set_region_attr(void *vctx, int handle, const rss_osd_region_
         attr->height > NVT_OSD_MAX_H)
         return RSS_ERR_INVAL;
     pthread_mutex_lock(&ctx->lock);
+    bool resized = attr->width != r->attr.width || attr->height != r->attr.height;
     r->attr = *attr;
     if (attr->type == RSS_OSD_COVER)
         osd_fill(r, NULL);
     else if (attr->bitmap_data)
         osd_fill(r, attr->bitmap_data);
     for (int g = 0; g < NVT_MAX_CHN; g++) {
-        if (!r->g[g].reg)
+        nvt_osd_stamp_t *s = &r->g[g];
+        if (!s->reg)
             continue;
-        osd_stamp_push(r, &r->g[g]);
-        osd_stamp_attr(r, &r->g[g]);
+        /* A running stamp keeps its old size for HDAL's overlap check,
+         * which then rejects the new image or attr: restart it. */
+        bool shown = s->shown;
+        if (resized && shown) {
+            hd_videoenc_stop(s->path);
+            s->shown = false;
+        }
+        osd_stamp_push(r, s);
+        osd_stamp_attr(r, s);
+        if (resized && shown) {
+            hd_videoenc_start(s->path);
+            s->shown = true;
+        }
     }
     pthread_mutex_unlock(&ctx->lock);
     return RSS_OK;
