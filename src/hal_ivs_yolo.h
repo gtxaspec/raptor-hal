@@ -118,4 +118,36 @@ static inline void yolo_nms(std::vector<DetBox> &input, std::vector<DetBox> &out
     }
 }
 
+/*
+ * YOLOv5's letterbox: the frame scaled to fit the model input with its
+ * aspect kept and centred, the rest padded. Model pixels are frame pixels
+ * times scale plus pad.
+ */
+struct YoloLetterbox {
+    float scale, pad_x, pad_y;
+};
+
+static inline YoloLetterbox yolo_letterbox(int frame_w, int frame_h, int input_w, int input_h)
+{
+    YoloLetterbox lb;
+    lb.scale = std::min((float)input_w / frame_w, (float)input_h / frame_h);
+    lb.pad_x = (input_w - frame_w * lb.scale) / 2;
+    lb.pad_y = (input_h - frame_h * lb.scale) / 2;
+    return lb;
+}
+
+/* A box in model pixels back to frame pixels, clamped to the frame. */
+static inline void yolo_unletterbox(const YoloLetterbox &lb, const DetBox &d, int frame_w,
+                                    int frame_h, int out[4])
+{
+    int x0 = (int)((d.x1 - lb.pad_x) / lb.scale);
+    int y0 = (int)((d.y1 - lb.pad_y) / lb.scale);
+    int x1 = (int)((d.x2 - lb.pad_x) / lb.scale);
+    int y1 = (int)((d.y2 - lb.pad_y) / lb.scale);
+    out[0] = x0 < 0 ? 0 : x0;
+    out[1] = y0 < 0 ? 0 : y0;
+    out[2] = x1 >= frame_w ? frame_w - 1 : x1;
+    out[3] = y1 >= frame_h ? frame_h - 1 : y1;
+}
+
 #endif /* HAL_IVS_YOLO_H */
