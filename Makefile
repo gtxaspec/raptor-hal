@@ -16,6 +16,8 @@
 #   JZDL_INCLUDE    - Path to Ingenic jzdl headers: build hal_jzdl_* on libjzdl.m.so
 #   OJZDL           - Set to 1 to build hal_jzdl_* on ojzdl, the open runtime in
 #                     src/ojzdl (no libjzdl, no libstdc++); exclusive with JZDL_INCLUDE
+#   ONNA            - Set to 1 (T41) to build hal_jzdl_* on onna, the open NNA runtime in
+#                     src/onna (no venus/Magik libraries, no nmem); exclusive with the two above
 #   DEBUG           - Set to 1 for debug build
 #   V               - Set to 1 for verbose output
 
@@ -134,6 +136,24 @@ ifeq ($(PLATFORM),T31)
 OJZDL_FLAGS += -DOJZDL_MXU2
 endif
 $(OJZDL_SRCS:.c=.o): CFLAGS += $(OJZDL_FLAGS)
+endif
+
+# onna: hal_jzdl_* on the T41 NNA through the open onna runtime (src/onna): venus
+# .bin models of the QSUM kind, no venus/Magik libraries, no nmem. Uses ojzdl's
+# resize, so the input matches the T31 path.
+ONNA ?=
+ifeq ($(ONNA),1)
+ifneq ($(PLATFORM),T41)
+$(error ONNA=1 is for the T41's NNA)
+endif
+ifneq ($(JZDL_INCLUDE)$(OJZDL),)
+$(error ONNA=1, OJZDL=1 and JZDL_INCLUDE are mutually exclusive)
+endif
+ONNA_SRCS := src/hal_ivs_onna.c src/onna/onnaq.c src/onna/nnaeng.c src/onna/nnacpu.c \
+             src/onna/be_mxu3.c src/ojzdl/ojzdl_resize.c
+VIDEO_SRCS += $(ONNA_SRCS)
+ONNA_FLAGS := -D_POSIX_C_SOURCE=200809L -ffp-contract=off -O2 -DONNA_MXU3 -DONNAQ_LIB
+$(ONNA_SRCS:.c=.o): CFLAGS += $(ONNA_FLAGS)
 endif
 
 CXX_SRCS :=
