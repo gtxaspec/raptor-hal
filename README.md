@@ -2,13 +2,14 @@
 
 Hardware Abstraction Layer for the Raptor Streaming System (RSS). Provides a
 unified C API over the Ingenic IMP SDK, abstracting away the differences between
-three SDK generations so that RSS daemons (RVD, RAD, RIC) can target all 9
-Ingenic SoCs from a single codebase.
+three SDK generations, and over the Novatek HDAL, so that RSS daemons (RVD, RAD,
+RIC) can target 10 Ingenic SoCs and the Novatek NA51055 from a single codebase.
 
 ## Supported Platforms
 
 | SoC | SDK Generation | Notes |
 |-----|---------------|-------|
+| T10 | Old | XBurst1, built with the T20 SDK |
 | T20 | Old | XBurst1, H.264 only |
 | T21 | Old | XBurst1 |
 | T23 | Old | XBurst1, extended OSD |
@@ -18,10 +19,12 @@ Ingenic SoCs from a single codebase.
 | T33 | New (hybrid) | XBurst1, T32-compatible, no DMIC/WDR |
 | T40 | IMPVI | XBurst2, multi-sensor |
 | T41 | IMPVI | XBurst2, multi-sensor |
+| NA51055 | Novatek HDAL | ARM Cortex-A9 (NT98529), one backend in `src/hal_novatek.c` |
 
 SDK generation differences (encoder struct layout, RC mode enums, ISP function
 signatures, ring buffer semantics) are handled internally via compile-time
-`HAL_OLD_SDK` / `HAL_NEW_SDK` / `HAL_IMPVI_SDK` macros.
+`HAL_OLD_SDK` / `HAL_NEW_SDK` / `HAL_IMPVI_SDK` macros. NA51055 builds only the
+Novatek backend, with no IMP sources.
 
 ## Build
 
@@ -36,10 +39,11 @@ make PLATFORM=T31 CROSS_COMPILE=mipsel-linux-
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `PLATFORM` | yes | -- | Target SoC: T20, T21, T23, T30, T31, T32, T33, T40, T41 |
+| `PLATFORM` | yes | -- | Target SoC: T10, T20, T21, T23, T30, T31, T32, T33, T40, T41, NA51055 |
 | `CROSS_COMPILE` | yes | -- | Toolchain prefix (e.g. `mipsel-linux-`) |
 | `INGENIC_HEADERS` | no | `../ingenic-headers` | Path to SDK header repo |
 | `INGENIC_LIB` | no | `../ingenic-lib` | Path to SDK library repo |
+| `HDAL_INCLUDE` | NA51055 | `hdal-include` | Path to the Novatek HDAL headers |
 | `DEBUG` | no | 0 | Set to 1 for `-O0 -g` and `HAL_DEBUG` logging |
 | `V` | no | 0 | Set to 1 for verbose build output |
 
