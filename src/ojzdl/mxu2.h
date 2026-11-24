@@ -25,6 +25,9 @@
  * Vector registers are named by number 0..31. GPR operands must be fixed
  * registers: bind the C variable with `register T *p __asm__("$8")` and pass
  * it to the asm statement as an "r" input so gcc keeps it there.
+ *
+ * Copyright (C) 2026 Thingino Project
+ * SPDX-License-Identifier: MIT
  */
 #ifndef OJZDL_MXU2_H
 #define OJZDL_MXU2_H

@@ -10,6 +10,9 @@
  *   - vertical: fraction in float, b0 rounded, b1 = 2048 - b0, edge 2047;
  *   - rows: (p0 * a0 + p1 * a1) >> 4 as int16; out = ((b0*r0) >> 16) +
  *     ((b1*r1) >> 16), then (+2) >> 2.
+ *
+ * Copyright (C) 2026 Thingino Project
+ * SPDX-License-Identifier: MIT
  */
 #include "ojzdl.h"
 #include "ojzdl_mxu2.h"

@@ -9,6 +9,9 @@
  *   ojzdl_forward(n);
  *   const float *o = ojzdl_output(n, &count);
  *   ojzdl_free(n);
+ *
+ * Copyright (C) 2026 Thingino Project
+ * SPDX-License-Identifier: MIT
  */
 #ifndef OJZDL_H
 #define OJZDL_H

@@ -11,3 +11,5 @@ Open runtime for Ingenic JZDL models (the format of `libjzdl.m.so`), used by
 Upstream source, tests (bit-exact gate against libjzdl, MXU2 self-test) and
 notes: Small6oy/thingino-ai, `tools/ojzdl/` and `docs/jzdl-runtime.md`.
 Files here are copied unchanged from there; change them there first.
+
+Licence: MIT (SPDX header in each file), as raptor-hal's own sources; Copyright (C) 2026 Thingino Project.

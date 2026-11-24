@@ -1,4 +1,8 @@
-/* ojzdl MXU2 kernels: internal interface between ojzdl.c and ojzdl_mxu2.c. */
+/* ojzdl MXU2 kernels: internal interface between ojzdl.c and ojzdl_mxu2.c.
+ *
+ * Copyright (C) 2026 Thingino Project
+ * SPDX-License-Identifier: MIT
+ */
 #ifndef OJZDL_MXU2_KERNELS_H
 #define OJZDL_MXU2_KERNELS_H
 

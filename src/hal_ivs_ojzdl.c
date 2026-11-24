@@ -9,6 +9,9 @@
  *     (640x360 -> 416x320 / 320x416), from NV12 rows converted on demand;
  *   - NV12 -> RGB, YOLOv5 decode and NMS are the same code as the C++ backend.
  * Build with OJZDL=1 instead of JZDL_INCLUDE.
+ *
+ * Copyright (C) 2026 Thingino Project
+ * SPDX-License-Identifier: MIT
  */
 
 #include "hal_internal.h"

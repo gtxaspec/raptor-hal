@@ -3,6 +3,9 @@
  * Every rule here is from ../../jzdl-format.md ("Layer types", "Arithmetic"),
  * found by designed experiments against libjzdl 5.4.0 under QEMU and checked
  * on the v3. Section names are cited as [fmt: <section>].
+ *
+ * Copyright (C) 2026 Thingino Project
+ * SPDX-License-Identifier: MIT
  */
 #include "ojzdl.h"
 #include "ojzdl_mxu2.h"

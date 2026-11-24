@@ -11,6 +11,9 @@
  *   v22,v23  shift (int16)
  *   v24      2^(bits-1)      v25  narrowing selector
  *   v26      zero            v27  2^(bits-1) - 1
+ *
+ * Copyright (C) 2026 Thingino Project
+ * SPDX-License-Identifier: MIT
  */
 #include "ojzdl_mxu2.h"
 
