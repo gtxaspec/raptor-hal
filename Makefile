@@ -13,6 +13,9 @@
 #   INGENIC_HEADERS - Path to ingenic-headers repo (default: ../ingenic-headers)
 #   INGENIC_LIB     - Path to ingenic-lib repo (default: ../ingenic-lib)
 #   V4L2_OPENIMP    - Set to 1 for the optional V4L2/OpenIMP AVC bridge
+#   JZDL_INCLUDE    - Path to Ingenic jzdl headers: build hal_jzdl_* on libjzdl.m.so
+#   OJZDL           - Set to 1 to build hal_jzdl_* on ojzdl, the open runtime in
+#                     src/ojzdl (no libjzdl, no libstdc++); exclusive with JZDL_INCLUDE
 #   DEBUG           - Set to 1 for debug build
 #   V               - Set to 1 for verbose output
 
@@ -115,6 +118,23 @@ endif
 
 AUDIO_SRCS := src/hal_audio.c \
               src/hal_dmic.c
+
+# Open JZDL inference: same hal_jzdl_* API, results bit-identical to libjzdl.
+# MXU2 kernels on the T31 (the only SoC they are tested on); C elsewhere.
+OJZDL ?=
+ifeq ($(OJZDL),1)
+ifneq ($(JZDL_INCLUDE),)
+$(error OJZDL=1 and JZDL_INCLUDE are mutually exclusive)
+endif
+OJZDL_SRCS := src/hal_ivs_ojzdl.c src/ojzdl/ojzdl.c src/ojzdl/ojzdl_mxu2.c src/ojzdl/ojzdl_resize.c
+VIDEO_SRCS += $(OJZDL_SRCS)
+# -O2: the runtime's loops lose ~12 % at -Os on the T31 (measured)
+OJZDL_FLAGS := -D_POSIX_C_SOURCE=200809L -ffp-contract=off -O2
+ifeq ($(PLATFORM),T31)
+OJZDL_FLAGS += -DOJZDL_MXU2
+endif
+$(OJZDL_SRCS:.c=.o): CFLAGS += $(OJZDL_FLAGS)
+endif
 
 CXX_SRCS :=
 ifneq ($(JZDL_INCLUDE),)
