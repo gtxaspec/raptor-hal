@@ -35,6 +35,8 @@ extern "C" {
 #define RSS_ERR_IO (-EIO)
 #define RSS_ERR_BUSY (-EBUSY)
 #define RSS_ERR_NOENT (-ENOENT)
+/* Not a failure: the HAL's own rate control consumed the frame */
+#define RSS_ERR_SKIPPED (-ECANCELED)
 
 /* ================================================================
  * HAL Types
@@ -819,6 +821,9 @@ typedef struct rss_hal_ops {
     int (*enc_start)(void *ctx, int chn);
     int (*enc_stop)(void *ctx, int chn);
     int (*enc_poll)(void *ctx, int chn, uint32_t timeout_ms);
+    /* RSS_OK: a frame (release it). -EAGAIN: the encoder delivered nothing.
+     * RSS_ERR_SKIPPED: a frame was produced and dropped by the HAL's rate
+     * control; nothing to release. */
     int (*enc_get_frame)(void *ctx, int chn, rss_frame_t *frame);
     int (*enc_release_frame)(void *ctx, int chn, rss_frame_t *frame);
     int (*enc_request_idr)(void *ctx, int chn);
