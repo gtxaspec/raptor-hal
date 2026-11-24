@@ -102,7 +102,7 @@ int hal_isp_set_hue(void *ctx, int val)
  * T21:         SetISPHflip(OpsMode) + SetISPVflip(OpsMode)
  * T23/T31:     SetHVFLIP(IMPISPHVFLIP)
  * T40:         SetHVFLIP(IMPVI_NUM, IMPISPHVFLIP*)
- * T32/T41:     SetHVFLIP(IMPVI_NUM, IMPISPHVFLIPAttr*)
+ * T32/T41:     SetHVFLIP(IMPVI_NUM, IMPISPHVFLIPAttr*), sensor layer only
  *
  * The HAL exposes separate set_hflip / set_vflip.  We cache both
  * states in the context and re-apply the combined flip on each call.
@@ -134,8 +134,9 @@ int hal_isp_set_hflip(void *ctx, int enable)
     int mode = (c->hflip_state[0] ? 1 : 0) | (c->vflip_state[0] ? 2 : 0);
     IMPISPHVFLIPAttr attr;
     memset(&attr, 0, sizeof(attr));
+    /* One layer only: the SDK forbids the same flip in sensor_mode and
+     * isp_mode (T41 rejects it with -4090, T32 applies both and cancels) */
     attr.sensor_mode = (IMPISPHVFLIP)mode;
-    attr.isp_mode[0] = (IMPISPHVFLIP)mode;
     return IMP_ISP_Tuning_SetHVFLIP(IMPVI_MAIN, &attr);
 #endif
 }
@@ -165,7 +166,6 @@ int hal_isp_set_vflip(void *ctx, int enable)
     IMPISPHVFLIPAttr attr;
     memset(&attr, 0, sizeof(attr));
     attr.sensor_mode = (IMPISPHVFLIP)mode;
-    attr.isp_mode[0] = (IMPISPHVFLIP)mode;
     return IMP_ISP_Tuning_SetHVFLIP(IMPVI_MAIN, &attr);
 #endif
 }
@@ -3356,7 +3356,6 @@ int hal_isp_set_hflip_n(void *ctx, int sensor_idx, int enable)
         IMPISPHVFLIPAttr attr;
         memset(&attr, 0, sizeof(attr));
         attr.sensor_mode = (IMPISPHVFLIP)mode;
-        attr.isp_mode[0] = (IMPISPHVFLIP)mode;
         return IMP_ISP_Tuning_SetHVFLIP((IMPVI_NUM)sensor_idx, &attr);
 #elif defined(HAL_T23_MULTICAM)
         return IMP_ISP_MultiCamera_Tuning_SetHVFLIP((IMPVI_NUM)sensor_idx, mode);
@@ -3393,7 +3392,6 @@ int hal_isp_set_vflip_n(void *ctx, int sensor_idx, int enable)
         IMPISPHVFLIPAttr attr;
         memset(&attr, 0, sizeof(attr));
         attr.sensor_mode = (IMPISPHVFLIP)mode;
-        attr.isp_mode[0] = (IMPISPHVFLIP)mode;
         return IMP_ISP_Tuning_SetHVFLIP((IMPVI_NUM)sensor_idx, &attr);
 #elif defined(HAL_T23_MULTICAM)
         return IMP_ISP_MultiCamera_Tuning_SetHVFLIP((IMPVI_NUM)sensor_idx, mode);
