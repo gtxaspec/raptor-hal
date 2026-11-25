@@ -184,6 +184,79 @@ static void test_letterbox_portrait(void)
     CHECK(b[0] == 0 && b[1] == 0 && b[2] == 809 && b[3] == 1079);
 }
 
+/* A level decoded with a model's own anchors: Ingenic persondet's at stride 32. */
+static void test_decode_anchors(void)
+{
+    static const float pd32[6] = {81, 82, 135, 169, 344, 319};
+    head h(13, 10, 1);
+    float *a = h.anchor(6, 4, 1);
+    a[0] = a[1] = a[2] = a[3] = 0;
+    a[4] = a[5] = 6;
+    std::vector<DetBox> boxes;
+    yolo_decode_anchors(h.v.data(), pd32, h.gw, h.gh, 416, 320, 0.5f, h.nc, boxes);
+    CHECK(boxes.size() == 1);
+    if (boxes.size() == 1) {
+        CHECK(near(boxes[0].x2 - boxes[0].x1, 135));
+        CHECK(near(boxes[0].y2 - boxes[0].y1, 169));
+        CHECK(near(boxes[0].x1 + boxes[0].x2, 2 * 6.5f * 32)); /* centre of cell 6 */
+        CHECK(near(boxes[0].y1 + boxes[0].y2, 2 * 4.5f * 32));
+    }
+}
+
+/* yolo_decode_level is yolo_decode_anchors with the stock table. */
+static void test_level_is_stock(void)
+{
+    head h(8, 6, 2);
+    float *a = h.anchor(5, 1, 2);
+    a[0] = 0.3f;
+    a[1] = -0.2f;
+    a[2] = 0.5f;
+    a[3] = -0.4f;
+    a[4] = a[6] = 5;
+    std::vector<DetBox> b1, b2;
+    yolo_decode_level(h.v.data(), 1, h.gw, h.gh, 128, 96, 0.5f, h.nc, b1);
+    yolo_decode_anchors(h.v.data(), yolo_stock_anchors[1], h.gw, h.gh, 128, 96, 0.5f, h.nc, b2);
+    CHECK(b1.size() == 1 && b2.size() == 1);
+    if (b1.size() == 1 && b2.size() == 1)
+        CHECK(b1[0].x1 == b2[0].x1 && b1[0].y1 == b2[0].y1 && b1[0].x2 == b2[0].x2 &&
+              b1[0].y2 == b2[0].y2 && b1[0].score == b2[0].score && b1[0].classid == 1);
+}
+
+static void test_parse_anchors(void)
+{
+    YoloAnchors a;
+    yolo_anchors_stock(&a);
+    CHECK(a.wh[2][4] == 373 && a.wh[0][0] == 10);
+
+    /* persondet's two strides, in the form of an onna graph, other lines skipped */
+    const char *pd = "# persondet\nconv 0 0 0 16\nanchors 32 81 82 135 169 344 319\n"
+                     "anchors\t16 10 14 23 27 37 58\noutput 53 65\n";
+    CHECK(yolo_parse_anchors(pd, &a) == 2);
+    CHECK(a.wh[2][0] == 81 && a.wh[2][5] == 319);
+    CHECK(a.wh[1][0] == 10 && a.wh[1][5] == 58);
+    CHECK(a.wh[0][0] == 10 && a.wh[0][1] == 13); /* stride 8 left stock */
+
+    /* no anchors lines: nothing set, nothing changed */
+    YoloAnchors b;
+    yolo_anchors_stock(&b);
+    CHECK(yolo_parse_anchors("conv 1 2 3\n", &b) == 0);
+    CHECK(yolo_parse_anchors("", &b) == 0);
+    CHECK(b.wh[1][0] == 30);
+
+    /* malformed: refused whole, the anchors left as they were */
+    const char *bad[] = {"anchors 32 81 82 135 169 344\n",       /* five values */
+                         "anchors 64 81 82 135 169 344 319\n",   /* no such stride */
+                         "anchors 32 81 82 135 169 344 319 7\n", /* a seventh value */
+                         "anchors 16 10 14 23 27 37 58\nanchors 32 81 -82 135 169 344 319",
+                         "anchors 32 81 82 135 0 344 319\n"}; /* not positive */
+    for (const char *t : bad) {
+        YoloAnchors c;
+        yolo_anchors_stock(&c);
+        CHECK(yolo_parse_anchors(t, &c) == -1);
+        CHECK(c.wh[1][0] == 30 && c.wh[2][0] == 116);
+    }
+}
+
 int main(void)
 {
     test_empty();
@@ -194,6 +267,9 @@ int main(void)
     test_nms();
     test_letterbox_sub_stream();
     test_letterbox_portrait();
+    test_decode_anchors();
+    test_level_is_stock();
+    test_parse_anchors();
     printf("%s: %d failure(s)\n", failures ? "FAIL" : "PASS", failures);
     return failures ? 1 : 0;
 }

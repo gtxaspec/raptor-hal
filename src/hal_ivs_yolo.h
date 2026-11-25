@@ -13,6 +13,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <string>
 #include <vector>
 
 struct DetBox {
@@ -26,21 +29,69 @@ static inline float yolo_sigmoid(float v)
     return 1.0f / (1.0f + expf(-v));
 }
 
+/* YOLOv5's stock anchors, three w h pairs per level: strides 8, 16, 32. */
+static const float yolo_stock_anchors[3][6] = {
+    {10, 13, 16, 30, 33, 23}, {30, 61, 62, 45, 59, 119}, {116, 90, 156, 198, 373, 326}};
+
+/* A model's anchors per level (strides 8, 16, 32), in model input pixels. */
+struct YoloAnchors {
+    float wh[3][6];
+};
+
+static inline void yolo_anchors_stock(YoloAnchors *a)
+{
+    std::copy(&yolo_stock_anchors[0][0], &yolo_stock_anchors[0][0] + 18, &a->wh[0][0]);
+}
+
 /*
- * Decode one head level. level 0, 1, 2 are strides 8, 16, 32 and take the
- * stock YOLOv5 anchors of that stride; gw x gh is the level's grid. Boxes
- * are appended in model input pixels.
+ * Apply the "anchors <stride> w0 h0 w1 h1 w2 h2" lines of text to a, one
+ * line per stride (8, 16 or 32), the form of onna's model graphs; other
+ * lines are skipped. Returns the number of levels set, or -1 (a left as it
+ * was) when an anchors line is malformed or names another stride.
+ */
+static inline int yolo_parse_anchors(const char *text, YoloAnchors *a)
+{
+    YoloAnchors t = *a;
+    int set = 0;
+    for (const char *line = text; line && *line;) {
+        const char *end = std::strchr(line, '\n');
+        std::string l(line, end ? (size_t)(end - line) : std::strlen(line));
+        line = end ? end + 1 : NULL;
+        if (l.compare(0, 8, "anchors ") != 0 && l.compare(0, 8, "anchors\t") != 0)
+            continue;
+        int stride;
+        float v[6];
+        char extra;
+        if (std::sscanf(l.c_str() + 8, "%d %f %f %f %f %f %f %c", &stride, &v[0], &v[1], &v[2],
+                        &v[3], &v[4], &v[5], &extra) != 7)
+            return -1;
+        int level = stride == 8 ? 0 : stride == 16 ? 1 : stride == 32 ? 2 : -1;
+        if (level < 0)
+            return -1;
+        for (int k = 0; k < 6; k++) {
+            if (!(v[k] > 0))
+                return -1;
+            t.wh[level][k] = v[k];
+        }
+        set++;
+    }
+    *a = t;
+    return set;
+}
+
+/*
+ * Decode one head level with its three anchors (w h pairs in model input
+ * pixels); gw x gh is the level's grid. Boxes are appended in model input
+ * pixels.
  *
  * A cell whose objectness is below conf_thresh cannot pass (the class
  * score is at most 1), so its class scores are not read; the best class
  * is picked on the raw scores, the sigmoid being monotonic.
  */
-static inline void yolo_decode_level(const float *p, int level, int gw, int gh, int input_w,
-                                     int input_h, float conf_thresh, int num_classes,
-                                     std::vector<DetBox> &boxes)
+static inline void yolo_decode_anchors(const float *p, const float anchors[6], int gw, int gh,
+                                       int input_w, int input_h, float conf_thresh, int num_classes,
+                                       std::vector<DetBox> &boxes)
 {
-    static const float anchors[] = {10, 13, 16,  30,  33, 23,  30,  61,  62,
-                                    45, 59, 119, 116, 90, 156, 198, 373, 326};
     const int box_num = 3;
     const int onechannel = 5 + num_classes;
 
@@ -66,8 +117,8 @@ static inline void yolo_decode_level(const float *p, int level, int gw, int gh, 
                 float bw = yolo_sigmoid(a[2]);
                 float bh = yolo_sigmoid(a[3]);
 
-                float aw = anchors[level * box_num * 2 + n * 2] / input_w;
-                float ah = anchors[level * box_num * 2 + n * 2 + 1] / input_h;
+                float aw = anchors[n * 2] / input_w;
+                float ah = anchors[n * 2 + 1] / input_h;
 
                 float box_w = (bw * 2.0f) * (bw * 2.0f) * aw;
                 float box_h = (bh * 2.0f) * (bh * 2.0f) * ah;
@@ -85,6 +136,15 @@ static inline void yolo_decode_level(const float *p, int level, int gw, int gh, 
             }
         }
     }
+}
+
+/* Decode one head level with YOLOv5's stock anchors: level 0, 1, 2 are strides 8, 16, 32. */
+static inline void yolo_decode_level(const float *p, int level, int gw, int gh, int input_w,
+                                     int input_h, float conf_thresh, int num_classes,
+                                     std::vector<DetBox> &boxes)
+{
+    yolo_decode_anchors(p, yolo_stock_anchors[level], gw, gh, input_w, input_h, conf_thresh,
+                        num_classes, boxes);
 }
 
 /* Class-aware hard NMS, highest score first. */

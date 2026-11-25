@@ -8,10 +8,14 @@
  * Per frame: the NV12 frame is copied into accelerator memory (nmem), the
  * AIP resizes and converts it into the model's input with a letterbox
  * (YOLOv5's own preprocessing: aspect kept, padded with 114), the network
- * runs on the NNA, and the three head tensors are decoded on the CPU.
+ * runs on the NNA, and the head tensors are decoded on the CPU.
  *
- * The model is a .mgk compiled by the Magik converter for the T41 with the
- * three head convolutions as outputs and a 4-channel input (COLOR RGB).
+ * The model is a .mgk compiled by the Magik converter for the T41 with its
+ * head convolutions as outputs (one to three, at strides 8, 16 and 32, each
+ * 3 x (5 + classes) channels) and a 4-channel input (COLOR RGB). Its anchors
+ * are YOLOv5's stock ones unless a text file beside it, model.anchors for
+ * model.mgk, else model.mgk.anchors, gives them as onna's model graphs do:
+ * one "anchors <stride> w0 h0 w1 h1 w2 h2" line per stride.
  * The runtime needs nmem= on the kernel command line, and on a T41 the
  * L2 cache's share of the on-chip SRAM at 128 KiB (CCU MSCR) for soc-nna
  * to map the ORAM where it expects it.
@@ -46,6 +50,7 @@ extern "C" {
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <new>
@@ -62,6 +67,8 @@ struct uranus_ctx {
     int input_w, input_h, input_c;
     int frame_w, frame_h;
     YoloLetterbox lb; /* the AIP's SYMMETRY pad is YOLOv5's letterbox */
+    int n_out;        /* head outputs, 1 to 3 */
+    YoloAnchors anchors;
     float conf_thresh;
     float nms_thresh;
     int num_classes;
@@ -157,6 +164,32 @@ static void ctx_free(uranus_ctx *ctx)
     delete ctx;
 }
 
+/*
+ * The model's anchors: YOLOv5's stock ones, then the lines of model.anchors
+ * (for model.mgk), else model.mgk.anchors, if one is there. path gets the
+ * file read. Returns the levels the file set (0 for no file), -1 for a
+ * malformed file.
+ */
+static int load_anchors(const char *model, YoloAnchors *a, char *path, size_t n)
+{
+    yolo_anchors_stock(a);
+    const char *dot = strrchr(model, '.');
+    const char *slash = strrchr(model, '/');
+    int base = (dot && (!slash || dot > slash)) ? (int)(dot - model) : (int)strlen(model);
+    FILE *f = NULL;
+    if ((size_t)snprintf(path, n, "%.*s.anchors", base, model) < n)
+        f = fopen(path, "r");
+    if (!f && (size_t)snprintf(path, n, "%s.anchors", model) < n)
+        f = fopen(path, "r");
+    if (!f)
+        return 0;
+    char text[4096];
+    size_t len = fread(text, 1, sizeof(text) - 1, f);
+    fclose(f);
+    text[len] = '\0';
+    return yolo_parse_anchors(text, a);
+}
+
 extern "C" void *hal_jzdl_create(const rss_ivs_jzdl_param_t *param)
 {
     if (!param)
@@ -218,6 +251,25 @@ extern "C" void *hal_jzdl_create(const rss_ivs_jzdl_param_t *param)
     }
 
     ctx->lb = yolo_letterbox(ctx->frame_w, ctx->frame_h, ctx->input_w, ctx->input_h);
+
+    ctx->n_out = (int)ctx->net->get_output_names().size();
+    if (ctx->n_out < 1 || ctx->n_out > 3) {
+        HAL_LOG_ERR("NNA: %d outputs (1 to 3 YOLOv5 heads supported)", ctx->n_out);
+        ctx_free(ctx);
+        runtime_deinit();
+        return NULL;
+    }
+
+    char apath[sizeof(param->model_path) + 16];
+    int an = load_anchors(param->model_path, &ctx->anchors, apath, sizeof(apath));
+    if (an < 0) {
+        HAL_LOG_ERR("NNA: %s: malformed anchors line (anchors <8|16|32> w0 h0 w1 h1 w2 h2)", apath);
+        ctx_free(ctx);
+        runtime_deinit();
+        return NULL;
+    }
+    if (an > 0)
+        HAL_LOG_INFO("NNA: anchors for %d stride(s) from %s", an, apath);
 
     ctx->conf_thresh = param->conf_threshold;
     ctx->nms_thresh = param->nms_threshold;
@@ -297,7 +349,7 @@ extern "C" int hal_jzdl_detect(void *handle, const uint8_t *nv12_data,
     ctx->candidates.clear();
     ctx->detections.clear();
     const int want_c = 3 * (5 + ctx->num_classes);
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < ctx->n_out; i++) {
         const mu::Tensor out = ctx->net->get_output(i);
         mu::shape_t s = out.shape();
         int level = s.size() == 4 ? level_of(ctx->input_h, s[1]) : -1;
@@ -305,8 +357,8 @@ extern "C" int hal_jzdl_detect(void *handle, const uint8_t *nv12_data,
             HAL_LOG_ERR("NNA: output %d is not a YOLOv5 head for %d classes", i, ctx->num_classes);
             return RSS_ERR;
         }
-        yolo_decode_level(out.vdata<float>(), level, s[2], s[1], ctx->input_w, ctx->input_h,
-                          ctx->conf_thresh, ctx->num_classes, ctx->candidates);
+        yolo_decode_anchors(out.vdata<float>(), ctx->anchors.wh[level], s[2], s[1], ctx->input_w,
+                            ctx->input_h, ctx->conf_thresh, ctx->num_classes, ctx->candidates);
     }
     yolo_nms(ctx->candidates, ctx->detections, ctx->nms_thresh);
 
