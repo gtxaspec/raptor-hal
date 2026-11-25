@@ -10,7 +10,18 @@
 #ifndef NNAENG_H
 #define NNAENG_H
 #include <stdint.h>
-#include "nnabin.h"
+#include "nnacpu.h"
+
+/* one conv layer for nna_conv: weights wq [ky][kx][oc][ic] int8 (raw - 128); the stem is the 6x6/2
+ * on RGBA (ic 4), run as 6-row strips; rec keys nnaeng's per-record W caches */
+#define NNA_MAXREC 1024		/* conv records (nna_node.rec) nnaeng caches weights for */
+
+struct nna_node {
+	int rec, oc, ic, kh, kw, stride, pad, padval;
+	int stem;
+	int dw;			/* depthwise (one input channel per output channel): wq is [ky][kx][oc] */
+	int8_t *wq;
+};
 
 struct nna_be {
 	void *ctx;
@@ -43,9 +54,5 @@ struct nna_rq {
  * 0 on success, -1 if the layer does not fit this tiling (message on stderr). */
 int nna_conv(const struct nna_be *be, const uint8_t *in, int H, int W, int C, int ps,
 	     const struct nna_node *nd, int32_t *S, const struct nna_rq *rq, int *oh, int *ow);
-
-/* instruction counts per type (rwr, dwr, drd, mac, cmd) through a wrapped backend */
-void nna_count_wrap(struct nna_be *be);
-void nna_count_get(long c[5]);
 
 #endif

@@ -67,8 +67,9 @@ static void put_entries(const struct nna_be *be, const uint8_t *e, int n)
 	}
 }
 
-/* the encoded W of each conv record, built on first use (weights never change) */
-static uint8_t *wcache[256];
+/* the encoded W of each conv record, built on first use (weights never change); nna_conv
+ * rejects a record past the end (YOLO-style graphs have 300+) */
+static uint8_t *wcache[NNA_MAXREC];
 
 static void common_regs(const struct nna_be *be, int padval, int fw, int fh, int r21)
 {
@@ -442,7 +443,8 @@ static int stem(const struct nna_be *be, const uint8_t *in, int H, int W, const 
 	be->rwr(be->ctx, R_PITCH, PITCH);
 	be->rwr(be->ctx, R_PLANE, PITCH);
 	if (!wcache[nd->rec]) {		/* variant v (r = 2v): groups kx 0..5 = entries 0..23 */
-		wcache[nd->rec] = malloc(3 * 6 * 1024);
+		if (!(wcache[nd->rec] = malloc(3 * 6 * 1024)))
+			ERR("out of memory");
 		for (int v = 0; v < 3; v++)
 			for (int kx = 0; kx < 6; kx++) {
 				memset(w, 0, sizeof(w));
@@ -554,6 +556,8 @@ int nna_conv(const struct nna_be *be, const uint8_t *in, int H, int W, int C, in
 #endif
 	if (ps <= 0)
 		ps = C;
+	if (nd->rec < 0 || nd->rec >= NNA_MAXREC)
+		ERR("conv record %d (the W cache holds %d)", nd->rec, NNA_MAXREC);
 	if (nd->stem)
 		return stem(be, in, H, W, nd, S, rq, OH, OW);
 	if (kh > 3 || kw > 3 || P > 16)
@@ -612,6 +616,9 @@ int nna_conv(const struct nna_be *be, const uint8_t *in, int H, int W, int C, in
 
 	if (!wcache[nd->rec]) {
 		uint8_t *e = wcache[nd->rec] = malloc((size_t)nob * gper * 1024);
+
+		if (!e)
+			ERR("out of memory");
 
 		for (int ob = 0; ob < nob; ob++)
 			for (int k = 0; k < P; k++)
@@ -725,26 +732,4 @@ int nna_conv(const struct nna_be *be, const uint8_t *in, int H, int W, int C, in
 			}
 	}
 	return 0;
-}
-
-/* instruction counting (onnarun -t): wraps a backend */
-static struct nna_be inner;
-static long counts[5];
-
-static void c_rwr(void *c, unsigned r, uint32_t v) { counts[0]++; inner.rwr(c, r, v); }
-static void c_dwr(void *c, unsigned i, const uint8_t v[64]) { counts[1]++; inner.dwr(c, i, v); }
-static void c_drd(void *c, unsigned i, uint8_t v[64]) { counts[2]++; inner.drd(c, i, v); }
-static void c_mac(void *c, unsigned i, uint32_t w) { counts[3]++; inner.mac(c, i, w); }
-static void c_cmd(void *c, unsigned i) { counts[4]++; inner.cmd(c, i); }
-
-void nna_count_wrap(struct nna_be *be)
-{
-	inner = *be;
-	be->rwr = c_rwr, be->dwr = c_dwr, be->drd = c_drd, be->mac = c_mac, be->cmd = c_cmd;
-	be->direct = 0;		/* every instruction goes through the counters */
-}
-
-void nna_count_get(long c[5])
-{
-	memcpy(c, counts, sizeof(counts));
 }

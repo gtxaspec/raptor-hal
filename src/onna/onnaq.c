@@ -2,6 +2,8 @@
  * onnaq: run a venus .bin of the QSUM kind (the NNA requantizes every conv; ReLU; dense and
  * depthwise 3x3 (stride 1/2), per-channel 1x1, 2x2 maxpool, ConvTranspose 2x2/2, concat, adds) on the
  * T41 NNA, or on the CPU: the thingino-ai model types (persondet, YOLO-N, YOLOX-Nano, MobileNetV4).
+ * Also the SiLU kind, Ingenic's yolov5n (graph from the .bin only): 6x6/2 stem on RGBA, SiLU
+ * requant, 5x5 maxpool (SPPF), nearest x2 upsample, implicit and recorded concats, Normalize.
  *
  *   onnaq [-e cpu|oracle|nna] [-c] [-T] [-n N] model.bin [model.qgraph | -] frame.rgb prefix
  * "-" (or onnaq_open(bin, NULL, nna)): the graph comes from the .bin's own op list (load_graph_bin);
@@ -12,12 +14,15 @@
  *   -c  check every engine conv against the CPU conv
  *   -T  time per op kind
  *   -n  run N times (timing); the heads must be identical in every run
- * frame.rgb: H x W x 3 RGB bytes (the network size). Writes prefix.<k>.f32 per head (NHWC float).
+ * frame.rgb: H x W x 3 RGB bytes (the network size), or H x W x 4 RGBA for a 4-channel model
+ * (yolov5n; onnaq_run takes RGB and adds alpha 0). Writes prefix.<k>.f32 per head (NHWC float).
  *
  * The arithmetic (docs/nna-runtime.md, "QSUM models"): conv q = clamp(floor(((S << sh) + B) / T) + 128), sh
  * from the op list (usually 2),
  * S = sum (raw - 128) * x over raw input bytes x; heads f32(S + B) * Fl; 2x2 maxpool = byte max;
  * concat input i = rint(x * s_i / s_out); padding 0. All numbers come from the .bin.
+ * The SiLU kind (venus's float requant, nnacpu.h): q = lut[rint(f32(S + B) * Fl)] through the
+ * record's SiLU table, padding 128 (the stem's 0), concat / Normalize rint((x - 128) a) + 128.
  *
  * Copyright (C) 2026 Thingino Project
  * SPDX-License-Identifier: MIT
@@ -35,7 +40,6 @@
 #include <string.h>
 #include <time.h>
 
-#include "nnabin.h"
 #include "nnaeng.h"
 #include "onnaq.h"
 #ifdef ONNA_ORACLE
@@ -66,6 +70,25 @@ static void die(const char *fmt, ...)
 }
 #define DIE(...) die(__VA_ARGS__)
 
+/* allocations that fail die (the camera can run out of memory; a NULL must never be written) */
+static void *xmalloc(size_t n)
+{
+	void *p = malloc(n ? n : 1);
+
+	if (!p)
+		DIE("out of memory (%zu bytes)", n);
+	return p;
+}
+
+static void *xcalloc(size_t n, size_t sz)
+{
+	void *p = calloc(n ? n : 1, sz ? sz : 1);
+
+	if (!p)
+		DIE("out of memory (%zu x %zu bytes)", n, sz);
+	return p;
+}
+
 /* ---- the .bin: W blocks with their param records, header concat records */
 
 /* capacities: YOLO-style graphs (yoloxn) have 300+ convs and 450+ ops */
@@ -74,6 +97,9 @@ static void die(const char *fmt, ...)
 #define MAXNODE 1024
 #define MAXTENS 1024
 #define MAXCAT 64
+#if MAXREC > NNA_MAXREC
+#error "nnaeng caches the W of NNA_MAXREC records"
+#endif
 
 struct qrec {
 	int nob, nic, kh, kw, dw;
@@ -81,6 +107,13 @@ struct qrec {
 	int32_t *bt;		/* per block: B[32], T[32] */
 	float *fl;		/* per oc: the head factor (the T slot read as float) */
 	int sh;			/* requant: q = floor(((S << sh) + B) / T) + 128; sh from the op list, 2 (x4) by default */
+	/* SiLU kind (yolov5n): the requant is venus's float one, q = lut[rint(f32(S + B) * Fl)] through
+	 * the record's 32-segment SiLU table (nnacpu.h); the T slot is Fl */
+	int silu;		/* the record has a SiLU table (heads and QSUM records have none) */
+	struct nna_silu st;
+	uint8_t *lut;		/* NNA_SILU_LUT bytes */
+	int32_t *B;		/* per oc, contiguous */
+	long after;		/* file offset after the table's two copies: a type-30 (Normalize) record may follow */
 };
 
 static struct qrec rec[MAXREC];
@@ -161,7 +194,7 @@ static void load_bin(const char *path)
 		if (rd32(p + 8) != (nob << 16 | 1) || rd32(p + 12) != 1280 || rd32(p + 20) != 512 * nob)
 			DIE("param record at %ld: fields %d %d %d", o + nb, rd32(p + 8), rd32(p + 12), rd32(p + 20));
 		r->nob = nob, r->nic = icg == 1 ? 1 : nic, r->kh = kh, r->kw = kw, r->dw = icg == 1;
-		r->wq = malloc((size_t)taps * oc * ic);
+		r->wq = xmalloc((size_t)taps * oc * ic);
 		/* 2-bit slices: slice k of each weight in group entry k; raw - 128 */
 		if (r->dw) {
 			for (int ob = 0; ob < nob; ob++)	/* block -> tap (ky, kx) -> 4 slices x 8 B (32 oc) */
@@ -193,11 +226,33 @@ static void load_bin(const char *path)
 							}
 					}
 		}
-		r->bt = malloc(256L * nob);
-		r->fl = malloc(sizeof(float) * (size_t)oc);
+		r->bt = xmalloc(256L * (size_t)nob);
+		r->fl = xmalloc(sizeof(float) * (size_t)oc);
 		for (int ob = 0; ob < nob; ob++) {
 			memcpy(r->bt + 64 * ob, p + 0x25 + 256 * ob, 256);
 			memcpy(r->fl + 32 * ob, p + 0xa5 + 256 * ob, 128);
+		}
+		/* a SiLU table: the first MARK past the record's B / Fl, within 4 KiB, then the table
+		 * stored twice */
+		{
+			static const uint8_t MARK[8] = { 4, 0, 0, 0, 0x20, 0, 0, 0 };
+			long m = o + nb + 0x25 + 256L * nob - 0x80, end = o + nb + 0x25 + 256L * nob + 4096;
+
+			while (m < end && m + 8 + 256 <= n && memcmp(b + m, MARK, 8))
+				m++;
+			if (m < end && m + 8 + 256 <= n && !memcmp(b + m + 8, b + m + 8 + 128, 128)) {
+				int16_t raw[64];
+
+				memcpy(raw, b + m + 8, 128);
+				nna_silu_load(&r->st, raw);
+				if (!(r->lut = malloc(NNA_SILU_LUT)) || !(r->B = malloc(sizeof(int32_t) * (size_t)oc)))
+					DIE("out of memory");
+				nna_silu_lut(&r->st, r->lut);
+				for (int c = 0; c < oc; c++)
+					r->B[c] = r->bt[64 * (c / 32) + c % 32];
+				r->silu = 1;
+				r->after = m + 8 + 256;
+			}
 		}
 		nrec++;
 		o += nb - 1;
@@ -306,16 +361,21 @@ static void load_bin(const char *path)
 
 /* ---- the graph */
 
-enum { G_STEM, G_CONV, G_PC, G_HEAD, G_POOL, G_DECONV, G_CAT, G_ADD };
+/* G_POOL5, G_UP2, G_NORM: the SiLU kind's 5x5/1 maxpool (SPPF), nearest x2 upsample, and Normalize
+ * (a concat input's rescale, its factor in a type-30 record) */
+enum { G_STEM, G_CONV, G_PC, G_HEAD, G_POOL, G_DECONV, G_CAT, G_ADD, G_POOL5, G_UP2, G_NORM, G_NOPS };
 struct gnode {
 	int op, out, in[4], nin, rec, oc, ic, k, pad, dw, crec;
 	int stride, padb;	/* a conv: stride, and the bottom/right pad (pad = top/left) */
 	int skip;		/* folded into the conv before it, or a deconv folded into its concat */
 	int dec[4];		/* a concat: input k comes from deconv node dec[k] - 1 (0: none) */
 	uint8_t *post;		/* a conv: the folded per-channel ops as one byte table (all channels) */
+	float ca[4];		/* a concat: input k's factor (1: none); a normalize: ca[0] */
+	int zp;			/* a concat / normalize: the zero point of the rescale, rint((x - zp) a) + zp */
+	struct nna_node *nn;	/* a SiLU-kind conv (stem included): nnaeng's node, wq [ky][kx][oc][ic] */
 };
 static struct gnode G[MAXNODE];
-static int ng, ntens, in_h, in_w, outs[4], nouts;
+static int ng, ntens, in_h, in_w, in_c = 3, outs[4], nouts;
 static int nanc, anc_stride[4];		/* "anchors <stride> w0 h0 w1 h1 w2 h2" lines */
 static float anc_wh[4][6];
 
@@ -327,6 +387,7 @@ static void load_graph(const char *path)
 	if (!f)
 		DIE("cannot open %s", path);
 	ng = ntens = in_h = in_w = nouts = nanc = 0;
+	in_c = 3;
 	while (fgets(line, sizeof(line), f)) {
 		struct gnode g;
 		char op[32];
@@ -388,6 +449,8 @@ static void load_graph(const char *path)
 			for (int i = 0; i < g.nin; i++)
 				g.in[i] = a[2 + i];
 			g.crec = a[2 + g.nin];
+			if (g.crec >= 0 && g.crec < ncat)
+				memcpy(g.ca, cat_a[g.crec], sizeof(g.ca));
 		} else if (!strcmp(op, "add") && na == 4) {
 			g.op = G_ADD, g.nin = 2, g.in[1] = a[2], g.crec = a[3];
 			if (g.crec < 0 || g.crec >= nadd)
@@ -464,8 +527,11 @@ static int tname(char names[][96], int *n, const char *s)
 	return (*n)++;
 }
 
-/* plain conv record after its kernel string at e: 0 and the fields, or -1 */
-static int conv_rec(const uint8_t *b, long n, long e, int *sh, int *ic, int *oc, int pads[4], int *k, int *st)
+/* plain conv record after its kernel string at e: 0 and the fields, or -1. zp: field [1], the zero
+ * points: input in the low 16 bits (the pad value), output in the high 16 (0 for QSUM records;
+ * 128 / 128 for the SiLU kind, the stem's input 0) */
+static int conv_rec(const uint8_t *b, long n, long e, int *zp, int *sh, int *ic, int *oc, int pads[4], int *k,
+		    int *st)
 {
 	int32_t nl, f[64];
 	long p;
@@ -479,7 +545,7 @@ static int conv_rec(const uint8_t *b, long n, long e, int *sh, int *ic, int *oc,
 	p = e + 13 + nl;
 	for (int i = 0; i < 64; i++)
 		f[i] = rd32(b + p + 4L * i);
-	*sh = f[2], *ic = f[8], *oc = f[9];
+	*zp = f[1], *sh = f[2], *ic = f[8], *oc = f[9];
 	pads[0] = pads[1] = pads[2] = pads[3] = 0;
 	*k = *st = 1;
 	q = 10;
@@ -500,6 +566,175 @@ static int conv_rec(const uint8_t *b, long n, long e, int *sh, int *ic, int *oc,
 	return 0;
 }
 
+/* a Pooling record ("Pooling/pool2d_ubit8/..."): the same head as a conv's; int32 fields [8] 2 when
+ * a pads array follows (top, bottom, left, right), [9] channels, then the arrays: pads, kernel,
+ * stride. 2x2/2 (QSUM) and 5x5/1 pad 2 (SPPF). 0 and the fields, or -1 */
+static int pool_rec(const uint8_t *b, long n, long e, int *k, int *st, int *pad)
+{
+	int32_t nl, f[32];
+	int q = 10, a = 0;
+
+	if (e + 13 > n || b[e] != 1 || rd32(b + e + 1) != 2 || rd32(b + e + 5) != 1)
+		return -1;
+	nl = rd32(b + e + 9);
+	if (nl <= 0 || nl > 256 || e + 13 + nl + 4L * 32 > n)
+		return -1;
+	for (int i = 0; i < 32; i++)
+		f[i] = rd32(b + e + 13 + nl + 4L * i);
+	*pad = 0;
+	if (f[8] == 2) {
+		if (f[q] != 4 || f[q + 1] != f[q + 2] || f[q + 1] != f[q + 3] || f[q + 1] != f[q + 4])
+			return -1;
+		*pad = f[q + 1];
+		q += 5;
+	} else if (f[8] != 1) {
+		return -1;
+	}
+	for (; a < 2; a++) {
+		if (f[q] != 2 || f[q + 1] != f[q + 2])
+			return -1;
+		*(a ? st : k) = f[q + 1];
+		q += 3;
+	}
+	return 0;
+}
+
+/* a Concat op's own record, within its first bytes after the kernel string at e: int32 nin, the
+ * nin zero points (0, or -128 for the SiLU kind), nin, then float s_1..s_nin, 1/s_out. a[i] = s_i /
+ * s_out; *zp = 128 for -128 (the codes' zero point). 0, or -1 if there is none */
+static int cat_rec(const uint8_t *b, long n, long e, int nin, float a[4], int *zp)
+{
+	for (long d = e; d < e + 512 && d + 4L * (2 * nin + 3) <= n; d++) {
+		int32_t z = rd32(b + d + 4);
+		float s[5];
+		int ok = rd32(b + d) == nin && rd32(b + d + 4L * (nin + 1)) == nin && (z == 0 || z == -128);
+
+		for (int i = 1; ok && i < nin; i++)
+			ok = rd32(b + d + 4 + 4L * i) == z;
+		if (!ok)
+			continue;
+		memcpy(s, b + d + 4L * (nin + 2), 4 * (size_t)(nin + 1));
+		for (int i = 0; ok && i <= nin; i++)
+			ok = s[i] > 1e-6f && s[i] < 1e3f;
+		if (!ok)
+			continue;
+		for (int i = 0; i < nin; i++)
+			a[i] = s[i] * s[nin];
+		*zp = -z;
+		return 0;
+	}
+	return -1;
+}
+
+/* the Normalize factor: the type-30 record after conv record r's SiLU table:
+ * int32 30, ..., [148] nb, then at 148 + 28 + nb: 1, 2, ..., [33] 32, [37] nb / 4 equal floats */
+static float type30(const uint8_t *b, long n, int r)
+{
+	long o = r >= 0 && r < nrec && rec[r].silu ? rec[r].after : -1, nb;
+	float a, v;
+
+	if (o < 0 || o + 152 > n || rd32(b + o) != 30)
+		DIE("no type-30 record after conv record %d", r);
+	nb = rd32(b + o + 148);
+	o += 148 + 28 + nb;
+	if (nb <= 0 || nb > 4096 || o + 37 + nb > n || rd32(b + o) != 1 || rd32(b + o + 4) != 2 ||
+	    rd32(b + o + 33) != 32)
+		DIE("type-30 record after conv record %d: unexpected layout", r);
+	memcpy(&a, b + o + 37, 4);
+	for (long i = 1; i < nb / 4; i++) {
+		memcpy(&v, b + o + 37 + 4 * i, 4);
+		if (v != a)
+			DIE("type-30 record after conv record %d: per-channel factors differ", r);
+	}
+	if (!(a > 1e-3f && a < 1e3f))
+		DIE("type-30 record after conv record %d: factor %g", r, (double)a);
+	return a;
+}
+
+/* a SiLU-kind conv's nnaeng node: weights [ky][kx][oc][ic] over the input's real channels. The
+ * record's input chunks of 32 lanes follow the input's layout as venus stores it (a concat of two
+ * 16-channel tensors is two chunks of 16), given by nch / chk; the stem's record is a 1x1 over
+ * 6 chunks: chunk kx, lane 4 ky + c (RGBA) */
+static struct nna_node *silu_node(int ri, int oc, int ic, int k, int st, int pad, int padval, int stem, int nch,
+				   const int *chk)
+{
+	const struct qrec *r = &rec[ri];
+	struct nna_node *nd = calloc(1, sizeof(*nd));
+	int lanes = 32 * r->nic, roc = 32 * r->nob;
+
+	if (!nd || r->dw)
+		DIE("conv record %d: %s", ri, nd ? "depthwise in a SiLU model" : "out of memory");
+	nd->rec = ri, nd->oc = oc, nd->ic = ic, nd->kh = nd->kw = k, nd->stride = st, nd->pad = pad;
+	nd->padval = padval, nd->stem = stem;
+	if (oc > roc)
+		DIE("conv record %d: %d of %d out channels", ri, oc, roc);
+	if (!(nd->wq = calloc((size_t)k * k * oc * ic, 1)))
+		DIE("out of memory");
+	if (stem) {
+		if (k != 6 || ic != 4 || st != 2 || r->kh != 1 || r->nic != 6)
+			DIE("stem record %d: k %d ic %d stride %d (record %dx%d, %d chunks)", ri, k, ic, st, r->kh, r->kw, r->nic);
+		for (int ky = 0; ky < 6; ky++)
+			for (int kx = 0; kx < 6; kx++)
+				for (int o = 0; o < oc; o++)
+					for (int c = 0; c < 4; c++)
+						nd->wq[(((long)ky * 6 + kx) * oc + o) * 4 + c] = r->wq[(long)o * lanes + 32 * kx + 4 * ky + c];
+		return nd;
+	}
+	if (r->kh != k || r->kw != k || nch != r->nic)
+		DIE("conv record %d: %dx%d with %d input chunks, the graph has %dx%d and %d", ri, r->kh, r->kw, r->nic, k, k,
+		    nch);
+	for (int t = 0, c0; t < k * k; t++)
+		for (int o = 0; o < oc; o++) {
+			c0 = 0;
+			for (int ck = 0; ck < nch; c0 += chk[ck++])
+				for (int i = 0; i < chk[ck]; i++)
+					nd->wq[((long)t * oc + o) * ic + c0 + i] = r->wq[((long)t * roc + o) * lanes + 32 * ck + i];
+		}
+	return nd;
+}
+
+/* per tensor, its channels in 32-lane chunks as venus lays them out (a SiLU conv's record has one W
+ * input chunk per entry): a conv's output in 32s, a concat's the inputs' lists one after another,
+ * other ops their input's */
+#define MAXCHK 64
+static int nchk[MAXTENS], chk[MAXTENS][MAXCHK];
+
+static void chunks_conv(int t, int oc)
+{
+	nchk[t] = 0;
+	for (int c = 0; c < oc; c += 32) {
+		if (nchk[t] == MAXCHK)
+			DIE("tensor %d: more than %d chunks", t, MAXCHK);
+		chk[t][nchk[t]++] = oc - c < 32 ? oc - c : 32;
+	}
+}
+
+static void chunks_append(int t, int s)
+{
+	for (int i = 0; i < nchk[s]; i++) {
+		if (nchk[t] == MAXCHK)
+			DIE("tensor %d: more than %d chunks", t, MAXCHK);
+		chk[t][nchk[t]++] = chk[s][i];
+	}
+}
+
+static void chunks_copy(int t, int s)
+{
+	nchk[t] = 0;
+	chunks_append(t, s);
+}
+
+/* the chunks are those of a plain tensor of c channels (32 each, the last the rest) */
+static int chunks_dense(int t, int c)
+{
+	int s = 0;
+
+	for (int i = 0; i < nchk[t]; s += chk[t][i++])
+		if (chk[t][i] != 32 && i != nchk[t] - 1)
+			return 0;
+	return s == c;
+}
+
 static void load_graph_bin(const char *path)
 {
 	FILE *fp = fopen(path, "rb");
@@ -509,6 +744,7 @@ static void load_graph_bin(const char *path)
 	int ns = 0, cap = 1 << 15, nt = 0, kconv = 0, kadd = 0, kcat = 0, first = 1;
 	static char names[MAXTENS][96];
 	static int chn[MAXTENS], upsrc[MAXTENS];
+	int ncatx = 0, silu_model = 0;	/* implicit concats (a conv with several inputs); a SiLU stem */
 
 	if (!fp || fseek(fp, 0, SEEK_END) || (n = ftell(fp)) <= 0)
 		DIE("cannot read %s", path);
@@ -541,14 +777,15 @@ static void load_graph_bin(const char *path)
 			long p = S[i].off + 4 + S[i].len;
 
 			if (p + 20 <= n && rd32(b + p) == 4 && rd32(b + p + 4) == 1)
-				in_h = rd32(b + p + 8), in_w = rd32(b + p + 12);
+				in_h = rd32(b + p + 8), in_w = rd32(b + p + 12), in_c = rd32(b + p + 16);
 		}
 	if (in_h <= 0 || in_w <= 0)
 		DIE("%s: no input shape after data_1", path);
 	for (int t = 0; t < MAXTENS; t++)
-		upsrc[t] = -1;
+		upsrc[t] = -1, nchk[t] = 0;
 	tname(names, &nt, "data_1");
-	chn[0] = 3;
+	chn[0] = in_c;
+	chunks_conv(0, in_c);
 	for (int i = 0; i + 5 < ns;) {
 		int nna_op, j, nin = 0, ins[8], out, kix;
 		const char *ty = S[i].s;
@@ -576,33 +813,93 @@ static void load_graph_bin(const char *path)
 
 		memset(&g, 0, sizeof(g));
 		g.out = out, g.in[0] = nin ? ins[0] : 0, g.nin = 1;
-		if (!strcmp(ty, "UpSample")) {			/* half of a ConvTranspose, see below */
+		if (!strcmp(ty, "UpSample") && !nna_op) {	/* half of a ConvTranspose, see below */
 			if (nin != 1)
 				DIE("UpSample %s: %d inputs", S[i + 1].s, nin);
 			upsrc[out] = ins[0];
 			i = kix + 1;
 			continue;
+		} else if (!strcmp(ty, "UpSample")) {		/* an NNA op: nearest x2 (YOLOv5's Resize) */
+			if (nin != 1)
+				DIE("UpSample %s: %d inputs", S[i + 1].s, nin);
+			g.op = G_UP2;
+			chn[out] = chn[ins[0]];
+			chunks_copy(out, ins[0]);
 		} else if (!strcmp(ty, "FormatConvert")) {	/* the float head outputs: nothing to run */
 			i = kix + 1;
 			continue;
+		} else if (!strcmp(ty, "Normalize")) {
+			/* a concat input's rescale ("ptq_model_concat_fuse_..."): its factor is in the type-30
+			 * record after the conv record before it */
+			if (nin != 1)
+				DIE("Normalize %s: %d inputs", S[i + 1].s, nin);
+			g.op = G_NORM, g.zp = 128, g.ca[0] = type30(b, n, kconv - 1);
+			chn[out] = chn[ins[0]];
+			chunks_copy(out, ins[0]);
 		} else if (!strcmp(ty, "Convolution")) {
-			int sh, ic, oc, pd[4], k, st;
+			int zp, sh, ic, oc, pd[4], k, st, silu;
 			const struct qrec *r;
 
 			if (kconv >= nrec)
 				DIE("more Convolution ops than W blocks (%d)", nrec);
 			r = &rec[kconv];
 			g.rec = kconv++;
-			if (conv_rec(b, n, e, &sh, &ic, &oc, pd, &k, &st))
+			if (conv_rec(b, n, e, &zp, &sh, &ic, &oc, pd, &k, &st))
 				DIE("conv %s: record not understood", S[i + 1].s);
-			if (first) {				/* the stem: 3x3/2 on the image */
+			/* the SiLU kind (the model's, from its stem: a 6x6 on RGBA with a SiLU table, output zero
+			 * point 128); heads are float out */
+			if (first)
+				silu_model = k == 6 && r->silu && (zp >> 16 & 0xffff) == 128;
+			silu = silu_model && strncmp(S[kix].s, "Convolution/base_i8of", 21);
+			if (silu && (pd[0] != pd[1] || pd[0] != pd[2] || pd[0] != pd[3]))
+				DIE("conv %s: pads %d %d %d %d", S[i + 1].s, pd[0], pd[1], pd[2], pd[3]);
+			if (nin > 1) {		/* several inputs: their concat (venus's implicit one), then the conv */
+				struct gnode c;
+				char nm[24];
+
+				if (nin > 4 || ng == MAXNODE)
+					DIE("conv %s: %d inputs", S[i + 1].s, nin);
+				memset(&c, 0, sizeof(c));
+				snprintf(nm, sizeof(nm), "#concat%d", ncatx++);
+				c.op = G_CAT, c.nin = nin, c.crec = -1, c.zp = 128, c.out = tname(names, &nt, nm);
+				chn[c.out] = 0, nchk[c.out] = 0;
+				for (int q = 0; q < nin; q++) {
+					c.in[q] = ins[q], c.ca[q] = 1.0f, chn[c.out] += chn[ins[q]];
+					chunks_append(c.out, ins[q]);
+				}
+				G[ng++] = c;
+				g.in[0] = c.out;
+			}
+			if (first && silu) {			/* the SiLU kind's stem: 6x6/2 pad 2 on RGBA */
+				first = 0;
+				if (in_c != 4)
+					DIE("stem %s: input of %d channels", S[i + 1].s, in_c);
+				g.op = G_STEM, g.in[0] = 0, g.oc = oc, g.k = k, g.stride = st, g.pad = g.padb = pd[0];
+				g.nn = silu_node(g.rec, oc, in_c, k, st, pd[0], zp & 0xffff, 1, 0, NULL);
+			} else if (first) {			/* the stem: 3x3/2 on the image */
 				first = 0;
 				g.op = G_STEM, g.in[0] = 0, g.oc = oc;
 			} else if (!strncmp(S[kix].s, "Convolution/base_i8of", 21)) {
 				g.op = G_HEAD, g.oc = oc, g.ic = chn[g.in[0]];
 				if (nouts == 4)
 					DIE("more than 4 heads");
+				/* conv_op reads the record's W as one plain tensor */
+				if (silu_model && !chunks_dense(g.in[0], g.ic))
+					DIE("head %s: its input is not a plain tensor", S[i + 1].s);
 				outs[nouts++] = out;
+			} else if (silu) {
+				if (!r->silu)
+					DIE("conv %s: record %d has no SiLU table", S[i + 1].s, g.rec);
+				g.op = G_CONV, g.oc = oc, g.ic = chn[g.in[0]], g.k = k, g.stride = st, g.pad = g.padb = pd[0];
+				{
+					int s = 0;
+
+					for (int q = 0; q < nchk[g.in[0]]; q++)
+						s += chk[g.in[0]][q];
+					if (s != g.ic || g.ic != ic)
+						DIE("conv %s: %d input channels, chunks %d, record %d", S[i + 1].s, g.ic, s, ic);
+				}
+				g.nn = silu_node(g.rec, oc, g.ic, k, st, pd[0], zp & 0xffff, 0, nchk[g.in[0]], chk[g.in[0]]);
 			} else if (r->kh == 2) {		/* UpSample + 2x2 conv = ConvTranspose 2x2/2 */
 				if (upsrc[g.in[0]] < 0)
 					DIE("2x2 conv %s without an UpSample before it", S[i + 1].s);
@@ -617,6 +914,7 @@ static void load_graph_bin(const char *path)
 					    pd[0], pd[1], pd[2], pd[3]);
 			}
 			chn[out] = g.op == G_HEAD ? 0 : oc;
+			chunks_conv(out, oc);
 		} else if (!strcmp(ty, "Add")) {
 			if (nin != 2)
 				DIE("Add %s: %d inputs", S[i + 1].s, nin);
@@ -624,18 +922,35 @@ static void load_graph_bin(const char *path)
 			if (g.crec >= nadd)
 				DIE("more Add ops than add records (%d)", nadd);
 			chn[out] = chn[ins[0]];
+			chunks_copy(out, ins[0]);
 		} else if (!strcmp(ty, "Concat")) {
 			if (nin < 2 || nin > 4)
 				DIE("Concat %s: %d inputs", S[i + 1].s, nin);
 			g.op = G_CAT, g.nin = nin, g.crec = kcat++;
-			chn[out] = 0;
-			for (int k = 0; k < nin; k++)
+			chn[out] = 0, nchk[out] = 0;
+			for (int k = 0; k < nin; k++) {
 				g.in[k] = ins[k], chn[out] += chn[ins[k]];
-			if (g.crec >= ncat || cat_n[g.crec] != nin)
-				DIE("Concat %s: concat record %d", S[i + 1].s, g.crec);
+				chunks_append(out, ins[k]);
+			}
+			/* the op's own record; else the header's records in op order (load_bin) */
+			if (cat_rec(b, n, e, nin, g.ca, &g.zp)) {
+				if (g.crec >= ncat || cat_n[g.crec] != nin)
+					DIE("Concat %s: concat record %d", S[i + 1].s, g.crec);
+				memcpy(g.ca, cat_a[g.crec], sizeof(g.ca));
+				g.zp = 0;
+			}
 		} else if (!strcmp(ty, "Pooling")) {
-			g.op = G_POOL;
+			int pk, pst, pp;
+
+			g.op = G_POOL;		/* 2x2/2 (QSUM; also when the record is not understood, as before) */
+			if (!pool_rec(b, n, e, &pk, &pst, &pp)) {
+				if (pk == 5 && pst == 1 && pp == 2)
+					g.op = G_POOL5;
+				else if (pk != 2 || pst != 2 || pp != 0)
+					DIE("Pooling %s: %dx%d/%d pad %d", S[i + 1].s, pk, pk, pst, pp);
+			}
 			chn[out] = chn[g.in[0]];
+			chunks_copy(out, g.in[0]);
 		} else {
 			DIE("op type %s (%s) not supported", ty, S[i + 1].s);
 		}
@@ -647,6 +962,8 @@ static void load_graph_bin(const char *path)
 	ntens = nt;
 	free(S);
 	free(b);
+	if (!silu_model)	/* the QSUM stem reads RGB (stem_f), whatever the header's input */
+		in_c = 3;
 	if (!ng || !nouts)
 		DIE("%s: no ops / heads in the header", path);
 	if (kconv != nrec || kadd != nadd)
@@ -957,7 +1274,7 @@ static void qsum_all(const struct qrec *r, const int64_t *S, long npx, int oc, u
 /* per-channel byte -> byte table: q(w x) */
 static uint8_t *pc_table(const struct qrec *r, int oc, int tap)
 {
-	uint8_t *t = malloc(256L * oc);
+	uint8_t *t = xmalloc(256L * (size_t)oc);
 
 	for (int c = 0; c < oc; c++)
 		for (int x = 0; x < 256; x++)
@@ -1011,6 +1328,15 @@ static void conv_op(const struct gnode *g, const struct qrec *r, const uint8_t *
 	/* raw: the NNA returns the sums and the CPU finishes: a head (float out), or a conv whose
 	 * requant shift is not the NNA QSUM's x4 (sh != 2) */
 	int raw = head || r->sh != 2;
+	/* A/B switches for the T41 reset hunt: keep a kind of conv on the CPU (as before 2445800).
+	 * ONNA_CPU_RAW=1: the non-head convs with sh != 2; ONNA_CPU_S2=1: stride-2 and
+	 * bottom/right-only padded convs. Read once */
+	static int cpu_raw = -1, cpu_s2 = -1;
+
+	if (cpu_raw < 0)
+		cpu_raw = !!getenv("ONNA_CPU_RAW"), cpu_s2 = !!getenv("ONNA_CPU_S2");
+	if ((cpu_raw && !head && r->sh != 2) || (cpu_s2 && (st != 1 || pb != pad)))
+		nna = 0;
 
 	/* on the NNA a 16-channel output is stored as 32-byte pixels: the next conv then writes F
 	 * straight from the tensor (its weights for channels 16..31 are 0). Only when convs alone read
@@ -1023,14 +1349,14 @@ static void conv_op(const struct gnode *g, const struct qrec *r, const uint8_t *
 	else
 		need_u8(o, (size_t)(npx * ops));
 	if (!nna || check) {
-		S = malloc(sizeof(*S) * (size_t)(npx * oc));
+		S = xmalloc(sizeof(*S) * (size_t)(npx * oc));
 		cpu_sums(r, in, H, W, C, ips, oc, k, pad, pb, st, S);
 	}
 	if (nna) {
 		struct nna_node nd;
 		struct nna_rq rq;
 		int oh, ow;
-		int32_t *S32 = raw ? malloc(sizeof(int32_t) * (size_t)(npx * 32 * r->nob)) : NULL;
+		int32_t *S32 = raw ? xmalloc(sizeof(int32_t) * (size_t)(npx * 32 * r->nob)) : NULL;
 		const uint8_t *src = in;
 		int Hs = H, Ws = W;
 
@@ -1061,7 +1387,7 @@ static void conv_op(const struct gnode *g, const struct qrec *r, const uint8_t *
 			int taps = k * k;
 
 			if (!wtrim[g->rec]) {
-				wtrim[g->rec] = malloc((size_t)taps * oc * nd.ic);
+				wtrim[g->rec] = xmalloc((size_t)taps * oc * nd.ic);
 				for (int t = 0; t < taps; t++)
 					memcpy(wtrim[g->rec] + (long)t * oc * nd.ic, r->wq + (long)t * 32 * r->nob * nd.ic,
 					       (size_t)oc * nd.ic);
@@ -1094,7 +1420,7 @@ static void conv_op(const struct gnode *g, const struct qrec *r, const uint8_t *
 				}
 			free(S32);
 		} else if (check) {
-			uint8_t *ref = malloc((size_t)(npx * oc));
+			uint8_t *ref = xmalloc((size_t)(npx * oc));
 
 			qsum_all(r, S, npx, oc, ref);
 			if (g->post)
@@ -1117,6 +1443,119 @@ static void conv_op(const struct gnode *g, const struct qrec *r, const uint8_t *
 				o->u8[i] = g->post[o->u8[i]];
 	}
 	free(S);
+}
+
+/* ---- the SiLU kind (yolov5n): venus's arithmetic (nnacpu.h) */
+
+/* integer conv on uint8 codes (ps bytes per pixel), padding = padval: S[oy][ox][oc] */
+static void silu_sums(const struct nna_node *nd, const uint8_t *in, int H, int W, int ps, int32_t *S)
+{
+	int OH = (H + 2 * nd->pad - nd->kh) / nd->stride + 1, OW = (W + 2 * nd->pad - nd->kw) / nd->stride + 1;
+	uint8_t padv[2048];
+
+	memset(padv, nd->padval, sizeof(padv));
+	for (int oy = 0; oy < OH; oy++)
+		for (int ox = 0; ox < OW; ox++) {
+			int32_t *acc = &S[((long)oy * OW + ox) * nd->oc];
+
+			memset(acc, 0, sizeof(int32_t) * (size_t)nd->oc);
+			for (int ky = 0; ky < nd->kh; ky++)
+				for (int kx = 0; kx < nd->kw; kx++) {
+					int iy = oy * nd->stride + ky - nd->pad, ix = ox * nd->stride + kx - nd->pad;
+					const uint8_t *px = iy < 0 || iy >= H || ix < 0 || ix >= W ? padv : &in[((long)iy * W + ix) * ps];
+					const int8_t *wr = &nd->wq[((long)ky * nd->kw + kx) * nd->oc * nd->ic];
+
+					for (int o = 0; o < nd->oc; o++) {
+						const int8_t *wo = wr + (long)o * nd->ic;
+						int32_t s = 0;
+
+						for (int c = 0; c < nd->ic; c++)
+							s += wo[c] * px[c];
+						acc[o] += s;
+					}
+				}
+		}
+}
+
+#ifdef ONNA_MXU3
+static struct nna_vrq *vrqs[MAXNODE];	/* per node: its numbers for the MXU3 SiLU requant */
+
+/* a conv's numbers for the MXU3 SiLU requant, per 32-oc block; wide: a
+ * 16-channel output stored as 32-byte pixels */
+static const struct nna_vrq *vrq_of(int i, const struct qrec *r, int oc, int wide)
+{
+	int nob = (oc + 31) / 32;
+
+	if (vrqs[i])
+		return vrqs[i];
+	if (posix_memalign((void **)&vrqs[i], 64, sizeof(struct nna_vrq) * (size_t)nob))
+		DIE("out of memory");
+	for (int ob = 0; ob < nob; ob++) {
+		struct nna_vrq *v = &vrqs[i][ob];
+
+		memset(v, 0, sizeof(*v));
+		for (int h = 0; h < 2; h++)
+			for (int c = 0; c < 16; c++)
+				if (32 * ob + 16 * h + c < oc) {
+					v->B[h][c] = r->B[32 * ob + 16 * h + c];
+					v->Fl[h][c] = r->fl[32 * ob + 16 * h + c];
+				}
+		if (oc - 32 * ob == 16)		/* paired pixels use half 0's numbers twice */
+			for (int c = 0; c < 16; c++)
+				v->B[1][c] = v->B[0][c], v->Fl[1][c] = v->Fl[0][c];
+		v->tb = r->st;
+		v->wide = wide;
+	}
+	return vrqs[i];
+}
+#endif
+
+/* a SiLU-kind conv (the stem too): q = lut[rint(f32(S + B) * Fl)]. On an engine the sums are
+ * requantized as they are read back (the MXU3 requant on the camera); -c also runs the CPU conv
+ * and compares the output bytes */
+static void silu_conv(int i, const struct gnode *g, const struct tensor *x, struct tensor *o)
+{
+	const struct nna_node *nd = g->nn;
+	const struct qrec *r = &rec[g->rec];
+	int OH = (x->h + 2 * nd->pad - nd->kh) / nd->stride + 1, OW = (x->w + 2 * nd->pad - nd->kw) / nd->stride + 1;
+	int oc = nd->oc, ips = x->ps ? x->ps : x->c;
+	long npx = (long)OH * OW;
+	/* 16 channels as 32-byte pixels on the NNA when only convs read them (as conv_op) */
+	int ops = use_nna && oc == 16 && conv_readers_only[g->out] ? 32 : oc;
+
+	if (x->c != nd->ic)
+		DIE("node %d: input has %d channels, the conv %d", i, x->c, nd->ic);
+	o->h = OH, o->w = OW, o->c = oc, o->ps = ops;
+	need_u8(o, (size_t)(npx * ops));
+	if (use_nna) {
+		struct nna_rq rq;
+		int oh, ow;
+
+		memset(&rq, 0, sizeof(rq));
+		rq.B = r->B, rq.Fl = r->fl, rq.lut = r->lut, rq.q = o->u8, rq.ps = ops;
+#ifdef ONNA_MXU3
+		rq.vrq = vrq_of(i, r, oc, ops == 32);
+#endif
+		if (nna_conv(&be, x->u8, x->h, x->w, x->c, ips, nd, NULL, &rq, &oh, &ow) || oh != OH || ow != OW)
+			DIE("rec %d: nna_conv failed (%dx%d, want %dx%d)", g->rec, oh, ow, OH, OW);
+	}
+	if (!use_nna || check) {
+		int32_t *S = malloc(sizeof(int32_t) * (size_t)(npx * oc));
+		uint8_t *q = use_nna ? malloc((size_t)(npx * oc)) : o->u8;
+
+		if (!S || !q)
+			DIE("out of memory");
+		silu_sums(nd, x->u8, x->h, x->w, ips, S);
+		nna_requant_lut(S, (int)npx, oc, r->B, r->fl, r->lut, q);
+		if (use_nna) {
+			for (long k = 0; k < npx * oc; k++)
+				if (q[k] != o->u8[k / oc * ops + k % oc])
+					DIE("rec %d: NNA byte %d, CPU %d at px %ld oc %ld", g->rec, o->u8[k / oc * ops + k % oc], q[k],
+					    k / oc, k % oc);
+			free(q);
+		}
+		free(S);
+	}
 }
 
 #ifdef ONNA_MXU3
@@ -1166,7 +1605,7 @@ static int pool2_mxu3(const struct tensor *x, struct tensor *o)
 }
 #endif
 
-static double optime[8], nodetime[MAXNODE];	/* -T: per op kind, summed over the runs */
+static double optime[G_NOPS], nodetime[MAXNODE];	/* -T: per op kind, summed over the runs */
 static int timing;
 
 static void run_op(int i);
@@ -1194,7 +1633,7 @@ static void run(const uint8_t *rgb)
 {
 	const char *dump = getenv("ONNAQ_DUMP");
 
-	T[0].h = in_h, T[0].w = in_w, T[0].c = 3, T[0].u8 = (uint8_t *)rgb;
+	T[0].h = in_h, T[0].w = in_w, T[0].c = in_c, T[0].ps = 0, T[0].u8 = (uint8_t *)rgb;
 	for (int i = 0; i < ng; i++) {
 		double t0 = timing ? now_ms() : 0;
 
@@ -1213,7 +1652,8 @@ static void run_op(int i)
 	{
 		const struct gnode *g = &G[i];
 		struct tensor *x = &T[g->in[0]], *o = &T[g->out];
-		const struct qrec *r = g->op == G_POOL || g->op == G_CAT || g->op == G_ADD ? NULL : &rec[g->rec];
+		const struct qrec *r = g->op == G_STEM || g->op == G_CONV || g->op == G_PC || g->op == G_HEAD ||
+				       g->op == G_DECONV ? &rec[g->rec] : NULL;
 		long npx = (long)x->h * x->w;
 
 		if (g->skip)
@@ -1227,6 +1667,11 @@ static void run_op(int i)
 		case G_STEM: {
 			uint8_t *f = stem_buf;
 			struct gnode g1 = *g;
+
+			if (g->nn) {		/* the SiLU kind's 6x6/2 on RGBA: nnaeng's stem strips */
+				silu_conv(i, g, x, o);
+				break;
+			}
 
 			if (!f) {		/* zeroed once: the unused slots stay so */
 				if (posix_memalign((void **)&stem_buf, 64, (size_t)(x->h / 2) * (x->w / 2) * 32))
@@ -1244,6 +1689,10 @@ static void run_op(int i)
 		}
 		case G_CONV:
 		case G_HEAD:
+			if (g->nn) {
+				silu_conv(i, g, x, o);
+				break;
+			}
 			if (x->c != (r->dw ? g->oc : g->ic) || (g->op == G_CONV && r->kh != (g->k ? g->k : 1)))
 				DIE("node %d: shapes (in %d, rec k %d)", i, x->c, r->kh);
 			conv_op(g, r, x->u8, x->h, x->w, x->c, x->ps ? x->ps : x->c, o, g->op == G_HEAD);
@@ -1324,7 +1773,7 @@ static void run_op(int i)
 			if (r->kh != 2 || r->kw != 2 || !r->dw)
 				DIE("deconv record %d", g->rec);
 			if (!tabs[i]) {
-				tabs[i] = malloc(4 * 256L * g->oc);
+				tabs[i] = xmalloc(4 * 256L * (size_t)g->oc);
 				for (int t = 0; t < 4; t++) {
 					uint8_t *tt = pc_table(r, g->oc, t);
 
@@ -1363,15 +1812,21 @@ static void run_op(int i)
 				ctot += a->c;
 			}
 			if (!cf) {
-				cf = cfuse[i] = calloc(1, sizeof(*cf));
+				cf = cfuse[i] = xcalloc(1, sizeof(*cf));
 				for (int k = 0; k < g->nin; k++) {
 					uint8_t tb[256];
 
 					cf->ident[k] = 1;
 					for (int v = 0; v < 256; v++) {
-						float y = rintf((float)v * cat_a[g->crec][k]);
+						if (g->zp == 128) {	/* the SiLU kind: nnacpu's rescale, (x - 128) a */
+							uint8_t xv = (uint8_t)v;
 
-						tb[v] = (uint8_t)(y < 0 ? 0 : y > 255 ? 255 : y);
+							nna_rescale(&xv, 1, g->ca[k], &tb[v]);
+						} else {
+							float y = rintf((float)v * g->ca[k]);
+
+							tb[v] = (uint8_t)(y < 0 ? 0 : y > 255 ? 255 : y);
+						}
 						cf->ident[k] &= tb[v] == v;
 					}
 					if (g->dec[k]) {
@@ -1381,12 +1836,12 @@ static void run_op(int i)
 
 						if (dr->kh != 2 || dr->kw != 2 || !dr->dw)
 							DIE("deconv record %d", dn->rec);
-						cf->comp[k] = malloc(256L * C);
+						cf->comp[k] = xmalloc(256L * (size_t)C);
 						for (int ph = 0; ph < 4; ph++) {	/* output phase (dy, dx) uses tap 3 - ph */
 							uint8_t *pt = pc_table(dr, C, 3 - ph);
 
 							if (ph)
-								cf->cst[k][ph - 1] = malloc((size_t)(C & 0xffff));
+								cf->cst[k][ph - 1] = xmalloc((size_t)(C & 0xffff));
 							for (int c = 0; c < C; c++)
 								for (int v = 0; v < 256; v++) {
 									uint8_t y = tb[pt[c * 256 + v]];
@@ -1401,7 +1856,7 @@ static void run_op(int i)
 							free(pt);
 						}
 					} else if (!cf->ident[k]) {
-						cf->comp[k] = malloc(256);
+						cf->comp[k] = xmalloc(256);
 						memcpy(cf->comp[k], tb, 256);
 					}
 				}
@@ -1447,6 +1902,31 @@ static void run_op(int i)
 			}
 			break;
 		}
+		case G_POOL5:		/* SPPF: 5x5/1 pad 2 */
+			o->h = x->h, o->w = x->w, o->c = x->c;
+			need_u8(o, (size_t)(npx * x->c));
+			nna_maxpool5(x->u8, x->h, x->w, x->c, o->u8);
+			break;
+		case G_UP2:		/* nearest x2 */
+			o->h = 2 * x->h, o->w = 2 * x->w, o->c = x->c;
+			need_u8(o, (size_t)o->h * o->w * o->c);
+			nna_upsample2(x->u8, x->h, x->w, x->c, o->u8);
+			break;
+		case G_NORM:		/* rescale through a byte table built with nna_rescale (exact) */
+			if (!tabs[i]) {
+				uint8_t id[256];
+
+				if (!(tabs[i] = malloc(256)))
+					DIE("out of memory");
+				for (int v = 0; v < 256; v++)
+					id[v] = (uint8_t)v;
+				nna_rescale(id, 256, g->ca[0], tabs[i]);
+			}
+			o->h = x->h, o->w = x->w, o->c = x->c;
+			need_u8(o, (size_t)(npx * x->c));
+			for (long p = 0; p < npx * x->c; p++)
+				o->u8[p] = tabs[i][x->u8[p]];
+			break;
 		}
 	}
 }
@@ -1460,9 +1940,11 @@ const char *onnaq_error(void)
 	return die_msg;
 }
 
+static uint8_t *rgba;		/* onnaq_run's frame as RGBA, for a 4-channel model */
+
 void onnaq_close(void)
 {
-	for (int i = 0; i < 512; i++) {
+	for (int i = 0; i < MAXNODE; i++) {
 		struct catf *cf = cfuse[i];
 
 		if (cf) {
@@ -1475,26 +1957,40 @@ void onnaq_close(void)
 		}
 		free(tabs[i]);
 		free(G[i].post);
+		if (G[i].nn)
+			free(G[i].nn->wq);
+		free(G[i].nn);
 		tabs[i] = NULL, cfuse[i] = NULL;
+#ifdef ONNA_MXU3
+		free(vrqs[i]);
+		vrqs[i] = NULL;
+#endif
 	}
-	for (int i = 0; i < 256; i++) {
+	for (int i = 0; i < MAXREC; i++) {
 		if (i < nrec) {
 			free(rec[i].wq);
 			free(rec[i].bt);
 			free(rec[i].fl);
+			free(rec[i].lut);
+			free(rec[i].B);
 		}
 		free(wtrim[i]);
-		wtrim[i] = NULL;
+		free(padbuf[i]);
+		wtrim[i] = NULL, padbuf[i] = NULL;
+	}
+	for (int i = 0; i < MAXTENS; i++) {
 		if (i)			/* T[0] is the caller's frame */
 			free(T[i].u8);
 		free(T[i].f);
 	}
 	free(stem_buf);
-	stem_buf = NULL;
+	free(rgba);
+	stem_buf = NULL, rgba = NULL;
 	memset(T, 0, sizeof(T));
 	memset(G, 0, sizeof(G));
 	memset(rec, 0, sizeof(rec));
-	nrec = ncat = ng = ntens = nouts = nanc = in_h = in_w = 0;
+	nrec = ncat = nadd = ng = ntens = nouts = nanc = in_h = in_w = 0;
+	in_c = 3;
 	use_nna = 0;
 }
 
@@ -1548,7 +2044,16 @@ int onnaq_run(const uint8_t *rgb)
 		die_jb = NULL;
 		return -1;
 	}
-	run(rgb);
+	if (in_c == 4) {	/* the caller's RGB as the model's RGBA, alpha 0 (as venus's input) */
+		long npx = (long)in_h * in_w;
+
+		if (!rgba && posix_memalign((void **)&rgba, 64, (size_t)npx * 4))
+			DIE("out of memory");
+		for (long p = 0; p < npx; p++)
+			rgba[4 * p] = rgb[3 * p], rgba[4 * p + 1] = rgb[3 * p + 1], rgba[4 * p + 2] = rgb[3 * p + 2],
+			rgba[4 * p + 3] = 0;
+	}
+	run(in_c == 4 ? rgba : rgb);
 	die_jb = NULL;
 	return 0;
 }
@@ -1647,15 +2152,17 @@ int main(int argc, char **argv)
 	fprintf(stderr, "onnaq: %d W blocks, %d concat records, %d ops (%d folded into convs), input %dx%d\n", nrec,
 		ncat, ng, nfold, in_w, in_h);
 
-	size_t fsz = (size_t)in_h * in_w * 3;
-	uint8_t *rgb = malloc(fsz);
+	size_t fsz = (size_t)in_h * in_w * in_c;	/* RGB, or RGBA (alpha 0) when the model takes 4 channels */
+	uint8_t *rgb = xmalloc(fsz);
 	FILE *f = fopen(argv[ai + 2], "rb");
 
 	if (!f || fread(rgb, 1, fsz, f) != fsz)
-		DIE("cannot read %d x %d x 3 bytes from %s", in_w, in_h, argv[ai + 2]);
+		DIE("cannot read %d x %d x %d bytes from %s", in_w, in_h, in_c, argv[ai + 2]);
 	fclose(f);
 
-	float *first[4] = { 0 };
+	/* every run's heads against run 0's, by a 64-bit FNV-1a of each head (no copy of the heads:
+	 * on the camera a copy of yolov5n's first head alone is 3.9 MB) */
+	uint64_t first[4] = { 0 };
 	double best = 1e30, tot = 0;
 
 	for (int it = 0; it < loops; it++) {
@@ -1667,14 +2174,16 @@ int main(int argc, char **argv)
 		best = dt < best ? dt : best;
 		for (int k = 0; k < nouts; k++) {
 			const struct tensor *h = &T[outs[k]];
-			size_t n = (size_t)h->h * h->w * h->c;
+			const uint8_t *hb = (const uint8_t *)h->f;
+			size_t n = (size_t)h->h * h->w * h->c * sizeof(float);
+			uint64_t hv = 0xcbf29ce484222325ull;
 
-			if (!first[k]) {
-				first[k] = malloc(n * sizeof(float));
-				memcpy(first[k], h->f, n * sizeof(float));
-			} else if (memcmp(first[k], h->f, n * sizeof(float))) {
+			for (size_t i = 0; i < n; i++)
+				hv = (hv ^ hb[i]) * 0x100000001b3ull;
+			if (!it)
+				first[k] = hv;
+			else if (hv != first[k])
 				DIE("run %d: head %d differs from run 0", it, k);
-			}
 		}
 	}
 	for (int k = 0; k < nouts; k++) {
@@ -1690,9 +2199,10 @@ int main(int argc, char **argv)
 		printf("head %d: %d x %d x %d -> %s\n", k, h->h, h->w, h->c, path);
 	}
 	if (timing) {
-		static const char *nm[] = { "stem", "conv", "pc", "head", "maxpool2", "deconv2", "concat", "add" };
+		static const char *nm[G_NOPS] = { "stem", "conv", "pc", "head", "maxpool2", "deconv2", "concat", "add",
+						  "maxpool5", "upsample", "normalize" };
 
-		for (int k = 0; k < 8; k++)
+		for (int k = 0; k < G_NOPS; k++)
 			printf("  %-9s %7.2f ms/run\n", nm[k], optime[k] / loops);
 		if (timing > 1)		/* -TT: per node */
 			for (int i = 0; i < ng; i++)

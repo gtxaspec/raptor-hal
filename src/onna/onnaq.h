@@ -17,7 +17,8 @@
  * onnaq_error() says why */
 int onnaq_open(const char *bin_path, const char *graph_path, int nna);
 const char *onnaq_error(void);
-/* network input size (RGB bytes, H x W x 3) */
+/* network input size (RGB bytes, H x W x 3; a 4-channel model such as yolov5n too: onnaq_run adds
+ * alpha 0) */
 void onnaq_input_size(int *w, int *h);
 /* one inference on H x W x 3 RGB bytes; 0 on success */
 int onnaq_run(const uint8_t *rgb);
