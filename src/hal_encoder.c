@@ -874,7 +874,7 @@ int hal_enc_get_frame(void *ctx, int chn, rss_frame_t *frame)
         int64_t last = c->chn_jpeg_last_us[chn];
         if (last != 0 && ts > last && ts - last < interval - interval / 10) {
             IMP_Encoder_ReleaseStream(chn, &stream);
-            return -EAGAIN; /* dropped by fps divider */
+            return RSS_ERR_SKIPPED;
         }
         c->chn_jpeg_last_us[chn] = ts;
     }

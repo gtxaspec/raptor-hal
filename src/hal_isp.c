@@ -102,7 +102,7 @@ int hal_isp_set_hue(void *ctx, int val)
  * T21:         SetISPHflip(OpsMode) + SetISPVflip(OpsMode)
  * T23/T31:     SetHVFLIP(IMPISPHVFLIP)
  * T40:         SetHVFLIP(IMPVI_NUM, IMPISPHVFLIP*)
- * T32/T41:     SetHVFLIP(IMPVI_NUM, IMPISPHVFLIPAttr*)
+ * T32/T41:     SetHVFLIP(IMPVI_NUM, IMPISPHVFLIPAttr*), sensor layer only
  *
  * The HAL exposes separate set_hflip / set_vflip.  We cache both
  * states in the context and re-apply the combined flip on each call.
@@ -134,8 +134,9 @@ int hal_isp_set_hflip(void *ctx, int enable)
     int mode = (c->hflip_state[0] ? 1 : 0) | (c->vflip_state[0] ? 2 : 0);
     IMPISPHVFLIPAttr attr;
     memset(&attr, 0, sizeof(attr));
+    /* One layer only: the SDK forbids the same flip in sensor_mode and
+     * isp_mode (T41 rejects it with -4090, T32 applies both and cancels) */
     attr.sensor_mode = (IMPISPHVFLIP)mode;
-    attr.isp_mode[0] = (IMPISPHVFLIP)mode;
     return IMP_ISP_Tuning_SetHVFLIP(IMPVI_MAIN, &attr);
 #endif
 }
@@ -165,7 +166,6 @@ int hal_isp_set_vflip(void *ctx, int enable)
     IMPISPHVFLIPAttr attr;
     memset(&attr, 0, sizeof(attr));
     attr.sensor_mode = (IMPISPHVFLIP)mode;
-    attr.isp_mode[0] = (IMPISPHVFLIP)mode;
     return IMP_ISP_Tuning_SetHVFLIP(IMPVI_MAIN, &attr);
 #endif
 }
@@ -177,6 +177,27 @@ int hal_isp_set_vflip(void *ctx, int enable)
  * Gen3:      SetISPRunningMode(IMPVI_NUM, IMPISPRunningMode*)
  * ================================================================ */
 
+/*
+ * Judge a switch by the mode the ISP reports, not by the call's result:
+ * T41 (IMP-1.2.6) returns -1 from a switch that took. T32 with no night
+ * bin stays in day (and returns -4090). Main sensor only: the getter has
+ * no per-sensor form.
+ */
+int hal_isp_get_running_mode(void *ctx, rss_isp_mode_t *mode);
+
+static int running_mode_result(int ret, rss_isp_mode_t mode)
+{
+    rss_isp_mode_t now;
+    if (hal_isp_get_running_mode(NULL, &now) != RSS_OK)
+        return ret;
+    if (now != mode) {
+        HAL_LOG_WARN("ISP did not switch to %s mode (set returned %d; no tuning bin for it?)",
+                     mode == RSS_ISP_NIGHT ? "night" : "day", ret);
+        return RSS_ERR_IO;
+    }
+    return RSS_OK;
+}
+
 int hal_isp_set_running_mode(void *ctx, rss_isp_mode_t mode)
 {
     (void)ctx;
@@ -185,10 +206,11 @@ int hal_isp_set_running_mode(void *ctx, rss_isp_mode_t mode)
         (mode == RSS_ISP_NIGHT) ? IMPISP_RUNNING_MODE_NIGHT : IMPISP_RUNNING_MODE_DAY;
 
 #if defined(HAL_ISP_PTR_ARGS)
-    return IMP_ISP_Tuning_SetISPRunningMode(IMPVI_MAIN, &imp_mode);
+    int ret = IMP_ISP_Tuning_SetISPRunningMode(IMPVI_MAIN, &imp_mode);
 #else
-    return IMP_ISP_Tuning_SetISPRunningMode(imp_mode);
+    int ret = IMP_ISP_Tuning_SetISPRunningMode(imp_mode);
 #endif
+    return running_mode_result(ret, mode);
 }
 
 /* ================================================================
@@ -218,6 +240,12 @@ int hal_isp_set_sensor_fps(void *ctx, uint32_t fps_num, uint32_t fps_den)
  *
  * Gen1/Gen2: SetAntiFlickerAttr(IMPISPAntiflickerAttr attr)  -- by value
  * Gen3:      SetAntiFlickerAttr(IMPVI_NUM, IMPISPAntiflickerAttr*)
+ *
+ * Gen3 uses AUTO_MODE, not NORMAL_MODE.  NORMAL never lets integration
+ * time drop below one flicker period (10 ms at 50 Hz, 8.3 ms at 60 Hz),
+ * so a sunlit scene saturates with gain already at minimum.  AUTO keeps
+ * the flicker-period steps for longer exposures but may go down to the
+ * sensor minimum when the scene is bright enough not to need them.
  * ================================================================ */
 
 int hal_isp_set_antiflicker(void *ctx, rss_antiflicker_t mode)
@@ -231,7 +259,7 @@ int hal_isp_set_antiflicker(void *ctx, rss_antiflicker_t mode)
         memset(&attr, 0, sizeof(attr));
         switch (mode) {
         case RSS_ANTIFLICKER_50HZ:
-            attr.mode = IMPISP_ANTIFLICKER_NORMAL_MODE;
+            attr.mode = IMPISP_ANTIFLICKER_AUTO_MODE;
 #if defined(HAL_HYBRID_SDK)
             attr.freq = IMPISP_ANTIFLICKER_FREQ_50HZ;
 #else
@@ -239,7 +267,7 @@ int hal_isp_set_antiflicker(void *ctx, rss_antiflicker_t mode)
 #endif
             break;
         case RSS_ANTIFLICKER_60HZ:
-            attr.mode = IMPISP_ANTIFLICKER_NORMAL_MODE;
+            attr.mode = IMPISP_ANTIFLICKER_AUTO_MODE;
 #if defined(HAL_HYBRID_SDK)
             attr.freq = IMPISP_ANTIFLICKER_FREQ_60HZ;
 #else
@@ -3356,7 +3384,6 @@ int hal_isp_set_hflip_n(void *ctx, int sensor_idx, int enable)
         IMPISPHVFLIPAttr attr;
         memset(&attr, 0, sizeof(attr));
         attr.sensor_mode = (IMPISPHVFLIP)mode;
-        attr.isp_mode[0] = (IMPISPHVFLIP)mode;
         return IMP_ISP_Tuning_SetHVFLIP((IMPVI_NUM)sensor_idx, &attr);
 #elif defined(HAL_T23_MULTICAM)
         return IMP_ISP_MultiCamera_Tuning_SetHVFLIP((IMPVI_NUM)sensor_idx, mode);
@@ -3393,7 +3420,6 @@ int hal_isp_set_vflip_n(void *ctx, int sensor_idx, int enable)
         IMPISPHVFLIPAttr attr;
         memset(&attr, 0, sizeof(attr));
         attr.sensor_mode = (IMPISPHVFLIP)mode;
-        attr.isp_mode[0] = (IMPISPHVFLIP)mode;
         return IMP_ISP_Tuning_SetHVFLIP((IMPVI_NUM)sensor_idx, &attr);
 #elif defined(HAL_T23_MULTICAM)
         return IMP_ISP_MultiCamera_Tuning_SetHVFLIP((IMPVI_NUM)sensor_idx, mode);
@@ -3413,15 +3439,17 @@ int hal_isp_set_running_mode_n(void *ctx, int sensor_idx, rss_isp_mode_t mode)
     IMPISPRunningMode imp_mode =
         (mode == RSS_ISP_NIGHT) ? IMPISP_RUNNING_MODE_NIGHT : IMPISP_RUNNING_MODE_DAY;
 
+    int ret;
 #if defined(HAL_ISP_PTR_ARGS)
-    return IMP_ISP_Tuning_SetISPRunningMode((IMPVI_NUM)sensor_idx, &imp_mode);
+    ret = IMP_ISP_Tuning_SetISPRunningMode((IMPVI_NUM)sensor_idx, &imp_mode);
 #elif defined(HAL_T23_MULTICAM)
-    return IMP_ISP_MultiCamera_Tuning_SetISPRunningMode((IMPVI_NUM)sensor_idx, imp_mode);
+    ret = IMP_ISP_MultiCamera_Tuning_SetISPRunningMode((IMPVI_NUM)sensor_idx, imp_mode);
 #else
     if (sensor_idx != 0)
         return RSS_ERR_NOTSUP;
-    return IMP_ISP_Tuning_SetISPRunningMode(imp_mode);
+    ret = IMP_ISP_Tuning_SetISPRunningMode(imp_mode);
 #endif
+    return sensor_idx == 0 ? running_mode_result(ret, mode) : ret;
 }
 
 int hal_isp_set_sensor_fps_n(void *ctx, int sensor_idx, uint32_t fps_num, uint32_t fps_den)
@@ -3450,7 +3478,7 @@ int hal_isp_set_antiflicker_n(void *ctx, int sensor_idx, rss_antiflicker_t mode)
         memset(&attr, 0, sizeof(attr));
         switch (mode) {
         case RSS_ANTIFLICKER_50HZ:
-            attr.mode = IMPISP_ANTIFLICKER_NORMAL_MODE;
+            attr.mode = IMPISP_ANTIFLICKER_AUTO_MODE;
 #if defined(HAL_HYBRID_SDK)
             attr.freq = IMPISP_ANTIFLICKER_FREQ_50HZ;
 #else
@@ -3458,7 +3486,7 @@ int hal_isp_set_antiflicker_n(void *ctx, int sensor_idx, rss_antiflicker_t mode)
 #endif
             break;
         case RSS_ANTIFLICKER_60HZ:
-            attr.mode = IMPISP_ANTIFLICKER_NORMAL_MODE;
+            attr.mode = IMPISP_ANTIFLICKER_AUTO_MODE;
 #if defined(HAL_HYBRID_SDK)
             attr.freq = IMPISP_ANTIFLICKER_FREQ_60HZ;
 #else

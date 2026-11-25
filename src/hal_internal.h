@@ -20,6 +20,7 @@
 #include <errno.h>
 
 #include "raptor_hal.h"
+#include "hal_tune.h"
 
 /* ═══════════════════════════════════════════════════════════════════════
  * 1. SDK Generation Macros
@@ -298,6 +299,9 @@ struct rss_hal_ctx {
     /* Flip state per sensor (needed for SoCs with combined H/V flip) */
     int hflip_state[RSS_MAX_SENSORS];
     int vflip_state[RSS_MAX_SENSORS];
+
+    /* Tuning set per sensor, replayed after a running-mode switch */
+    hal_tune_t tune[RSS_MAX_SENSORS];
 
     /* Full multi-sensor config (stored for deinit ordering) */
     rss_multi_sensor_config_t multi_cfg;
