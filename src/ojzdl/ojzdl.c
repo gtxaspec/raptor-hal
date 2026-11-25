@@ -578,8 +578,10 @@ static int infer_shapes(ojzdl_net *n, const char **err)
 			break;
 		case T_UPSAMPLE:
 			/* [fmt: Layer types] P[1] = input bits; P[4] = mode, verified: 0 = zero
-			 * insertion (persondet), 1 = nearest neighbour (yolov5). Others refused. */
-			if (P[1] != x->bits || (P[4] != 0 && P[4] != 1) ||
+			 * insertion (persondet), 1 = nearest neighbour (yolov5). Others refused.
+			 * P[1] only matters for mode 0 (the fill value): mode 1 copies bytes, and
+			 * libjzdl runs thingino-ai graphs whose P[1] (4) is not the input's 5 bits. */
+			if ((P[4] == 0 && P[1] != x->bits) || (P[4] != 0 && P[4] != 1) ||
 			    P[2] < 1 || P[3] < 1 || P[2] > 4 || P[3] > 4)
 				FAIL("upsample: unverified mode");
 			y->h = x->h * P[2]; y->w = x->w * P[3]; y->c = x->c; y->bits = x->bits;
@@ -1018,7 +1020,25 @@ static void head(const ojzdl_net *n, const layer_t *l, const blob_t *x, blob_t *
 #if OJZDL_HAVE_MXU2
 	if (n->simd && l->simd) {
 		int32_t *acc = (int32_t *)(void *)n->scratch; /* [plan_memory] */
-		ojzdl_head_mxu2(x->i8, npx, ci, (const int8_t *)l->blob[0], co, acc);
+		int32_t bias[256];
+		float scale[256];
+		if (ci <= 256 && co <= 256)
+			ojzdl_head4_mxu2(x->i8, npx, ci, (const int8_t *)l->blob[0], co, acc);
+		else
+			ojzdl_head_mxu2(x->i8, npx, ci, (const int8_t *)l->blob[0], co, acc);
+		if (co <= 256) {
+			for (o = 0; o < co; o++) {
+				bias[o] = rd32(l->blob[1] + 4 * o);
+				scale[o] = rdf(l->blob[2] + 4 * o);
+			}
+			for (px = 0; px < npx; px++) {
+				const int32_t *a = acc + px * co;
+				float *d = y->f32 + px * co;
+				for (o = 0; o < co; o++)
+					d[o] = (float)(a[o] + bias[o]) * scale[o];
+			}
+			return;
+		}
 		for (px = 0; px < npx; px++)
 			for (o = 0; o < co; o++)
 				y->f32[px * co + o] = (float)(acc[px * co + o] + rd32(l->blob[1] + 4 * o)) *
@@ -1056,11 +1076,17 @@ static void upsample(const layer_t *l, const blob_t *x, blob_t *y)
 }
 
 /* [fmt: Layer types] type 78, equal input widths: u = round_half_even((ua + ub) / 2) */
-static void eltwise(const blob_t *a, const blob_t *b, blob_t *y)
+static void eltwise(const ojzdl_net *n, const blob_t *a, const blob_t *b, blob_t *y)
 {
 	int off = 1 << (a->bits - 1), hi = (1 << y->bits) - 1, yo = 1 << (y->bits - 1);
-	size_t i;
-	for (i = 0; i < y->n; i++) {
+	size_t i = 0;
+#if OJZDL_HAVE_MXU2
+	if (n->simd && a->bits <= 6 && y->bits <= 8)
+		i = ojzdl_add_mxu2(a->i8, b->i8, y->n, a->bits, y->bits, y->i8);
+#else
+	(void)n;
+#endif
+	for (; i < y->n; i++) {
 		int s2 = a->i8[i] + b->i8[i] + 2 * off, k = s2 >> 1;
 		int u = k + ((s2 & 1) & (k & 1));
 		if (u > hi)
@@ -1276,7 +1302,7 @@ int ojzdl_forward(ojzdl_net *n)
 		}
 		case T_HEAD: case T_HEAD8: head(n, l, x, y); break;
 		case T_UPSAMPLE: upsample(l, x, y); break;
-		case T_ELTWISE: eltwise(x, &n->B[l->bottom[1]], y); break;
+		case T_ELTWISE: eltwise(n, x, &n->B[l->bottom[1]], y); break;
 		case T_CONCAT: concat(n, l, y); break;
 		case T_PACK: pack(n, l, y); break;
 		default: return -1;

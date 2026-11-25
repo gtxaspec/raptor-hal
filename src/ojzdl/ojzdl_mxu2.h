@@ -46,6 +46,11 @@ void ojzdl_pool2_mxu2(const int8_t *a, const int8_t *b, int w, int c, int8_t *ds
 /* Head dot products, exact int32: acc[px][o] = sum x[px][c] * w[o][c].
  * Needs ci % 16 == 0 and every pair sum within int16 (checked by caller). */
 void ojzdl_head_mxu2(const int8_t *x, size_t npx, int ci, const int8_t *w, int co, int32_t *acc);
+/* the same for ci <= 256: each pixel's input stays in registers, 4 outputs per pass */
+void ojzdl_head4_mxu2(const int8_t *x, size_t npx, int ci, const int8_t *w, int co, int32_t *acc);
+
+/* type 78 eltwise, n % 16 == 0 part; needs bits_in <= 6; returns bytes done */
+size_t ojzdl_add_mxu2(const int8_t *a, const int8_t *b, size_t n, int bits_in, int bits_out, int8_t *dst);
 
 /* dst = rgb - 128 for the first n & ~15 bytes; returns bytes done. */
 size_t ojzdl_input_mxu2(const uint8_t *rgb, size_t n, int8_t *dst);
