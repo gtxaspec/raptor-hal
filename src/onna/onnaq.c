@@ -752,7 +752,11 @@ static struct nna_be be;
 static int use_nna, check;
 static uint8_t *tabs[MAXNODE];		/* per node: pc / deconv tables, built once */
 static void *cfuse[MAXNODE];		/* per concat node: its tables (struct catf) */
-static int8_t *wtrim[MAXREC];		/* per record: weights trimmed to the conv's oc */
+static int8_t *wtrim[MAXREC];
+static uint8_t *padbuf[MAXREC];
+#ifdef ONNA_MXU3
+static int8_t vadd_ok[MAXNODE];		/* per add node: 1 nna_vadd == its table, -1 not (table) */
+#endif		/* per record: its input with the bottom/right pad (pb != pad) */		/* per record: weights trimmed to the conv's oc */
 static uint8_t *stem_buf;
 static uint8_t conv_readers_only[MAXTENS];	/* tensor read by convs / heads only (after folding) */		/* the stem's 32-byte pixels (unused slots stay 0) */
 
@@ -777,14 +781,15 @@ static void conv_op(const struct gnode *g, const struct qrec *r, const uint8_t *
 	int OH = (H + pad + pb - k) / st + 1, OW = (W + pad + pb - k) / st + 1, oc = g->oc;
 	long npx = (long)OH * OW;
 	int64_t *S = NULL;
-	/* stride 2 / bottom-right-only padding (stride-2 depthwise): CPU sums, requantized as the NNA
-	 * does (qsum), until the NNA driver takes them */
-	int nna = use_nna && st == 1 && pb == pad && (head || r->sh == 2);	/* the NNA's QSUM is x4 */
+	int nna = use_nna;
+	/* raw: the NNA returns the sums and the CPU finishes: a head (float out), or a conv whose
+	 * requant shift is not the NNA QSUM's x4 (sh != 2) */
+	int raw = head || r->sh != 2;
 
 	/* on the NNA a 16-channel output is stored as 32-byte pixels: the next conv then writes F
 	 * straight from the tensor (its weights for channels 16..31 are 0). Only when convs alone read
 	 * it (an add, pc, pool or concat reads packed pixels) */
-	int ops = nna && !head && oc == 16 && conv_readers_only[g->out] ? 32 : oc;
+	int ops = nna && !raw && oc == 16 && conv_readers_only[g->out] ? 32 : oc;
 
 	o->h = OH, o->w = OW, o->c = oc, o->ps = ops;
 	if (head)
@@ -799,11 +804,31 @@ static void conv_op(const struct gnode *g, const struct qrec *r, const uint8_t *
 		struct nna_node nd;
 		struct nna_rq rq;
 		int oh, ow;
-		int32_t *S32 = head ? malloc(sizeof(int32_t) * (size_t)(npx * 32 * r->nob)) : NULL;
+		int32_t *S32 = raw ? malloc(sizeof(int32_t) * (size_t)(npx * 32 * r->nob)) : NULL;
+		const uint8_t *src = in;
+		int Hs = H, Ws = W;
 
+		/* the NNA pads symmetrically: a bottom/right-only pad (stride-2 layers, TF 'SAME') becomes
+		 * a copy of the input with pb - pad extra zero rows / columns at the bottom / right, run
+		 * with pad. Kept per record, zeroed once: the extra rows / columns are never written */
+		if (pb != pad) {
+			int e = pb - pad;
+
+			if (e < 0)
+				DIE("rec %d: pad top %d > bottom %d", g->rec, pad, pb);
+			Hs = H + e, Ws = W + e;
+			if (!padbuf[g->rec]) {
+				padbuf[g->rec] = calloc((size_t)Hs * Ws * ips, 1);
+				if (!padbuf[g->rec])
+					DIE("out of memory");
+			}
+			for (int y = 0; y < H; y++)
+				memcpy(padbuf[g->rec] + (size_t)y * Ws * ips, in + (size_t)y * W * ips, (size_t)W * ips);
+			src = padbuf[g->rec];
+		}
 		memset(&nd, 0, sizeof(nd));
 		memset(&rq, 0, sizeof(rq));
-		nd.rec = g->rec, nd.oc = oc, nd.ic = r->dw ? 1 : 32 * r->nic, nd.kh = nd.kw = k, nd.stride = 1;
+		nd.rec = g->rec, nd.oc = oc, nd.ic = r->dw ? 1 : 32 * r->nic, nd.kh = nd.kw = k, nd.stride = st;
 		nd.pad = pad, nd.padval = 0, nd.dw = r->dw, nd.wq = r->wq;
 		/* nna_conv reads wq as [ky][kx][oc][ic] with oc = nd.oc; the records have oc = 32 nob */
 		if (oc != 32 * r->nob) {
@@ -818,9 +843,21 @@ static void conv_op(const struct gnode *g, const struct qrec *r, const uint8_t *
 			nd.wq = wtrim[g->rec];
 		}
 		rq.q = o->u8, rq.bt = r->bt, rq.post = g->post, rq.ps = ops;
-		if (nna_conv(&be, in, H, W, C, ips, &nd, S32, head ? NULL : &rq, &oh, &ow) || oh != OH || ow != OW)
-			DIE("rec %d: nna_conv failed", g->rec);
-		if (head) {
+		if (nna_conv(&be, src, Hs, Ws, C, ips, &nd, S32, raw ? NULL : &rq, &oh, &ow) || oh != OH || ow != OW)
+			DIE("rec %d: nna_conv failed (%dx%d, want %dx%d)", g->rec, oh, ow, OH, OW);
+		if (raw && !head) {			/* requant with this layer's shift, then its table */
+			for (long p = 0; p < npx; p++)
+				for (int c = 0; c < oc; c++) {
+					int32_t s = S32[p * oc + c];
+					uint8_t q;
+
+					if (check && s != S[p * oc + c])
+						DIE("rec %d (raw): sum differs at px %ld oc %d", g->rec, p, c);
+					q = qsum(s, r->bt[64 * (c / 32) + c % 32], r->bt[64 * (c / 32) + 32 + c % 32], r->sh);
+					o->u8[p * oc + c] = g->post ? g->post[q] : q;
+				}
+			free(S32);
+		} else if (head) {
 			for (long p = 0; p < npx; p++)
 				for (int c = 0; c < oc; c++) {
 					int32_t s = S32[p * oc + c];
@@ -1008,6 +1045,27 @@ static void run_op(int i)
 			}
 			o->h = x->h, o->w = x->w, o->c = x->c;
 			need_u8(o, (size_t)(npx * x->c));
+#ifdef ONNA_MXU3
+			/* MXU3 add (nna_vadd, 64 bytes a step), once checked against this node's table on all
+			 * 65536 (a, b) pairs: it was verified on yolov5n's records, these differ (wB 0, T) */
+			if (!vadd_ok[i]) {
+				uint8_t *va, *vb, *vo;
+
+				if (posix_memalign((void **)&va, 64, 65536) || posix_memalign((void **)&vb, 64, 65536) ||
+				    posix_memalign((void **)&vo, 64, 65536))
+					DIE("out of memory");
+				for (int v = 0; v < 65536; v++)
+					va[v] = (uint8_t)(v >> 8), vb[v] = (uint8_t)v;
+				nna_vadd(va, vb, 65536, addr[g->crec].wa, addr[g->crec].wb, addr[g->crec].B, addr[g->crec].T, vo);
+				vadd_ok[i] = memcmp(vo, tabs[i], 65536) ? -1 : 1;
+				free(va), free(vb), free(vo);
+			}
+			if (vadd_ok[i] > 0) {
+				nna_vadd(x->u8, y->u8, (int)(npx * x->c), addr[g->crec].wa, addr[g->crec].wb, addr[g->crec].B,
+					 addr[g->crec].T, o->u8);
+				break;
+			}
+#endif
 			for (long p = 0; p < npx * x->c; p++)
 				o->u8[p] = tabs[i][x->u8[p] << 8 | y->u8[p]];
 			break;
