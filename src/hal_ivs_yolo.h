@@ -29,34 +29,34 @@
 extern "C" {
 #endif
 
-#define HAL_YOLO_MAX_HEADS   3   /* strides 8, 16, 32 */
-#define HAL_YOLO_MAX_ANCHORS 3   /* per head */
-#define HAL_YOLO_MAX_CAND    256 /* candidates kept before NMS (the best ones) */
+#define HAL_YOLO_MAX_HEADS 3   /* strides 8, 16, 32 */
+#define HAL_YOLO_MAX_ANCHORS 3 /* per head */
+#define HAL_YOLO_MAX_CAND 256  /* candidates kept before NMS (the best ones) */
 
 typedef struct {
-	float x1, y1, x2, y2; /* model input pixels */
-	float score;
-	int cls;
+    float x1, y1, x2, y2; /* model input pixels */
+    float score;
+    int cls;
 } hal_yolo_box_t;
 
 typedef struct {
-	int gh, gw, na;        /* grid and anchors per cell */
-	float stride;
-	const float *anchors;  /* na x (w, h), model input pixels */
+    int gh, gw, na; /* grid and anchors per cell */
+    float stride;
+    const float *anchors; /* na x (w, h), model input pixels */
 } hal_yolo_head_t;
 
 typedef struct {
-	int input_w, input_h, num_classes;
-	float conf[RSS_IVS_MAX_CLASSES]; /* threshold per class (num_classes used) */
-	float conf_default;              /* classes past RSS_IVS_MAX_CLASSES */
-	float min_logit;                 /* objectness logit below which a cell is skipped */
-	float nms;
-	float anchors[HAL_YOLO_MAX_HEADS][HAL_YOLO_MAX_ANCHORS * 2]; /* strides 8, 16, 32 */
-	int nheads;                      /* 0 until the first output has been parsed */
-	hal_yolo_head_t head[HAL_YOLO_MAX_HEADS];
-	size_t out_len;                  /* output values incl. the trailer */
-	int ncand;
-	hal_yolo_box_t cand[HAL_YOLO_MAX_CAND];
+    int input_w, input_h, num_classes;
+    float conf[RSS_IVS_MAX_CLASSES]; /* threshold per class (num_classes used) */
+    float conf_default;              /* classes past RSS_IVS_MAX_CLASSES */
+    float min_logit;                 /* objectness logit below which a cell is skipped */
+    float nms;
+    float anchors[HAL_YOLO_MAX_HEADS][HAL_YOLO_MAX_ANCHORS * 2]; /* strides 8, 16, 32 */
+    int nheads; /* 0 until the first output has been parsed */
+    hal_yolo_head_t head[HAL_YOLO_MAX_HEADS];
+    size_t out_len; /* output values incl. the trailer */
+    int ncand;
+    hal_yolo_box_t cand[HAL_YOLO_MAX_CAND];
 } hal_yolo_t;
 
 /* thresholds, anchors (param's, or YOLOv5's for strides left at 0) */
@@ -65,7 +65,7 @@ void hal_yolo_init(hal_yolo_t *y, const rss_ivs_jzdl_param_t *param, int input_w
 /* JZDL packed output: decode + NMS + scale to the frame. RSS_ERR if the
  * output doesn't fit the configured model (logged once). */
 int hal_yolo_run(hal_yolo_t *y, const float *out, size_t n, int frame_w, int frame_h,
-		 rss_ivs_detect_result_t *result);
+                 rss_ivs_detect_result_t *result);
 
 /* Per-head use. begin() clears the candidates. decode_head() takes one head,
  * gh x gw x c floats HWC (c = anchors x (5 + num_classes), anchor-major,
@@ -80,7 +80,7 @@ int hal_yolo_finish(hal_yolo_t *y);
 /* The first n boxes of y->cand[] into result (at most RSS_IVS_MAX_DETECTIONS),
  * frame = (model - off) * scale, clamped to frame_w x frame_h. */
 void hal_yolo_emit(const hal_yolo_t *y, int n, float scale_x, float scale_y, float off_x,
-		   float off_y, int frame_w, int frame_h, rss_ivs_detect_result_t *result);
+                   float off_y, int frame_w, int frame_h, rss_ivs_detect_result_t *result);
 
 #ifdef __cplusplus
 }

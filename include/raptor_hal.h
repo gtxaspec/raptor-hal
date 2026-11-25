@@ -313,7 +313,7 @@ typedef struct {
 
 /* IVS person/object detection parameters and results */
 #define RSS_IVS_MAX_DETECTIONS 20
-#define RSS_IVS_MAX_CLASSES    16 /* classes with their own threshold */
+#define RSS_IVS_MAX_CLASSES 16 /* classes with their own threshold */
 
 typedef struct {
     int skip_frame_count;
