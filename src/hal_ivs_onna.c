@@ -240,8 +240,8 @@ void *hal_jzdl_create(const rss_ivs_jzdl_param_t *param)
     if (restore)
         sched_setaffinity(0, sizeof(old), &old);
     if (rc) {
-        HAL_LOG_ERR("ONNA: failed to load %s + %s: %s", param->model_path, gpath[0] ? gpath : "(graph from the .bin)",
-                    onnaq_error());
+        HAL_LOG_ERR("ONNA: failed to load %s + %s: %s", param->model_path,
+                    gpath[0] ? gpath : "(graph from the .bin)", onnaq_error());
         free(c);
         return NULL;
     }
@@ -271,7 +271,8 @@ void *hal_jzdl_create(const rss_ivs_jzdl_param_t *param)
     return c;
 
 bad_heads:
-    HAL_LOG_ERR("ONNA: %s: %d outputs (1..%d supported)", param->model_path, c->nheads, ONNA_MAX_HEADS);
+    HAL_LOG_ERR("ONNA: %s: %d outputs (1..%d supported)", param->model_path, c->nheads,
+                ONNA_MAX_HEADS);
     onnaq_close();
     in_use = 0;
     free(c);
@@ -294,14 +295,20 @@ static int heads_setup(onna_ctx_t *c)
             goto bad;
         /* anchors: the caller's ([motion] anchors_<stride>, e.g. from the model's model.conf),
          * else the graph's anchors line, else YOLOv5's (onnaq_anchors) */
-        int si = c->stride[k] == 8 ? 0 : c->stride[k] == 16 ? 1 : c->stride[k] == 32 ? 2 : -1, set = 0;
+        int si = -1, set = 0;
+        if (c->stride[k] == 8)
+            si = 0;
+        else if (c->stride[k] == 16)
+            si = 1;
+        else if (c->stride[k] == 32)
+            si = 2;
         for (int j = 0; si >= 0 && j < 6; j++)
             set |= c->panc[si][j] != 0.0f;
         if (set) {
             memcpy(c->anc[k], c->panc[si], sizeof(c->anc[k]));
         } else if (onnaq_anchors(c->stride[k], c->anc[k])) {
-            HAL_LOG_ERR("ONNA: no anchors for stride %d ([motion] anchors_%d or the graph)", c->stride[k],
-                        c->stride[k]);
+            HAL_LOG_ERR("ONNA: no anchors for stride %d ([motion] anchors_%d or the graph)",
+                        c->stride[k], c->stride[k]);
             return -1;
         }
     }
