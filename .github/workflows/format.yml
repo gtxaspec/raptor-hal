@@ -55,7 +55,8 @@ jobs:
             exit 0
           fi
           if out=$(git-clang-format-19 --binary "$(command -v clang-format-19)" \
-                   --extensions c,h,cpp,hpp --diff "$BASE_SHA" "$HEAD_SHA"); then
+                   --extensions c,h,cpp,hpp --diff "$BASE_SHA" "$HEAD_SHA" \
+                   -- . ':(exclude)tests/greatest.h'); then
             printf '%s\n' "$out"
           else
             printf '%s\n' "$out"
