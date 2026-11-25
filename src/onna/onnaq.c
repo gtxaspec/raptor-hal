@@ -65,17 +65,51 @@ static void die(const char *fmt, ...)
 
 /* ---- the .bin: W blocks with their param records, header concat records */
 
+/* capacities: YOLO-style graphs (yoloxn) have 300+ convs and 450+ ops */
+#define MAXREC 1024
+#define MAXADD 512
+#define MAXNODE 1024
+#define MAXTENS 1024
+#define MAXCAT 64
+
 struct qrec {
 	int nob, nic, kh, kw, dw;
 	int8_t *wq;		/* dense [ky][kx][oc][ic] (oc = 32 nob, ic = 32 nic); dw [ky][kx][oc] */
 	int32_t *bt;		/* per block: B[32], T[32] */
 	float *fl;		/* per oc: the head factor (the T slot read as float) */
+	int sh;			/* requant: q = floor(((S << sh) + B) / T) + 128; sh from the op list, 2 (x4) by default */
 };
 
-static struct qrec rec[256];
+static struct qrec rec[MAXREC];
 static int nrec;
-static float cat_a[16][4];
-static int ncat, cat_n[16];
+static float cat_a[MAXCAT][4];
+/* the header's name key: name byte i is stored XOR NAMEKEY[i % 9] (a 9-byte cycle, recovered
+ * from known tensor names) */
+static const uint8_t NAMEKEY[9] = { 0xf4, 0x36, 0xa5, 0x3e, 0x96, 0x7c, 0xce, 0x94, 0xe8 };
+
+/* a header name at o: int32 length, then the bytes XOR NAMEKEY. Returns the length (and the text in
+ * out) when every byte decodes to [A-Za-z0-9._-/:*], else -1 */
+static int dstr(const uint8_t *b, long n, long o, char *out, int cap)
+{
+	int32_t L = o + 4 <= n ? (int32_t)(b[o] | b[o + 1] << 8 | b[o + 2] << 16 | (uint32_t)b[o + 3] << 24) : -1;
+
+	if (L < 1 || L >= cap || o + 4 + L > n)
+		return -1;
+	for (int i = 0; i < L; i++) {
+		int c = b[o + 4 + i] ^ NAMEKEY[i % 9];
+
+		if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' ||
+		      c == '-' || c == '/' || c == ':' || c == '*'))
+			return -1;
+		out[i] = (char)c;
+	}
+	out[L] = 0;
+	return L;
+}
+struct addrec { int32_t wa, wb, B, T; };
+static struct addrec addr[MAXADD];
+static int nadd;
+static int ncat, cat_n[MAXCAT];
 
 static int32_t rd32(const uint8_t *p)
 {
@@ -116,13 +150,11 @@ static void load_bin(const char *path)
 		const uint8_t *w = b + o, *p = b + o + nb;
 		int taps = kh * kw, ic = icg == 1 ? 1 : 32 * nic, oc = 32 * nob;
 
-		if (nrec == 256)
+		if (nrec == MAXREC)
 			DIE("too many W blocks");
 		if (nob < 1 || nob > 64 || nic < 1 || kh < 1 || kh > 3 || kw < 1 || kw > 3 ||
 		    nb != (icg == 1 ? 32 * nob * taps : 1024 * nob * nic * taps))
 			DIE("W block at %ld: bytes %d nob %d nic %d k %dx%d", o, nb, nob, nic, kh, kw);
-		if (icg == 32 && taps != 1)
-			DIE("W block at %ld: dense %dx%d (only 1x1 dense layers are known)", o, kh, kw);
 		if (rd32(p + 8) != (nob << 16 | 1) || rd32(p + 12) != 1280 || rd32(p + 20) != 512 * nob)
 			DIE("param record at %ld: fields %d %d %d", o + nb, rd32(p + 8), rd32(p + 12), rd32(p + 20));
 		r->nob = nob, r->nic = icg == 1 ? 1 : nic, r->kh = kh, r->kw = kw, r->dw = icg == 1;
@@ -142,19 +174,21 @@ static void load_bin(const char *path)
 					}
 				}
 		} else {
-			for (int ob = 0; ob < nob; ob++)	/* block -> input chunk -> 4 entries [32 oc][8 B] */
-				for (int ck = 0; ck < nic; ck++) {
-					const uint8_t *e = w + 1024L * (ob * nic + ck);
+			/* block -> input chunk -> tap (ky, kx) -> 4 entries [32 oc][8 B]; wq [t][oc][ic] */
+			for (int ob = 0; ob < nob; ob++)
+				for (int ck = 0; ck < nic; ck++)
+					for (int t = 0; t < taps; t++) {
+						const uint8_t *e = w + 1024L * (((long)ob * nic + ck) * taps + t);
 
-					for (int o2 = 0; o2 < 32; o2++)
-						for (int c = 0; c < 32; c++) {
-							int v = 0;
+						for (int o2 = 0; o2 < 32; o2++)
+							for (int c = 0; c < 32; c++) {
+								int v = 0;
 
-							for (int k = 0; k < 4; k++)
-								v |= (e[256 * k + 8 * o2 + c / 4] >> (2 * (c % 4)) & 3) << (2 * k);
-							r->wq[(long)(32 * ob + o2) * ic + 32 * ck + c] = (int8_t)(v - 128);
-						}
-				}
+								for (int k = 0; k < 4; k++)
+									v |= (e[256 * k + 8 * o2 + c / 4] >> (2 * (c % 4)) & 3) << (2 * k);
+								r->wq[((long)t * oc + 32 * ob + o2) * ic + 32 * ck + c] = (int8_t)(v - 128);
+							}
+					}
 		}
 		r->bt = malloc(256L * nob);
 		r->fl = malloc(sizeof(float) * (size_t)oc);
@@ -178,7 +212,7 @@ static void load_bin(const char *path)
 			memcpy(s, b + o + 4 * (k + 2), 4 * (size_t)(k + 1));
 			for (int i = 0; ok && i <= k; i++)
 				ok = s[i] > 1e-6f && s[i] < 1e3f;
-			if (!ok || ncat == 16)
+			if (!ok || ncat == MAXCAT)
 				continue;
 			/* records of different arity are not interleaved in the models seen; keep file order
 			 * per arity and fail later if a concat's arity does not match */
@@ -187,19 +221,97 @@ static void load_bin(const char *path)
 				cat_a[ncat][i] = s[i] * s[k];
 			ncat++;
 		}
+	/* add records, in the converter's op order. The header is the converter's op list: names are
+	 * length-prefixed strings XORed with a fixed per-position key (NAMEKEY; recovered from known
+	 * tensor names). Each Add op carries its kernel string "Add/add_..." and, a few bytes after it,
+	 * its record 2, wA, wB, 2, float sA, sB, B, T. out = clamp(floor((64 (wA a + wB b) + B) / T) +
+	 * 128): nna_add_ref's arithmetic (fitted 2026-11-25 on the PC executor's tensors, 0 of 532480
+	 * wrong). An identity clamp has wB = 0 (a plain rescale of a), so no value filter. The graph's
+	 * add count must match (load_graph) */
+	for (long o = 0; o + 4 + 8 <= n; o++) {
+		static const char pre[] = "Add/add_";
+		int32_t L = rd32(b + o);
+		int k;
+
+		if (L < 8 || L > 256 || o + 4 + L > n)
+			continue;
+		for (k = 0; k < 8 && (b[o + 4 + k] ^ NAMEKEY[k % 9]) == (uint8_t)pre[k]; k++)
+			;
+		if (k < 8)
+			continue;
+		for (long d = o + 4 + L; d + 32 <= n && d < o + 4 + L + 160; d++) {
+			const uint8_t *p = b + d;
+			int32_t wa = rd32(p + 4), wb = rd32(p + 8);
+			float bt[2];
+
+			if (rd32(p) != 2 || rd32(p + 12) != 2 || wa < 0 || wa > 255 || wb < 0 || wb > 255)
+				continue;
+			memcpy(bt, p + 24, sizeof(bt));
+			if (nadd == MAXADD)
+				DIE("too many add records");
+			if (!(bt[1] >= 1))
+				DIE("add record at %ld: T %g", d, (double)bt[1]);
+			addr[nadd++] = (struct addrec){ wa, wb, (int32_t)bt[0], (int32_t)bt[1] };
+			break;
+		}
+		o += 4 + L - 1;
+	}
+	/* per conv requant shift, in op order (= W block order). A Convolution op starts with the names
+	 * "Convolution", <out>, "UNIQUE"; heads are Convolution ops too. In an op, after its kernel
+	 * string "Convolution/...": 01, int32 2, int32 1, <name>, int32, int32, int32 shift. Most layers
+	 * use 2 (x4); a layer whose int8 weights the converter scaled down uses more (6: x64, fitted on
+	 * the PC executor). The stem's and heads' records differ: they keep 2 */
+	{
+		int k = 0, cur = -1, done = 0;
+		char s1[260], s2[260], s3[260];
+
+		for (int i = 0; i < nrec; i++)
+			rec[i].sh = 2;
+		for (long o = 0; o + 4 < n; o++) {
+			int l1 = dstr(b, n, o, s1, sizeof(s1)), l2, l3;
+
+			if (l1 < 0)
+				continue;
+			if (l1 == 11 && !strcmp(s1, "Convolution") && (l2 = dstr(b, n, o + 15, s2, sizeof(s2))) > 0 &&
+			    (l3 = dstr(b, n, o + 19 + l2, s3, sizeof(s3))) == 6 && !strcmp(s3, "UNIQUE")) {
+				cur = k++, done = 0;
+				o += 4 + l1 - 1;
+				continue;
+			}
+			/* "Convolution/base_i8/..." (byte out); heads are "base_i8of" (float out), another record */
+			if (l1 > 20 && !strncmp(s1, "Convolution/base_i8/", 20) && cur >= 0 && cur < nrec && !done) {
+				long e = o + 4 + l1;
+				int32_t nl = e + 13 <= n ? rd32(b + e + 9) : -1;
+
+				if (b[e] == 1 && rd32(b + e + 1) == 2 && rd32(b + e + 5) == 1 && nl > 0 && nl < 256 &&
+				    e + 13 + nl + 12 <= n) {
+					int32_t v = rd32(b + e + 13 + nl + 8);
+
+					if (v < 0 || v > 16)
+						DIE("conv op %d (%s): requant shift %d", cur, s1, v);
+					rec[cur].sh = v;
+				}
+				done = 1;
+			}
+			o += 4 + l1 - 1;
+		}
+		if (k && k != nrec)
+			DIE("%d Convolution ops, %d W blocks", k, nrec);
+	}
 	free(b);
 }
 
 /* ---- the graph */
 
-enum { G_STEM, G_CONV, G_PC, G_HEAD, G_POOL, G_DECONV, G_CAT };
+enum { G_STEM, G_CONV, G_PC, G_HEAD, G_POOL, G_DECONV, G_CAT, G_ADD };
 struct gnode {
 	int op, out, in[4], nin, rec, oc, ic, k, pad, dw, crec;
+	int stride, padb;	/* a conv: stride, and the bottom/right pad (pad = top/left) */
 	int skip;		/* folded into the conv before it, or a deconv folded into its concat */
 	int dec[4];		/* a concat: input k comes from deconv node dec[k] - 1 (0: none) */
 	uint8_t *post;		/* a conv: the folded per-channel ops as one byte table (all channels) */
 };
-static struct gnode G[512];
+static struct gnode G[MAXNODE];
 static int ng, ntens, in_h, in_w, outs[4], nouts;
 static int nanc, anc_stride[4];		/* "anchors <stride> w0 h0 w1 h1 w2 h2" lines */
 static float anc_wh[4][6];
@@ -226,6 +338,8 @@ static void load_graph(const char *path)
 			continue;
 		if (!strcmp(op, "tensors")) {
 			ntens = a[0];
+			if (ntens < 1 || ntens > MAXTENS)
+				DIE("graph: %d tensors (max %d)", ntens, MAXTENS);
 			continue;
 		}
 		if (!strcmp(op, "input")) {
@@ -250,8 +364,12 @@ static void load_graph(const char *path)
 		g.out = a[0], g.in[0] = a[1], g.nin = 1;
 		if (!strcmp(op, "stem") && na == 4)
 			g.op = G_STEM, g.rec = a[2], g.oc = a[3];
-		else if (!strcmp(op, "conv") && na == 8)
+		else if (!strcmp(op, "conv") && (na == 8 || na == 10)) {
 			g.op = G_CONV, g.rec = a[2], g.oc = a[3], g.ic = a[4], g.k = a[5], g.pad = a[6], g.dw = a[7];
+			g.stride = na == 10 ? a[8] : 1, g.padb = na == 10 ? a[9] : g.pad;
+			if (g.stride < 1 || g.stride > 2 || g.padb < 0 || g.padb > 2)
+				DIE("graph line: %s", line);
+		}
 		else if (!strcmp(op, "pc") && na == 4)
 			g.op = G_PC, g.rec = a[2], g.oc = a[3];
 		else if (!strcmp(op, "head") && na == 5)
@@ -267,25 +385,52 @@ static void load_graph(const char *path)
 			for (int i = 0; i < g.nin; i++)
 				g.in[i] = a[2 + i];
 			g.crec = a[2 + g.nin];
+		} else if (!strcmp(op, "add") && na == 4) {
+			g.op = G_ADD, g.nin = 2, g.in[1] = a[2], g.crec = a[3];
+			if (g.crec < 0 || g.crec >= nadd)
+				DIE("graph: add record %d of %d", g.crec, nadd);
 		} else
 			DIE("graph line: %s", line);
-		if (g.op != G_POOL && g.op != G_CAT && (g.rec < 0 || g.rec >= nrec))
+		if (g.op != G_POOL && g.op != G_CAT && g.op != G_ADD && (g.rec < 0 || g.rec >= nrec))
 			DIE("graph: record %d of %d", g.rec, nrec);
 		if (g.op == G_CAT && (g.crec >= ncat || cat_n[g.crec] != g.nin))
 			DIE("graph: concat record %d", g.crec);
-		if (ng == 512)
+		if (ng == MAXNODE)
 			DIE("graph too long");
+		for (int k = 0; k < g.nin; k++)
+			if (g.in[k] < 0 || g.in[k] >= ntens)
+				DIE("graph: tensor %d of %d", g.in[k], ntens);
+		if (g.out < 0 || g.out >= ntens)
+			DIE("graph: tensor %d of %d", g.out, ntens);
 		G[ng++] = g;
 	}
 	fclose(f);
 	if (!ntens || !ng || !nouts || !in_h)
 		DIE("graph %s incomplete", path);
+	{
+		int na = 0;
+
+		for (int i = 0; i < ng; i++)
+			na += G[i].op == G_ADD;
+		if (na != nadd)
+			DIE("graph has %d adds, the .bin %d add records", na, nadd);
+	}
+}
+
+static uint8_t add_q(const struct addrec *r, int a, int b)
+{
+	int64_t num = 64LL * (r->wa * a + r->wb * b) + r->B, q = num / r->T;
+
+	if ((num % r->T) && ((num < 0) != (r->T < 0)))
+		q--;					/* floor division */
+	q += 128;
+	return (uint8_t)(q < 0 ? 0 : q > 255 ? 255 : q);
 }
 
 /* ---- tensors and CPU ops */
 
 struct tensor { int h, w, c, ps; uint8_t *u8; float *f; size_t cap; };	/* ps: bytes per pixel (0: c) */
-static struct tensor T[256];
+static struct tensor T[MAXTENS];
 
 /* tensor buffers live across runs: allocated on first use (page faults once, not per frame) */
 static void need_u8(struct tensor *t, size_t n)
@@ -304,15 +449,98 @@ static void need_f(struct tensor *t, size_t n)
 		DIE("out of memory");
 }
 
-static uint8_t qsum(int64_t S, int32_t B, int32_t Tv);
+static uint8_t qsum(int64_t S, int32_t B, int32_t Tv, int sh);
 static uint8_t *pc_table(const struct qrec *r, int oc, int tap);
+
+/* the clamp min(x, t) the thingino-ai T41 export builds from Add (x - relu(x - t)): tensor X is
+ * read by a chain of per-channel 1x1 ops ending in N and by add(X, N). Every input of that add is a
+ * function of X's byte, so the whole clamp becomes one table, composed into the conv's (tab).
+ * Returns 1 when it folded one. */
+static int clamp_fold(struct gnode *g, uint8_t *tab, const int *uses, int *nthis)
+{
+	int X = g->out, jp = -1, ja = -1, cur, N = -1, chain[8], nc = 0, aX;
+	uint8_t ct[256], t2[256];
+
+	if (uses[X] != 2)
+		return 0;
+	for (int k = (int)(g - G) + 1; k < ng; k++) {
+		if (G[k].skip)
+			continue;
+		if (G[k].op == G_PC && G[k].in[0] == X && jp < 0)
+			jp = k;
+		if (G[k].op == G_ADD && (G[k].in[0] == X || G[k].in[1] == X) && ja < 0)
+			ja = k;
+	}
+	if (jp < 0 || ja < 0)
+		return 0;
+	for (int x = 0; x < 256; x++)
+		ct[x] = (uint8_t)x;
+	for (cur = jp;;) {
+		uint8_t *pt;
+		int same = 1, next = -1;
+
+		if (G[cur].oc != g->oc || nc == 8)
+			return 0;
+		pt = pc_table(&rec[G[cur].rec], g->oc, 0);
+		for (int c = 1; c < g->oc && same; c++)
+			same = !memcmp(pt, pt + 256 * c, 256);
+		if (same)
+			for (int x = 0; x < 256; x++)
+				ct[x] = pt[ct[x]];
+		free(pt);
+		if (!same)
+			return 0;
+		chain[nc++] = cur;
+		N = G[cur].out;
+		if (uses[N] != 1)
+			return 0;
+		for (int k = cur + 1; k < ng && next < 0; k++)
+			if (!G[k].skip && (G[k].in[0] == N || (G[k].nin > 1 && G[k].in[1] == N)))
+				next = k;
+		if (next == ja)
+			break;
+		if (next < 0 || G[next].op != G_PC || G[next].nin != 1)
+			return 0;
+		cur = next;
+	}
+	aX = G[ja].in[0] == X ? 0 : 1;
+	if (G[ja].in[1 - aX] != N)
+		return 0;
+	for (int v = 0; v < 256; v++) {
+		int xv = tab[v], nv = ct[xv];
+
+		t2[v] = aX == 0 ? add_q(&addr[G[ja].crec], xv, nv) : add_q(&addr[G[ja].crec], nv, xv);
+	}
+	memcpy(tab, t2, 256);
+	for (int k = 0; k < nc; k++)
+		G[chain[k]].skip = 1;
+	G[ja].skip = 1;
+	g->out = G[ja].out;
+	*nthis += nc + 1;
+	return 1;
+}
+
+/* a 2x2 deconv record whose taps 0..2 are all zero (only output phase 0 reads the input) */
+static int deconv_zero_insert(const struct qrec *r, int oc)
+{
+	if (r->kh != 2 || r->kw != 2 || !r->dw)
+		return 0;
+	for (int t = 0; t < 3; t++)
+		for (int c = 0; c < oc; c++)
+			if (r->wq[(long)t * 32 * r->nob + c])
+				return 0;
+	return 1;
+}
 
 /* fold per-channel 1x1 ops into the conv before them: conv -> pc -> pc ... becomes one conv whose
  * output bytes go through one composed table, when that table is the same for every channel and
  * each intermediate tensor has no other reader */
 static int fold(void)
 {
-	int nf = 0, uses[256] = { 0 };
+	static int uses[MAXTENS];
+	int nf = 0;
+
+	memset(uses, 0, sizeof(uses));
 
 	for (int i = 0; i < ng; i++)
 		for (int k = 0; k < G[i].nin; k++)
@@ -329,29 +557,33 @@ static int fold(void)
 		for (int x = 0; x < 256; x++)
 			tab[x] = (uint8_t)x;
 		for (;;) {
-			int j = -1, same = 1;
-			uint8_t *pt, t2[256];
+			for (;;) {
+				int j = -1, same = 1;
+				uint8_t *pt, t2[256];
 
-			if (uses[g->out] != 1)
+				if (uses[g->out] != 1)
+					break;
+				for (int k = i + 1; k < ng && j < 0; k++)
+					if (!G[k].skip && G[k].nin == 1 && G[k].in[0] == g->out)
+						j = k;
+				if (j < 0 || G[j].op != G_PC || G[j].oc != g->oc)
+					break;
+				pt = pc_table(&rec[G[j].rec], g->oc, 0);
+				for (int c = 1; c < g->oc && same; c++)
+					same = !memcmp(pt, pt + 256 * c, 256);
+				if (same)
+					for (int x = 0; x < 256; x++)
+						t2[x] = pt[tab[x]];
+				free(pt);
+				if (!same)
+					break;
+				memcpy(tab, t2, 256);
+				G[j].skip = 1;
+				g->out = G[j].out;
+				nthis++;
+			}
+			if (!clamp_fold(g, tab, uses, &nthis))
 				break;
-			for (int k = i + 1; k < ng && j < 0; k++)
-				if (!G[k].skip && G[k].nin == 1 && G[k].in[0] == g->out)
-					j = k;
-			if (j < 0 || G[j].op != G_PC || G[j].oc != g->oc)
-				break;
-			pt = pc_table(&rec[G[j].rec], g->oc, 0);
-			for (int c = 1; c < g->oc && same; c++)
-				same = !memcmp(pt, pt + 256 * c, 256);
-			if (same)
-				for (int x = 0; x < 256; x++)
-					t2[x] = pt[tab[x]];
-			free(pt);
-			if (!same)
-				break;
-			memcpy(tab, t2, 256);
-			G[j].skip = 1;
-			g->out = G[j].out;
-			nthis++;
 		}
 		for (int x = 0; x < 256 && ident; x++)
 			ident = tab[x] == x;
@@ -362,11 +594,14 @@ static int fold(void)
 		}
 		nf += nthis;
 	}
-	/* a deconv read only by a concat: the concat builds that input itself */
+	/* a zero-insert deconv read only by a concat: the concat builds that input itself. Only taps 3
+	 * (phase 0) may be non-zero: the other three phases are then constants. A nearest-neighbour
+	 * deconv (all four taps, YOLO-style upsampling) stays an op of its own */
 	for (int c = 0; c < ng; c++)
 		for (int k = 0; G[c].op == G_CAT && k < G[c].nin; k++)
 			for (int j = 0; j < c; j++)
-				if (G[j].op == G_DECONV && !G[j].skip && G[j].out == G[c].in[k] && uses[G[j].out] == 1) {
+				if (G[j].op == G_DECONV && !G[j].skip && G[j].out == G[c].in[k] && uses[G[j].out] == 1 &&
+				    deconv_zero_insert(&rec[G[j].rec], G[j].oc)) {
 					G[j].skip = 1;
 					G[c].dec[k] = j + 1;
 					nf++;
@@ -374,9 +609,9 @@ static int fold(void)
 	return nf;
 }
 
-static uint8_t qsum(int64_t S, int32_t B, int32_t Tv)
+static uint8_t qsum(int64_t S, int32_t B, int32_t Tv, int sh)
 {
-	int64_t r = 4 * S + B, t = Tv & 0x3ffffff, q;
+	int64_t r = S * ((int64_t)1 << sh) + B, t = Tv & 0x3ffffff, q;
 
 	if (!t)
 		return r >= 0 ? 255 : 0;
@@ -442,19 +677,22 @@ static void stem_f(const uint8_t *rgb, int H, int W, uint8_t *f)
 	}
 }
 
-/* CPU conv: int sums [OH][OW][oc]; dense 1x1 or depthwise kxk, stride 1 */
+/* CPU conv: int sums [OH][OW][oc]; dense 1x1 or depthwise kxk; stride st, pad pt top/left and pb
+ * bottom/right with byte 0 (the zero code of these ReLU tensors) */
 static void cpu_sums(const struct qrec *r, const uint8_t *in, int H, int W, int C, int ips, int oc, int k,
-		     int pad, int64_t *S)
+		     int pt, int pb, int st, int64_t *S)
 {
-	for (int y = 0; y < H + 2 * pad - k + 1; y++)
-		for (int x = 0; x < W + 2 * pad - k + 1; x++) {
-			int64_t *s = S + ((long)y * (W + 2 * pad - k + 1) + x) * oc;
+	int OH = (H + pt + pb - k) / st + 1, OW = (W + pt + pb - k) / st + 1;
+
+	for (int y = 0; y < OH; y++)
+		for (int x = 0; x < OW; x++) {
+			int64_t *s = S + ((long)y * OW + x) * oc;
 
 			memset(s, 0, sizeof(*s) * (size_t)oc);
 			if (r->dw) {
 				for (int ky = 0; ky < k; ky++)
 					for (int kx = 0; kx < k; kx++) {
-						int iy = y + ky - pad, ix = x + kx - pad;
+						int iy = y * st + ky - pt, ix = x * st + kx - pt;
 						const int8_t *w = r->wq + (long)(ky * r->kw + kx) * 32 * r->nob;
 
 						if (iy < 0 || iy >= H || ix < 0 || ix >= W)
@@ -462,17 +700,23 @@ static void cpu_sums(const struct qrec *r, const uint8_t *in, int H, int W, int 
 						for (int c = 0; c < oc; c++)
 							s[c] += (int64_t)w[c] * in[((long)iy * W + ix) * ips + c];
 					}
-			} else {
-				const uint8_t *px = in + ((long)y * W + x) * ips;
+			} else {		/* dense k x k: wq [t][oc][ic] */
+				for (int ky = 0; ky < k; ky++)
+					for (int kx = 0; kx < k; kx++) {
+						int iy = y * st + ky - pt, ix = x * st + kx - pt;
+						const uint8_t *px = in + ((long)iy * W + ix) * ips;
 
-				for (int o = 0; o < oc; o++) {
-					const int8_t *w = r->wq + (long)o * 32 * r->nic;
-					int64_t a = 0;
+						if (iy < 0 || iy >= H || ix < 0 || ix >= W)
+							continue;
+						for (int o = 0; o < oc; o++) {
+							const int8_t *w = r->wq + ((long)(ky * k + kx) * 32 * r->nob + o) * 32 * r->nic;
+							int64_t a = 0;
 
-					for (int c = 0; c < C; c++)
-						a += (int64_t)w[c] * px[c];
-					s[o] = a;
-				}
+							for (int c = 0; c < C; c++)
+								a += (int64_t)w[c] * px[c];
+							s[o] += a;
+						}
+					}
 			}
 		}
 }
@@ -481,7 +725,7 @@ static void qsum_all(const struct qrec *r, const int64_t *S, long npx, int oc, u
 {
 	for (long p = 0; p < npx; p++)
 		for (int c = 0; c < oc; c++)
-			q[p * oc + c] = qsum(S[p * oc + c], r->bt[64 * (c / 32) + c % 32], r->bt[64 * (c / 32) + 32 + c % 32]);
+			q[p * oc + c] = qsum(S[p * oc + c], r->bt[64 * (c / 32) + c % 32], r->bt[64 * (c / 32) + 32 + c % 32], r->sh);
 }
 
 /* per-channel byte -> byte table: q(w x) */
@@ -492,7 +736,7 @@ static uint8_t *pc_table(const struct qrec *r, int oc, int tap)
 	for (int c = 0; c < oc; c++)
 		for (int x = 0; x < 256; x++)
 			t[c * 256 + x] = qsum((int64_t)r->wq[(long)tap * 32 * r->nob + c] * x, r->bt[64 * (c / 32) + c % 32],
-					      r->bt[64 * (c / 32) + 32 + c % 32]);
+					      r->bt[64 * (c / 32) + 32 + c % 32], r->sh);
 	return t;
 }
 
@@ -506,32 +750,52 @@ static double now_ms(void)
 
 static struct nna_be be;
 static int use_nna, check;
-static uint8_t *tabs[512];		/* per node: pc / deconv tables, built once */
-static void *cfuse[512];		/* per concat node: its tables (struct catf) */
-static int8_t *wtrim[256];		/* per record: weights trimmed to the conv's oc */
-static uint8_t *stem_buf;		/* the stem's 32-byte pixels (unused slots stay 0) */
+static uint8_t *tabs[MAXNODE];		/* per node: pc / deconv tables, built once */
+static void *cfuse[MAXNODE];		/* per concat node: its tables (struct catf) */
+static int8_t *wtrim[MAXREC];		/* per record: weights trimmed to the conv's oc */
+static uint8_t *stem_buf;
+static uint8_t conv_readers_only[MAXTENS];	/* tensor read by convs / heads only (after folding) */		/* the stem's 32-byte pixels (unused slots stay 0) */
+
+/* which tensors only convs / heads read (after folding): those may be stored as 32-byte pixels */
+static void set_readers(void)
+{
+	for (int t = 0; t < MAXTENS; t++)
+		conv_readers_only[t] = 1;
+	for (int k = 0; k < nouts; k++)
+		conv_readers_only[outs[k]] = 0;
+	for (int i = 0; i < ng; i++)
+		if (!G[i].skip && G[i].op != G_CONV && G[i].op != G_HEAD)
+			for (int k = 0; k < G[i].nin; k++)
+				conv_readers_only[G[i].in[k]] = 0;
+}
 
 static void conv_op(const struct gnode *g, const struct qrec *r, const uint8_t *in, int H, int W, int C, int ips,
 		    struct tensor *o, int head)
 {
-	int k = g->k ? g->k : 1, pad = g->pad, OH = H + 2 * pad - k + 1, OW = W + 2 * pad - k + 1, oc = g->oc;
+	int k = g->k ? g->k : 1, pad = g->pad, st = g->stride ? g->stride : 1;
+	int pb = g->op == G_CONV ? g->padb : pad;
+	int OH = (H + pad + pb - k) / st + 1, OW = (W + pad + pb - k) / st + 1, oc = g->oc;
 	long npx = (long)OH * OW;
 	int64_t *S = NULL;
+	/* stride 2 / bottom-right-only padding (stride-2 depthwise): CPU sums, requantized as the NNA
+	 * does (qsum), until the NNA driver takes them */
+	int nna = use_nna && st == 1 && pb == pad && (head || r->sh == 2);	/* the NNA's QSUM is x4 */
 
 	/* on the NNA a 16-channel output is stored as 32-byte pixels: the next conv then writes F
-	 * straight from the tensor (its weights for channels 16..31 are 0) */
-	int ops = use_nna && !head && oc == 16 ? 32 : oc;
+	 * straight from the tensor (its weights for channels 16..31 are 0). Only when convs alone read
+	 * it (an add, pc, pool or concat reads packed pixels) */
+	int ops = nna && !head && oc == 16 && conv_readers_only[g->out] ? 32 : oc;
 
 	o->h = OH, o->w = OW, o->c = oc, o->ps = ops;
 	if (head)
 		need_f(o, (size_t)(npx * oc));
 	else
 		need_u8(o, (size_t)(npx * ops));
-	if (!use_nna || check) {
+	if (!nna || check) {
 		S = malloc(sizeof(*S) * (size_t)(npx * oc));
-		cpu_sums(r, in, H, W, C, ips, oc, k, pad, S);
+		cpu_sums(r, in, H, W, C, ips, oc, k, pad, pb, st, S);
 	}
-	if (use_nna) {
+	if (nna) {
 		struct nna_node nd;
 		struct nna_rq rq;
 		int oh, ow;
@@ -639,18 +903,41 @@ static int pool2_mxu3(const struct tensor *x, struct tensor *o)
 }
 #endif
 
-static double optime[8], nodetime[512];	/* -T: per op kind, summed over the runs */
+static double optime[8], nodetime[MAXNODE];	/* -T: per op kind, summed over the runs */
 static int timing;
 
 static void run_op(int i);
 
+/* ONNAQ_DUMP=dir: each op's output tensor as dir/t<id>.u8 (h w c, then the bytes, pixels packed) */
+static void dump_tensor(const char *dir, int id)
+{
+	const struct tensor *t = &T[id];
+	char path[512];
+	FILE *f;
+	int ps = t->ps ? t->ps : t->c;
+
+	if (!t->u8 || t->f)
+		return;
+	snprintf(path, sizeof(path), "%s/t%d.u8", dir, id);
+	if (!(f = fopen(path, "wb")))
+		return;
+	fwrite(&t->h, sizeof(int), 1, f), fwrite(&t->w, sizeof(int), 1, f), fwrite(&t->c, sizeof(int), 1, f);
+	for (long p = 0; p < (long)t->h * t->w; p++)
+		fwrite(t->u8 + p * ps, 1, (size_t)t->c, f);
+	fclose(f);
+}
+
 static void run(const uint8_t *rgb)
 {
+	const char *dump = getenv("ONNAQ_DUMP");
+
 	T[0].h = in_h, T[0].w = in_w, T[0].c = 3, T[0].u8 = (uint8_t *)rgb;
 	for (int i = 0; i < ng; i++) {
 		double t0 = timing ? now_ms() : 0;
 
 		run_op(i);
+		if (dump && !G[i].skip)
+			dump_tensor(dump, G[i].out);
 		if (timing) {
 			optime[G[i].op] += now_ms() - t0;
 			nodetime[i] += now_ms() - t0;
@@ -663,7 +950,7 @@ static void run_op(int i)
 	{
 		const struct gnode *g = &G[i];
 		struct tensor *x = &T[g->in[0]], *o = &T[g->out];
-		const struct qrec *r = g->op == G_POOL || g->op == G_CAT ? NULL : &rec[g->rec];
+		const struct qrec *r = g->op == G_POOL || g->op == G_CAT || g->op == G_ADD ? NULL : &rec[g->rec];
 		long npx = (long)x->h * x->w;
 
 		if (g->skip)
@@ -707,6 +994,24 @@ static void run_op(int i)
 				for (int c = 0; c < x->c; c++)
 					o->u8[p * x->c + c] = tabs[i][c * 256 + x->u8[p * x->c + c]];
 			break;
+		case G_ADD: {
+			const struct tensor *y = &T[g->in[1]];
+
+			if (y->h != x->h || y->w != x->w || y->c != x->c)
+				DIE("node %d: add of %dx%dx%d and %dx%dx%d", i, x->h, x->w, x->c, y->h, y->w, y->c);
+			if (!tabs[i]) {		/* the whole (a, b) -> out table, built once */
+				if (!(tabs[i] = malloc(65536)))
+					DIE("out of memory");
+				for (int a = 0; a < 256; a++)
+					for (int b = 0; b < 256; b++)
+						tabs[i][a << 8 | b] = add_q(&addr[g->crec], a, b);
+			}
+			o->h = x->h, o->w = x->w, o->c = x->c;
+			need_u8(o, (size_t)(npx * x->c));
+			for (long p = 0; p < npx * x->c; p++)
+				o->u8[p] = tabs[i][x->u8[p] << 8 | y->u8[p]];
+			break;
+		}
 		case G_POOL:
 			o->h = x->h / 2, o->w = x->w / 2, o->c = x->c;
 			need_u8(o, (size_t)o->h * o->w * o->c);
@@ -930,6 +1235,7 @@ int onnaq_open(const char *bin_path, const char *graph_path, int nna)
 	load_bin(bin_path);
 	load_graph(graph_path);
 	fold();
+	set_readers();
 	die_jb = NULL;
 	return 0;
 }
@@ -1043,6 +1349,8 @@ int main(int argc, char **argv)
 	load_graph(argv[ai + 1]);
 	int nfold = getenv("ONNAQ_NOFOLD") ? 0 : fold();
 
+	set_readers();
+
 	fprintf(stderr, "onnaq: %d W blocks, %d concat records, %d ops (%d folded into convs), input %dx%d\n", nrec,
 		ncat, ng, nfold, in_w, in_h);
 
@@ -1089,9 +1397,9 @@ int main(int argc, char **argv)
 		printf("head %d: %d x %d x %d -> %s\n", k, h->h, h->w, h->c, path);
 	}
 	if (timing) {
-		static const char *nm[] = { "stem", "conv", "pc", "head", "maxpool2", "deconv2", "concat" };
+		static const char *nm[] = { "stem", "conv", "pc", "head", "maxpool2", "deconv2", "concat", "add" };
 
-		for (int k = 0; k < 7; k++)
+		for (int k = 0; k < 8; k++)
 			printf("  %-9s %7.2f ms/run\n", nm[k], optime[k] / loops);
 		if (timing > 1)		/* -TT: per node */
 			for (int i = 0; i < ng; i++)
