@@ -18,6 +18,8 @@
 #   JZDL_INCLUDE    - Path to Ingenic jzdl headers: build hal_jzdl_* on libjzdl.m.so
 #   OJZDL           - Set to 1 to build hal_jzdl_* on ojzdl, the open runtime in
 #                     src/ojzdl (no libjzdl, no libstdc++); exclusive with JZDL_INCLUDE
+#   URANUS_INCLUDE  - Path to Magik Uranus nna2 headers (T41): build hal_jzdl_* on the
+#                     NNA through Ingenic's Uranus runtime; exclusive with the above
 #   DEBUG           - Set to 1 for debug build
 #   V               - Set to 1 for verbose output
 
@@ -151,6 +153,21 @@ ifneq ($(JZDL_INCLUDE),)
 CXX_SRCS += src/hal_ivs_jzdl.cpp
 VIDEO_SRCS += src/hal_ivs_yolo.c
 CXXFLAGS := $(filter-out -std=c11,$(CFLAGS)) -std=c++11 -Wno-missing-field-initializers -DJZ_MXU=0 -I$(JZDL_INCLUDE) -fno-exceptions -fno-rtti
+endif
+
+# Uranus: hal_jzdl_* on the T41 NNA through Ingenic's Uranus runtime (Magik 3.x);
+# linking the runtime is the application's
+URANUS_INCLUDE ?=
+ifneq ($(URANUS_INCLUDE),)
+ifneq ($(PLATFORM),T41)
+$(error URANUS_INCLUDE is for the T41's NNA, not PLATFORM=$(PLATFORM))
+endif
+ifneq ($(JZDL_INCLUDE)$(OJZDL)$(ONNA),)
+$(error URANUS_INCLUDE, JZDL_INCLUDE, OJZDL=1 and ONNA=1 are mutually exclusive)
+endif
+CXX_SRCS += src/hal_ivs_uranus.cpp
+VIDEO_SRCS += src/hal_ivs_yolo.c
+CXXFLAGS := $(filter-out -std=c11,$(CFLAGS)) -std=c++14 -Wno-missing-field-initializers -isystem $(URANUS_INCLUDE) -fno-exceptions -fno-rtti
 endif
 
 # Novatek: one self-contained backend in both archives, no IMP sources.
