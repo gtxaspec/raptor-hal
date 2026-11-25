@@ -353,6 +353,25 @@ TEST results_capped(void)
     PASS();
 }
 
+TEST preprocess_must_match_the_backend(void)
+{
+    rss_ivs_jzdl_param_t p;
+
+    memset(&p, 0, sizeof(p));
+    strcpy(p.model_path, "m.bin");
+    log_errors = 0;
+    /* zeroed param = stretch, what the JZDL backends do */
+    ASSERT(hal_yolo_preprocess_ok(&p, RSS_IVS_PREPROCESS_STRETCH));
+    ASSERT_FALSE(hal_yolo_preprocess_ok(&p, RSS_IVS_PREPROCESS_LETTERBOX));
+    p.preprocess = RSS_IVS_PREPROCESS_LETTERBOX;
+    ASSERT_FALSE(hal_yolo_preprocess_ok(&p, RSS_IVS_PREPROCESS_STRETCH));
+    ASSERT(hal_yolo_preprocess_ok(&p, RSS_IVS_PREPROCESS_LETTERBOX));
+    p.preprocess = (rss_ivs_preprocess_t)7;
+    ASSERT_FALSE(hal_yolo_preprocess_ok(&p, RSS_IVS_PREPROCESS_STRETCH));
+    ASSERT_EQ_FMT(3, log_errors, "%d"); /* one line per refusal */
+    PASS();
+}
+
 SUITE(yolo_suite)
 {
     RUN_TEST(two_heads_persondet_order);
@@ -367,4 +386,5 @@ SUITE(yolo_suite)
     RUN_TEST(bad_heads_refused);
     RUN_TEST(bad_output_refused_logged_once);
     RUN_TEST(results_capped);
+    RUN_TEST(preprocess_must_match_the_backend);
 }

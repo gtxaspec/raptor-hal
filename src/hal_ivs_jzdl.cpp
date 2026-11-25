@@ -78,6 +78,8 @@ extern "C" void *hal_jzdl_create(const rss_ivs_jzdl_param_t *param)
         HAL_LOG_ERR("JZDL: model_path not null-terminated");
         return NULL;
     }
+    if (!hal_yolo_preprocess_ok(param, RSS_IVS_PREPROCESS_STRETCH))
+        return NULL;
 
     jzdl::BaseNet *net = jzdl::net_create();
     if (!net) {

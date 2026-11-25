@@ -59,6 +59,11 @@ typedef struct {
     hal_yolo_box_t cand[HAL_YOLO_MAX_CAND];
 } hal_yolo_t;
 
+/* The model's preprocess (param->preprocess) against the one the backend
+ * does. false, logged, if they differ or the value is unknown: the backend
+ * then refuses the model at load instead of feeding it the wrong input. */
+bool hal_yolo_preprocess_ok(const rss_ivs_jzdl_param_t *param, rss_ivs_preprocess_t backend);
+
 /* thresholds, anchors (param's, or YOLOv5's for strides left at 0) */
 void hal_yolo_init(hal_yolo_t *y, const rss_ivs_jzdl_param_t *param, int input_w, int input_h);
 

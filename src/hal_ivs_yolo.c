@@ -36,6 +36,29 @@ static int stride_index(int s)
     return s == 8 ? 0 : s == 16 ? 1 : s == 32 ? 2 : -1;
 }
 
+static const char *preprocess_name(rss_ivs_preprocess_t p)
+{
+    return p == RSS_IVS_PREPROCESS_STRETCH     ? "stretch"
+           : p == RSS_IVS_PREPROCESS_LETTERBOX ? "letterbox"
+                                               : NULL;
+}
+
+bool hal_yolo_preprocess_ok(const rss_ivs_jzdl_param_t *p, rss_ivs_preprocess_t backend)
+{
+    const char *want = preprocess_name(p->preprocess);
+
+    if (!want) {
+        HAL_LOG_ERR("JZDL: %s: unknown preprocess %d", p->model_path, (int)p->preprocess);
+        return false;
+    }
+    if (p->preprocess != backend) {
+        HAL_LOG_ERR("JZDL: %s wants preprocess = %s, this backend does %s; not loaded",
+                    p->model_path, want, preprocess_name(backend));
+        return false;
+    }
+    return true;
+}
+
 void hal_yolo_init(hal_yolo_t *y, const rss_ivs_jzdl_param_t *p, int input_w, int input_h)
 {
     float lo = 1.0f;
