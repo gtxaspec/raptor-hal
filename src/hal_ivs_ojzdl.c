@@ -5,9 +5,10 @@
  * _destroy), without Ingenic's libjzdl.m.so or libstdc++:
  *   - ojzdl runs JZDL v4/v5 models with output bit-identical to libjzdl
  *     (src/ojzdl/, MXU2 kernels on the T31);
- *   - ojzdl_resize reproduces jzdl::resize exactly for the sizes raptor uses
- *     (640x360 -> 416x320 / 320x416), from NV12 rows converted on demand;
- *   - NV12 -> RGB, YOLOv5 decode and NMS are the same code as the C++ backend.
+ *   - ojzdl_resize_nv12 converts the NV12 frame with the C++ backend's formula
+ *     and reproduces jzdl::resize exactly for the sizes raptor uses
+ *     (640x360 -> 416x320 / 320x416);
+ *   - YOLOv5 decode and NMS are the same code as the C++ backend.
  * Build with OJZDL=1 instead of JZDL_INCLUDE.
  *
  * Copyright (C) 2026 Thingino Project
@@ -186,31 +187,6 @@ static void yolo_nms(box_vec_t *input, box_vec_t *output, unsigned char *merged,
 }
 
 /* ================================================================
- * NV12 -> RGB, one row at a time (same formula as hal_ivs_jzdl.cpp's
- * nv12_to_rgb), fed to ojzdl_resize: no full-frame RGB buffer
- * ================================================================ */
-
-static inline uint8_t clamp_u8(int v)
-{
-    return v < 0 ? 0 : (v > 255 ? 255 : (uint8_t)v);
-}
-
-static void nv12_row_to_rgb(const uint8_t *nv12, uint8_t *rgb, int w, int h, int row)
-{
-    const uint8_t *y_plane = nv12 + (size_t)row * w;
-    const uint8_t *uv_plane = nv12 + (size_t)w * h + (size_t)(row / 2) * w;
-
-    for (int col = 0; col < w; col++) {
-        int y = y_plane[col];
-        int u = uv_plane[col & ~1] - 128;
-        int v = uv_plane[col | 1] - 128;
-        rgb[col * 3 + 0] = clamp_u8(y + ((359 * v) >> 8));
-        rgb[col * 3 + 1] = clamp_u8(y - ((88 * u + 183 * v) >> 8));
-        rgb[col * 3 + 2] = clamp_u8(y + ((454 * u) >> 8));
-    }
-}
-
-/* ================================================================
  * Context
  * ================================================================ */
 
@@ -220,10 +196,8 @@ typedef struct {
     int frame_w, frame_h;
     float conf_thresh, nms_thresh;
     int num_classes;
-    uint8_t *rgb_row;    /* one frame row, frame_w x 3 */
     uint8_t *in_buf;     /* model input, input_w x input_h x 3 */
     ojzdl_resize *rs;    /* = jzdl::resize, exact for 640x360 -> model input */
-    const uint8_t *nv12; /* frame being converted */
     box_vec_t candidates, detections;
     unsigned char *merged;
     size_t merged_cap;
@@ -231,19 +205,11 @@ typedef struct {
     int warned;
 } ojzdl_ctx_t;
 
-static const uint8_t *nv12_get_row(void *ctx, int y)
-{
-    ojzdl_ctx_t *c = ctx;
-    nv12_row_to_rgb(c->nv12, c->rgb_row, c->frame_w, c->frame_h, y);
-    return c->rgb_row;
-}
-
 static void ctx_free(ojzdl_ctx_t *c)
 {
     if (!c)
         return;
     ojzdl_free(c->net);
-    free(c->rgb_row);
     free(c->in_buf);
     ojzdl_resize_free(c->rs);
     free(c->candidates.v);
@@ -295,10 +261,9 @@ void *hal_jzdl_create(const rss_ivs_jzdl_param_t *param)
     c->conf_thresh = param->conf_threshold;
     c->nms_thresh = param->nms_threshold;
     c->num_classes = param->num_classes;
-    c->rgb_row = malloc((size_t)c->frame_w * 3);
     c->in_buf = malloc((size_t)c->input_w * c->input_h * 3);
     c->rs = ojzdl_resize_create(c->frame_w, c->frame_h, c->input_w, c->input_h);
-    if (!c->rgb_row || !c->in_buf || !c->rs) {
+    if (!c->in_buf || !c->rs) {
         ctx_free(c);
         return NULL;
     }
@@ -318,9 +283,8 @@ int hal_jzdl_detect(void *handle, const uint8_t *nv12_data, rss_ivs_detect_resul
     if (!handle || !nv12_data || !result)
         return RSS_ERR_INVAL;
 
-    c->nv12 = nv12_data;
-    if (ojzdl_resize_rows(c->rs, nv12_get_row, c, c->in_buf) ||
-        ojzdl_input_rgb(c->net, c->in_buf) || ojzdl_forward(c->net)) {
+    if (ojzdl_resize_nv12(c->rs, nv12_data, c->in_buf) || ojzdl_input_rgb(c->net, c->in_buf) ||
+        ojzdl_forward(c->net)) {
         result->count = 0;
         return RSS_ERR;
     }
