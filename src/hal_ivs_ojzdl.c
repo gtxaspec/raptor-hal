@@ -66,6 +66,8 @@ void *hal_jzdl_create(const rss_ivs_jzdl_param_t *param)
         HAL_LOG_ERR("JZDL: invalid frame dimensions %dx%d", param->width, param->height);
         return NULL;
     }
+    if (!hal_yolo_preprocess_ok(param, RSS_IVS_PREPROCESS_STRETCH))
+        return NULL;
     c = calloc(1, sizeof(*c));
     if (!c)
         return NULL;
