@@ -14,10 +14,16 @@ LIB_SRCS = ../src/hal_tune.c ../src/hal_ivs_yolo.c
 tests: $(TEST_SRCS) $(LIB_SRCS) ../src/hal_tune.h ../src/hal_ivs_yolo.h yolo_vectors.h greatest.h
 	$(CC) $(CFLAGS) -o $@ $(TEST_SRCS) $(LIB_SRCS) $(LDFLAGS)
 
-test: tests
+# The Uranus backend's core-0 pin (C++, no SDK)
+CXX ?= g++
+test_nna_pin: test_nna_pin.cpp ../src/hal_ivs_nna_pin.h
+	$(CXX) -std=c++11 -Wall -Wextra -Werror -g -fsanitize=$(SAN) -I../src $< -o $@
+
+test: tests test_nna_pin
 	./tests
+	./test_nna_pin
 
 clean:
-	rm -f tests
+	rm -f tests test_nna_pin
 
 .PHONY: test clean

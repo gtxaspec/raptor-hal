@@ -28,6 +28,11 @@
  * thread there for their span; detect pins its thread, rvd's inference
  * thread, to core 0 for good.
  *
+ * The first create also pins the ISP firmware thread (isp_fw_process) to
+ * core 0: NN work on core 0 beside the ISP firmware's MXU3 code on core 1
+ * can deadlock both cores until the watchdog resets the SoC (see
+ * hal_ivs_nna_pin.h). The pin stays after destroy.
+ *
  * Requires: liburanus_core, liburanus_tensor, liburanus_extend, libaip,
  * libdrivers (uclibc build) and libstdc++.
  */
@@ -36,6 +41,7 @@ extern "C" {
 #include "hal_internal.h"
 }
 
+#include "hal_ivs_nna_pin.h"
 #include "hal_ivs_yolo.h"
 
 #include "ingenic_aip.h"
@@ -118,6 +124,13 @@ static int runtime_init(void)
         runtime_users++;
         return 0;
     }
+    pid_t isp = nna_pin_isp_core0();
+    if (isp > 0)
+        HAL_LOG_INFO("NNA: isp_fw_process (%d) pinned to core 0", (int)isp);
+    else if (isp == 0)
+        HAL_LOG_WARN("NNA: no isp_fw_process thread to pin to core 0");
+    else
+        HAL_LOG_WARN("NNA: cannot pin isp_fw_process to core 0");
     if (ingenic_aip_init() != 0) {
         HAL_LOG_ERR("NNA: AIP init failed");
         return -1;
