@@ -177,6 +177,27 @@ int hal_isp_set_vflip(void *ctx, int enable)
  * Gen3:      SetISPRunningMode(IMPVI_NUM, IMPISPRunningMode*)
  * ================================================================ */
 
+/*
+ * Judge a switch by the mode the ISP reports, not by the call's result:
+ * T41 (IMP-1.2.6) returns -1 from a switch that took. T32 with no night
+ * bin stays in day (and returns -4090). Main sensor only: the getter has
+ * no per-sensor form.
+ */
+int hal_isp_get_running_mode(void *ctx, rss_isp_mode_t *mode);
+
+static int running_mode_result(int ret, rss_isp_mode_t mode)
+{
+    rss_isp_mode_t now;
+    if (hal_isp_get_running_mode(NULL, &now) != RSS_OK)
+        return ret;
+    if (now != mode) {
+        HAL_LOG_WARN("ISP did not switch to %s mode (set returned %d; no tuning bin for it?)",
+                     mode == RSS_ISP_NIGHT ? "night" : "day", ret);
+        return RSS_ERR_IO;
+    }
+    return RSS_OK;
+}
+
 int hal_isp_set_running_mode(void *ctx, rss_isp_mode_t mode)
 {
     (void)ctx;
@@ -185,10 +206,11 @@ int hal_isp_set_running_mode(void *ctx, rss_isp_mode_t mode)
         (mode == RSS_ISP_NIGHT) ? IMPISP_RUNNING_MODE_NIGHT : IMPISP_RUNNING_MODE_DAY;
 
 #if defined(HAL_ISP_PTR_ARGS)
-    return IMP_ISP_Tuning_SetISPRunningMode(IMPVI_MAIN, &imp_mode);
+    int ret = IMP_ISP_Tuning_SetISPRunningMode(IMPVI_MAIN, &imp_mode);
 #else
-    return IMP_ISP_Tuning_SetISPRunningMode(imp_mode);
+    int ret = IMP_ISP_Tuning_SetISPRunningMode(imp_mode);
 #endif
+    return running_mode_result(ret, mode);
 }
 
 /* ================================================================
@@ -3417,15 +3439,17 @@ int hal_isp_set_running_mode_n(void *ctx, int sensor_idx, rss_isp_mode_t mode)
     IMPISPRunningMode imp_mode =
         (mode == RSS_ISP_NIGHT) ? IMPISP_RUNNING_MODE_NIGHT : IMPISP_RUNNING_MODE_DAY;
 
+    int ret;
 #if defined(HAL_ISP_PTR_ARGS)
-    return IMP_ISP_Tuning_SetISPRunningMode((IMPVI_NUM)sensor_idx, &imp_mode);
+    ret = IMP_ISP_Tuning_SetISPRunningMode((IMPVI_NUM)sensor_idx, &imp_mode);
 #elif defined(HAL_T23_MULTICAM)
-    return IMP_ISP_MultiCamera_Tuning_SetISPRunningMode((IMPVI_NUM)sensor_idx, imp_mode);
+    ret = IMP_ISP_MultiCamera_Tuning_SetISPRunningMode((IMPVI_NUM)sensor_idx, imp_mode);
 #else
     if (sensor_idx != 0)
         return RSS_ERR_NOTSUP;
-    return IMP_ISP_Tuning_SetISPRunningMode(imp_mode);
+    ret = IMP_ISP_Tuning_SetISPRunningMode(imp_mode);
 #endif
+    return sensor_idx == 0 ? running_mode_result(ret, mode) : ret;
 }
 
 int hal_isp_set_sensor_fps_n(void *ctx, int sensor_idx, uint32_t fps_num, uint32_t fps_den)
