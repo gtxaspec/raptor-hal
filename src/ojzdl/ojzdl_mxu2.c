@@ -386,4 +386,133 @@ size_t ojzdl_vresize_mxu2(const int16_t *r0, const int16_t *r1, int b0, int b1, 
 	}
 	return i;
 }
+/* ---------------------------------------------------------------- head, 4 outputs per pass
+ * As ojzdl_head_mxu2, for ci % 16 == 0 and ci <= 256: one pixel's input stays in
+ * v8..v23 (16 bytes each) while every output reads it; four outputs accumulate at
+ * once in v0..v3 (DOTPS.h pair sums, DADDS.w with ones in v31). Exact int32. */
+#define HW(j, k, gp, a) LU1Q(4 + (j), (k) * 16, gp) DOTPS(24 + (j), 8 + (k), 4 + (j), DF_H) DADDS(a, 24 + (j), 31, DF_W)
+/* four independent chains, interleaved so the in-order core doesn't wait on each result */
+#define HEAD4(k)                                                                         \
+	LU1Q(4, (k) * 16, GP0) LU1Q(5, (k) * 16, GP1) LU1Q(6, (k) * 16, GP2) LU1Q(7, (k) * 16, GP3) \
+	DOTPS(24, 8 + (k), 4, DF_H) DOTPS(25, 8 + (k), 5, DF_H)                          \
+	DOTPS(26, 8 + (k), 6, DF_H) DOTPS(27, 8 + (k), 7, DF_H)                          \
+	DADDS(0, 24, 31, DF_W) DADDS(1, 25, 31, DF_W) DADDS(2, 26, 31, DF_W) DADDS(3, 27, 31, DF_W)
+#define HEAD1(k) HW(0, k, GP0, 0)
+#define HX(k) LU1Q(8 + (k), (k) * 16, GP0)
+
+static void head_load_x(const int8_t *xp_, int nc)
+{
+	register const int8_t *xp __asm__("$8") = xp_;
+	switch (nc) { /* fall through: chunks nc-1 .. 0 */
+	case 16: __asm__ volatile(HX(15) : : "r"(xp) : "memory"); /* fall through */
+	case 15: __asm__ volatile(HX(14) : : "r"(xp) : "memory"); /* fall through */
+	case 14: __asm__ volatile(HX(13) : : "r"(xp) : "memory"); /* fall through */
+	case 13: __asm__ volatile(HX(12) : : "r"(xp) : "memory"); /* fall through */
+	case 12: __asm__ volatile(HX(11) : : "r"(xp) : "memory"); /* fall through */
+	case 11: __asm__ volatile(HX(10) : : "r"(xp) : "memory"); /* fall through */
+	case 10: __asm__ volatile(HX(9) : : "r"(xp) : "memory"); /* fall through */
+	case 9: __asm__ volatile(HX(8) : : "r"(xp) : "memory"); /* fall through */
+	case 8: __asm__ volatile(HX(7) : : "r"(xp) : "memory"); /* fall through */
+	case 7: __asm__ volatile(HX(6) : : "r"(xp) : "memory"); /* fall through */
+	case 6: __asm__ volatile(HX(5) : : "r"(xp) : "memory"); /* fall through */
+	case 5: __asm__ volatile(HX(4) : : "r"(xp) : "memory"); /* fall through */
+	case 4: __asm__ volatile(HX(3) : : "r"(xp) : "memory"); /* fall through */
+	case 3: __asm__ volatile(HX(2) : : "r"(xp) : "memory"); /* fall through */
+	case 2: __asm__ volatile(HX(1) : : "r"(xp) : "memory"); /* fall through */
+	case 1: __asm__ volatile(HX(0) : : "r"(xp) : "memory"); /* fall through */
+	default: break;
+	}
+}
+
+#define HCASE(k, M)                                                                    \
+	case k:                                                                        \
+		__asm__ volatile(M(k) : : "r"(w0), "r"(w1), "r"(w2), "r"(w3) : "memory"); \
+		break;
+#define HSWITCH(k, M)                                                                  \
+	switch (k) {                                                                   \
+		HCASE(0, M) HCASE(1, M) HCASE(2, M) HCASE(3, M) HCASE(4, M) HCASE(5, M)   \
+		HCASE(6, M) HCASE(7, M) HCASE(8, M) HCASE(9, M) HCASE(10, M) HCASE(11, M) \
+		HCASE(12, M) HCASE(13, M) HCASE(14, M) HCASE(15, M) default: break;       \
+	}
+
+void ojzdl_head4_mxu2(const int8_t *x, size_t npx, int ci, const int8_t *w, int co, int32_t *acc)
+{
+	size_t px;
+	int o, k, j, nc = ci / 16;
+	int32_t part[16] __attribute__((aligned(16)));
+	__asm__ volatile(LI(31, 1, DF_H) ::: "memory");
+	for (px = 0; px < npx; px++) {
+		head_load_x(x + px * ci, nc);
+		for (o = 0; o + 4 <= co; o += 4) {
+			register const int8_t *w0 __asm__("$8") = w + (size_t)o * ci;
+			register const int8_t *w1 __asm__("$9") = w0 + ci;
+			register const int8_t *w2 __asm__("$10") = w1 + ci;
+			register const int8_t *w3 __asm__("$11") = w2 + ci;
+			__asm__ volatile(LI(0, 0, DF_W) LI(1, 0, DF_W) LI(2, 0, DF_W) LI(3, 0, DF_W) ::: "memory");
+			for (k = 0; k < nc; k++)
+				HSWITCH(k, HEAD4)
+			{
+				register int32_t *pp __asm__("$12") = part;
+				__asm__ volatile(SU1Q(0, 0, GP4) SU1Q(1, 16, GP4) SU1Q(2, 32, GP4) SU1Q(3, 48, GP4)
+				                 : : "r"(pp) : "memory");
+			}
+			for (j = 0; j < 4; j++)
+				acc[px * co + o + j] = part[4 * j] + part[4 * j + 1] + part[4 * j + 2] + part[4 * j + 3];
+		}
+		for (; o < co; o++) {
+			register const int8_t *w0 __asm__("$8") = w + (size_t)o * ci;
+			register const int8_t *w1 __asm__("$9") = w0;
+			register const int8_t *w2 __asm__("$10") = w0;
+			register const int8_t *w3 __asm__("$11") = w0;
+			__asm__ volatile(LI(0, 0, DF_W) ::: "memory");
+			for (k = 0; k < nc; k++)
+				HSWITCH(k, HEAD1)
+			{
+				register int32_t *pp __asm__("$12") = part;
+				__asm__ volatile(SU1Q(0, 0, GP4) : : "r"(pp) : "memory");
+			}
+			acc[px * co + o] = part[0] + part[1] + part[2] + part[3];
+		}
+	}
+}
+
+/* ---------------------------------------------------------------- eltwise (type 78)
+ * [fmt: Layer types] u = round_half_even((ua + ub) / 2), ua = a + 2^(bits_in-1),
+ * clamp to 2^bits_out - 1, stored u - 2^(bits_out-1). Byte lanes: needs bits_in <= 6
+ * (ua + ub <= 126). rhe(s/2) = (s + ((s >> 1) & 1)) >> 1, and (k & 1) = k - 2 (k >> 1).
+ * v20 = 2^bits_in, v21 = hi, v22 = 2^(bits_out-1). Returns bytes done (n & ~15). */
+size_t ojzdl_add_mxu2(const int8_t *a, const int8_t *b, size_t n, int bits_in, int bits_out, int8_t *dst)
+{
+	int8_t c2[16] __attribute__((aligned(16))), hi[16] __attribute__((aligned(16))),
+	       yo[16] __attribute__((aligned(16)));
+	size_t i;
+	int k;
+	for (k = 0; k < 16; k++) {
+		c2[k] = (int8_t)(1 << bits_in);
+		hi[k] = (int8_t)((1 << bits_out) - 1 > 127 ? 127 : (1 << bits_out) - 1);
+		yo[k] = (int8_t)(1 << (bits_out - 1));
+	}
+	{
+		register const void *p0 __asm__("$8") = c2;
+		register const void *p1 __asm__("$9") = hi;
+		register const void *p2 __asm__("$10") = yo;
+		__asm__ volatile(LU1Q(20, 0, GP0) LU1Q(21, 0, GP1) LU1Q(22, 0, GP2)
+		                 : : "r"(p0), "r"(p1), "r"(p2), "m"(c2), "m"(hi), "m"(yo) : "memory");
+	}
+	for (i = 0; i + 16 <= n; i += 16) {
+		register const int8_t *pa __asm__("$8") = a + i;
+		register const int8_t *pb __asm__("$9") = b + i;
+		register int8_t *o __asm__("$10") = dst + i;
+		__asm__ volatile(LU1Q(0, 0, GP0) LU1Q(1, 0, GP1)
+		                 ADD(0, 0, 1, DF_B) ADD(0, 0, 20, DF_B)  /* s = ua + ub */
+		                 SRAI(1, 0, 1, DF_B) SRAI(2, 1, 1, DF_B) /* k = s >> 1, k >> 1 */
+		                 ADD(2, 2, 2, DF_B) SUB(1, 1, 2, DF_B)   /* k & 1 */
+		                 ADD(0, 0, 1, DF_B) SRAI(0, 0, 1, DF_B)  /* rhe(s / 2) */
+		                 MINS(0, 0, 21, DF_B) SUB(0, 0, 22, DF_B)
+		                 SU1Q(0, 0, GP2)
+		                 : : "r"(pa), "r"(pb), "r"(o) : "memory");
+	}
+	return i;
+}
+
 #endif

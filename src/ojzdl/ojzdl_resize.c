@@ -2,11 +2,15 @@
  * jzdl::resize (INTER_LINEAR), for model preprocessing.
  *
  * Found by experiment against libjzdl under QEMU (../../jzdl-runtime.md,
- * "Preprocessing"). Exact for 640x360 -> 416x320, 320x416, 416x234,
- * 1280x720 and same-size; other ratios are within 1 on < 0.4 % of bytes.
+ * "Preprocessing"). Exact from 640x360 to 416x320, 320x416, 416x234,
+ * 448x256, 384x224, 320x192 and same-size, and for 700x400 and 999x361 ->
+ * 416x320. 1280x720 -> 416x320 / 448x256 and 213x120 -> 416x320 are within 1
+ * on < 0.1 % of bytes.
  *   - 11-bit coefficients (2048 = 1.0);
- *   - horizontal: fraction in double, both coefficients rounded half up,
- *     edge coefficient 2048;
+ *   - horizontal: source x in float ((d + 0.5f) * (float)src/dst - 0.5f, each
+ *     step rounded to float) and both coefficients rounded half to even
+ *     (verified 2026-11-25: at 448 wide, double with half up is off by one in
+ *     every 7th column past x = 360), edge coefficient 2048;
  *   - vertical: fraction in float, b0 rounded, b1 = 2048 - b0, edge 2047;
  *   - rows: (p0 * a0 + p1 * a1) >> 4 as int16; out = ((b0*r0) >> 16) +
  *     ((b1*r1) >> 16), then (+2) >> 2.
@@ -33,13 +37,17 @@ struct ojzdl_resize {
 
 static void tab_x(int src, int dst, int *ofs, int16_t *a)
 {
-	double scale = (double)src / dst;
+	float scale = (float)src / (float)dst;
 	int d;
 	for (d = 0; d < dst; d++) {
-		double f = (d + 0.5) * scale - 0.5;
-		int s = (int)floor(f);
-		double fr = f - s;
-		int a0 = (int)floor((1.0 - fr) * RS_ONE + 0.5), a1 = (int)floor(fr * RS_ONE + 0.5);
+		/* separate statements: no fused multiply-add, every step rounds to float */
+		float t = (float)d + 0.5f;
+		float m = t * scale;
+		float f = m - 0.5f;
+		int s = (int)floorf(f);
+		float fr = f - (float)s;
+		float c0 = (1.0f - fr) * (float)RS_ONE, c1 = fr * (float)RS_ONE;
+		int a0 = (int)lrintf(c0), a1 = (int)lrintf(c1);
 		if (s < 0) {
 			s = 0;
 			a0 = RS_ONE;
