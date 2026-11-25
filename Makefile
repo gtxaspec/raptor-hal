@@ -129,7 +129,7 @@ ifneq ($(JZDL_INCLUDE),)
 $(error OJZDL=1 and JZDL_INCLUDE are mutually exclusive)
 endif
 OJZDL_SRCS := src/hal_ivs_ojzdl.c src/ojzdl/ojzdl.c src/ojzdl/ojzdl_mxu2.c src/ojzdl/ojzdl_resize.c
-VIDEO_SRCS += $(OJZDL_SRCS)
+VIDEO_SRCS += $(OJZDL_SRCS) src/hal_ivs_yolo.c
 # -O2: the runtime's loops lose ~12 % at -Os on the T31 (measured)
 OJZDL_FLAGS := -D_POSIX_C_SOURCE=200809L -ffp-contract=off -O2
 ifeq ($(PLATFORM),T31)
@@ -159,6 +159,7 @@ endif
 CXX_SRCS :=
 ifneq ($(JZDL_INCLUDE),)
 CXX_SRCS += src/hal_ivs_jzdl.cpp
+VIDEO_SRCS += src/hal_ivs_yolo.c
 CXXFLAGS := $(filter-out -std=c11,$(CFLAGS)) -std=c++11 -Wno-missing-field-initializers -DJZ_MXU=0 -I$(JZDL_INCLUDE) -fno-exceptions -fno-rtti
 endif
 
