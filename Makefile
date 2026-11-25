@@ -15,6 +15,8 @@
 #   HDAL_INCLUDE    - Path to the Novatek HDAL headers (NA51055 only)
 #   INGENIC_LIB     - Path to ingenic-lib repo (default: ../ingenic-lib)
 #   V4L2_OPENIMP    - Set to 1 for the optional V4L2/OpenIMP AVC bridge
+#   JZDL_INCLUDE    - JZDL headers: the CPU detection backend
+#   URANUS_INCLUDE  - Uranus nna2 headers: the NNA detection backend (T41)
 #   DEBUG           - Set to 1 for debug build
 #   V               - Set to 1 for verbose output
 
@@ -68,8 +70,16 @@ CXX     := $(CROSS_COMPILE)g++
 AR      := $(CROSS_COMPILE)gcc-ar
 RANLIB  := $(CROSS_COMPILE)gcc-ranlib
 
-# JZDL inference (optional — set JZDL_INCLUDE to enable)
+# Detection backend (optional, one of the two; both export hal_jzdl_*):
+#   JZDL_INCLUDE   - JZDL headers: YOLOv5 on the CPU (libjzdl.m.so)
+#   URANUS_INCLUDE - Magik Uranus nna2 headers: YOLOv5 on the NNA (T41)
 JZDL_INCLUDE ?=
+URANUS_INCLUDE ?=
+ifneq ($(JZDL_INCLUDE),)
+ifneq ($(URANUS_INCLUDE),)
+$(error JZDL_INCLUDE and URANUS_INCLUDE are exclusive: pick one detection backend)
+endif
+endif
 
 # Flags
 CFLAGS  := -Wall -Wextra -Werror
@@ -129,6 +139,13 @@ CXX_SRCS :=
 ifneq ($(JZDL_INCLUDE),)
 CXX_SRCS += src/hal_ivs_jzdl.cpp
 CXXFLAGS := $(filter-out -std=c11,$(CFLAGS)) -std=c++11 -Wno-missing-field-initializers -DJZ_MXU=0 -I$(JZDL_INCLUDE) -fno-exceptions -fno-rtti
+endif
+ifneq ($(URANUS_INCLUDE),)
+ifneq ($(PLATFORM),T41)
+$(error URANUS_INCLUDE is for the T41's NNA, not PLATFORM=$(PLATFORM))
+endif
+CXX_SRCS += src/hal_ivs_uranus.cpp
+CXXFLAGS := $(filter-out -std=c11,$(CFLAGS)) -std=c++14 -Wno-missing-field-initializers -isystem $(URANUS_INCLUDE) -fno-exceptions -fno-rtti
 endif
 
 # Novatek: one self-contained backend in both archives, no IMP sources.

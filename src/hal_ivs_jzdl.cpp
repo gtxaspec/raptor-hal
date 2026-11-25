@@ -21,110 +21,10 @@ extern "C" {
 #include "net.h"
 #include "utils.h"
 
-#include <cmath>
+#include "hal_ivs_yolo.h"
+
 #include <cstring>
 #include <vector>
-#include <algorithm>
-
-/* ================================================================
- * YOLOv5 post-processing (adapted from magik-toolkit sample)
- * ================================================================ */
-
-struct DetBox {
-    float x1, y1, x2, y2;
-    float score;
-    int classid;
-};
-
-static void yolo_decode(float *p, std::vector<DetBox> &boxes, int input_w, int input_h,
-                        float conf_thresh, int num_classes)
-{
-    static const float anchors[] = {10, 13, 16,  30,  33, 23,  30,  61,  62,
-                                    45, 59, 119, 116, 90, 156, 198, 373, 326};
-    static const float strides[] = {8.0f, 16.0f, 32.0f};
-    int box_num = 3;
-    int onechannel = 5 + num_classes;
-
-    for (int s = 0; s < 3; s++) {
-        int gh = input_h / (int)strides[s];
-        int gw = input_w / (int)strides[s];
-
-        for (int h = 0; h < gh; h++) {
-            for (int w = 0; w < gw; w++) {
-                for (int n = 0; n < box_num; n++) {
-                    int idx = h * (gw * box_num * onechannel) + w * (box_num * onechannel) +
-                              n * onechannel;
-
-                    float bx = 1.0f / (1.0f + expf(-p[idx + 0]));
-                    float by = 1.0f / (1.0f + expf(-p[idx + 1]));
-                    float bw = 1.0f / (1.0f + expf(-p[idx + 2]));
-                    float bh = 1.0f / (1.0f + expf(-p[idx + 3]));
-                    float obj = 1.0f / (1.0f + expf(-p[idx + 4]));
-
-                    float aw = anchors[s * box_num * 2 + n * 2] / input_w;
-                    float ah = anchors[s * box_num * 2 + n * 2 + 1] / input_h;
-
-                    float box_w = (bw * 2.0f) * (bw * 2.0f) * aw;
-                    float box_h = (bh * 2.0f) * (bh * 2.0f) * ah;
-                    float cx = (bx * 2.0f - 0.5f + w) / gw;
-                    float cy = (by * 2.0f - 0.5f + h) / gh;
-
-                    int best_cls = 0;
-                    float best_score = 0;
-                    for (int c = 0; c < num_classes; c++) {
-                        float cs = 1.0f / (1.0f + expf(-p[idx + 5 + c]));
-                        if (cs > best_score) {
-                            best_score = cs;
-                            best_cls = c;
-                        }
-                    }
-
-                    float prob = obj * best_score;
-                    if (prob >= conf_thresh) {
-                        DetBox d;
-                        d.x1 = (cx - box_w * 0.5f) * input_w;
-                        d.y1 = (cy - box_h * 0.5f) * input_h;
-                        d.x2 = (cx + box_w * 0.5f) * input_w;
-                        d.y2 = (cy + box_h * 0.5f) * input_h;
-                        d.score = prob;
-                        d.classid = best_cls;
-                        boxes.push_back(d);
-                    }
-                }
-            }
-        }
-        p += gh * gw * box_num * onechannel;
-    }
-}
-
-static void yolo_nms(std::vector<DetBox> &input, std::vector<DetBox> &output, float nms_thresh)
-{
-    std::sort(input.begin(), input.end(),
-              [](const DetBox &a, const DetBox &b) { return a.score > b.score; });
-
-    std::vector<bool> merged(input.size(), false);
-    for (size_t i = 0; i < input.size(); i++) {
-        if (merged[i])
-            continue;
-        output.push_back(input[i]);
-        float area_i = (input[i].x2 - input[i].x1) * (input[i].y2 - input[i].y1);
-
-        for (size_t j = i + 1; j < input.size(); j++) {
-            if (merged[j] || input[j].classid != input[i].classid)
-                continue;
-            float ix0 = std::max(input[i].x1, input[j].x1);
-            float iy0 = std::max(input[i].y1, input[j].y1);
-            float ix1 = std::min(input[i].x2, input[j].x2);
-            float iy1 = std::min(input[i].y2, input[j].y2);
-            float iw = std::max(0.0f, ix1 - ix0);
-            float ih = std::max(0.0f, iy1 - iy0);
-            float inter = iw * ih;
-            float area_j = (input[j].x2 - input[j].x1) * (input[j].y2 - input[j].y1);
-            if (inter / (area_i + area_j - inter) > nms_thresh)
-                merged[j] = true;
-        }
-    }
-}
 
 /* ================================================================
  * NV12 → RGB conversion
@@ -271,8 +171,15 @@ extern "C" int hal_jzdl_detect(void *handle, const uint8_t *nv12_data,
     /* Post-process (reuse per-context vectors to avoid alloc per frame) */
     ctx->candidates.clear();
     ctx->detections.clear();
-    yolo_decode(output.data, ctx->candidates, ctx->input_w, ctx->input_h, ctx->conf_thresh,
-                ctx->num_classes);
+    /* One buffer, the three head levels (strides 8, 16, 32) in a row. */
+    const float *p = output.data;
+    for (int level = 0; level < 3; level++) {
+        int gw = ctx->input_w >> (3 + level);
+        int gh = ctx->input_h >> (3 + level);
+        yolo_decode_level(p, level, gw, gh, ctx->input_w, ctx->input_h, ctx->conf_thresh,
+                          ctx->num_classes, ctx->candidates);
+        p += gw * gh * 3 * (5 + ctx->num_classes);
+    }
     yolo_nms(ctx->candidates, ctx->detections, ctx->nms_thresh);
 
     /* Scale to frame coordinates and fill result */
