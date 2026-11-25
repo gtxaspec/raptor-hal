@@ -340,8 +340,9 @@ typedef struct {
     float class_threshold[RSS_IVS_MAX_CLASSES]; /* per class; 0 = conf_threshold */
     float anchors[3][6]; /* (w, h) x 3 for strides 8, 16, 32 in model input pixels;
                             a stride left all 0 = the YOLOv5 COCO anchors */
-    rss_ivs_preprocess_t preprocess; /* what the model was trained with; a backend
-                                        that fits the frame another way refuses it */
+    /* what the model was trained with; a backend that fits the frame
+       another way refuses it */
+    rss_ivs_preprocess_t preprocess;
 } rss_ivs_jzdl_param_t;
 
 typedef struct {
