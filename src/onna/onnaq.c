@@ -1274,6 +1274,9 @@ static void run_op(int i)
 #ifdef ONNA_MXU3
 			/* MXU3 add (nna_vadd, 64 bytes a step), once checked against this node's table on all
 			 * 65536 (a, b) pairs: it was verified on yolov5n's records, these differ (wB 0, T) */
+			/* ONNA_NO_VADD=1: the scalar table only (A/B for the T41 NN/MXU3 deadlock hunt) */
+			if (!vadd_ok[i] && getenv("ONNA_NO_VADD"))
+				vadd_ok[i] = -1;
 			if (!vadd_ok[i]) {
 				uint8_t *va, *vb, *vo;
 
