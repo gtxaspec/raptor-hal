@@ -196,8 +196,8 @@ typedef struct {
     int frame_w, frame_h;
     float conf_thresh, nms_thresh;
     int num_classes;
-    uint8_t *in_buf;     /* model input, input_w x input_h x 3 */
-    ojzdl_resize *rs;    /* = jzdl::resize, exact for 640x360 -> model input */
+    uint8_t *in_buf;  /* model input, input_w x input_h x 3 */
+    ojzdl_resize *rs; /* = jzdl::resize, exact for 640x360 -> model input */
     box_vec_t candidates, detections;
     unsigned char *merged;
     size_t merged_cap;
