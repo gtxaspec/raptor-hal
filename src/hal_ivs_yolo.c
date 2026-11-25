@@ -1,5 +1,5 @@
 /*
- * hal_ivs_yolo.c -- YOLO post-processing shared by the JZDL backends
+ * hal_ivs_yolo.c -- YOLO post-processing shared by the detection backends
  *
  * Output layout (JZDL type 76, see thingino-ai docs/jzdl-format.md): head k is
  * h x w x c floats (HWC, c = anchors x (5 + classes), anchor-major), the heads
@@ -7,7 +7,8 @@
  * stride is input_w / w; its anchors come from the stride, so models with
  * persondet's 2 heads (32, 16) and YOLOv5's 3 (8, 16, 32) both decode.
  * Box decode is YOLOv5's: sigmoid everything, xy = (2s - 0.5 + cell) * stride,
- * wh = (2s)^2 * anchor, score = obj * best class.
+ * wh = (2s)^2 * anchor, score = obj * best class. Runtimes with one tensor
+ * per head feed the heads one by one (hal_yolo_decode_head).
  *
  * Copyright (C) 2026 Thingino Project
  * SPDX-License-Identifier: MIT
@@ -64,10 +65,30 @@ void hal_yolo_init(hal_yolo_t *y, const rss_ivs_jzdl_param_t *p, int input_w, in
 	}
 }
 
+/* one head's grid and channels against the model: stride from the grid */
+static int head_setup(const hal_yolo_t *y, hal_yolo_head_t *h, int gh, int gw, int c)
+{
+	int per = 5 + y->num_classes, s, si;
+
+	if (gh < 1 || gw < 1 || c < per || c % per)
+		return -1;
+	s = y->input_w / gw;
+	si = stride_index(s);
+	if (si < 0 || s * gw != y->input_w || s * gh != y->input_h ||
+	    c / per > HAL_YOLO_MAX_ANCHORS)
+		return -1;
+	h->gh = gh;
+	h->gw = gw;
+	h->na = c / per;
+	h->stride = (float)s;
+	h->anchors = y->anchors[si];
+	return 0;
+}
+
 /* read the trailer once; the layout is fixed for a model */
 static int parse_heads(hal_yolo_t *y, const float *out, size_t n)
 {
-	int nh, per = 5 + y->num_classes;
+	int nh;
 	size_t t, sum = 0;
 
 	if (n < 4)
@@ -77,21 +98,9 @@ static int parse_heads(hal_yolo_t *y, const float *out, size_t n)
 		return -1;
 	t = n - 1 - 3 * (size_t)nh;
 	for (int k = 0; k < nh; k++) {
-		hal_yolo_head_t *h = &y->head[k];
 		int gh = (int)out[t + 3 * k], gw = (int)out[t + 3 * k + 1], c = (int)out[t + 3 * k + 2];
-		int s, si;
-		if (gh < 1 || gw < 1 || c < per || c % per)
+		if (head_setup(y, &y->head[k], gh, gw, c))
 			return -1;
-		s = y->input_w / gw;
-		si = stride_index(s);
-		if (si < 0 || s * gw != y->input_w || s * gh != y->input_h ||
-		    c / per > HAL_YOLO_MAX_ANCHORS)
-			return -1;
-		h->gh = gh;
-		h->gw = gw;
-		h->na = c / per;
-		h->stride = (float)s;
-		h->anchors = y->anchors[si];
 		sum += (size_t)gh * gw * c;
 	}
 	if (sum != t)
@@ -117,46 +126,51 @@ static void cand_add(hal_yolo_t *y, const hal_yolo_box_t *b)
 		y->cand[w] = *b;
 }
 
-static void decode(hal_yolo_t *y, const float *p)
+/* one head's cells into the candidates; returns the end of its values */
+static const float *decode_head(hal_yolo_t *y, const hal_yolo_head_t *h, const float *p)
 {
 	int per = 5 + y->num_classes;
 
-	y->ncand = 0;
-	for (int k = 0; k < y->nheads; k++) {
-		const hal_yolo_head_t *h = &y->head[k];
-		for (int gy = 0; gy < h->gh; gy++) {
-			for (int gx = 0; gx < h->gw; gx++) {
-				for (int a = 0; a < h->na; a++, p += per) {
-					hal_yolo_box_t b;
-					float obj, t, sw, sh;
-					int best = 0;
+	for (int gy = 0; gy < h->gh; gy++) {
+		for (int gx = 0; gx < h->gw; gx++) {
+			for (int a = 0; a < h->na; a++, p += per) {
+				hal_yolo_box_t b;
+				float obj, t, sw, sh;
+				int best = 0;
 
-					if (p[4] < y->min_logit)
-						continue;
-					for (int c = 1; c < y->num_classes; c++)
-						if (p[5 + c] > p[5 + best])
-							best = c;
-					obj = sigmoid(p[4]);
-					b.score = obj * sigmoid(p[5 + best]);
-					t = best < RSS_IVS_MAX_CLASSES ? y->conf[best] : y->conf_default;
-					if (b.score < t)
-						continue;
-					sw = sigmoid(p[2]) * 2.0f;
-					sh = sigmoid(p[3]) * 2.0f;
-					sw *= sw * h->anchors[2 * a];
-					sh *= sh * h->anchors[2 * a + 1];
-					float cx = (sigmoid(p[0]) * 2.0f - 0.5f + gx) * h->stride;
-					float cy = (sigmoid(p[1]) * 2.0f - 0.5f + gy) * h->stride;
-					b.x1 = cx - sw * 0.5f;
-					b.y1 = cy - sh * 0.5f;
-					b.x2 = cx + sw * 0.5f;
-					b.y2 = cy + sh * 0.5f;
-					b.cls = best;
-					cand_add(y, &b);
-				}
+				if (p[4] < y->min_logit)
+					continue;
+				for (int c = 1; c < y->num_classes; c++)
+					if (p[5 + c] > p[5 + best])
+						best = c;
+				obj = sigmoid(p[4]);
+				b.score = obj * sigmoid(p[5 + best]);
+				t = best < RSS_IVS_MAX_CLASSES ? y->conf[best] : y->conf_default;
+				if (b.score < t)
+					continue;
+				sw = sigmoid(p[2]) * 2.0f;
+				sh = sigmoid(p[3]) * 2.0f;
+				sw *= sw * h->anchors[2 * a];
+				sh *= sh * h->anchors[2 * a + 1];
+				float cx = (sigmoid(p[0]) * 2.0f - 0.5f + gx) * h->stride;
+				float cy = (sigmoid(p[1]) * 2.0f - 0.5f + gy) * h->stride;
+				b.x1 = cx - sw * 0.5f;
+				b.y1 = cy - sh * 0.5f;
+				b.x2 = cx + sw * 0.5f;
+				b.y2 = cy + sh * 0.5f;
+				b.cls = best;
+				cand_add(y, &b);
 			}
 		}
 	}
+	return p;
+}
+
+static void decode(hal_yolo_t *y, const float *p)
+{
+	y->ncand = 0;
+	for (int k = 0; k < y->nheads; k++)
+		p = decode_head(y, &y->head[k], p);
 }
 
 /* in place: sort by score (insertion sort, n <= HAL_YOLO_MAX_CAND), then
@@ -196,12 +210,53 @@ static int nms(hal_yolo_box_t *v, int n, float thresh)
 	return kept;
 }
 
+void hal_yolo_begin(hal_yolo_t *y)
+{
+	y->ncand = 0;
+}
+
+int hal_yolo_decode_head(hal_yolo_t *y, const float *p, int gh, int gw, int c)
+{
+	hal_yolo_head_t h;
+
+	if (head_setup(y, &h, gh, gw, c))
+		return RSS_ERR;
+	decode_head(y, &h, p);
+	return RSS_OK;
+}
+
+int hal_yolo_finish(hal_yolo_t *y)
+{
+	return nms(y->cand, y->ncand, y->nms);
+}
+
+void hal_yolo_emit(const hal_yolo_t *y, int n, float scale_x, float scale_y, float off_x,
+		   float off_y, int frame_w, int frame_h, rss_ivs_detect_result_t *result)
+{
+	if (n > RSS_IVS_MAX_DETECTIONS)
+		n = RSS_IVS_MAX_DETECTIONS;
+	for (int i = 0; i < n; i++) {
+		const hal_yolo_box_t *b = &y->cand[i];
+		int x0 = (int)((b->x1 - off_x) * scale_x), y0 = (int)((b->y1 - off_y) * scale_y);
+		int x1 = (int)((b->x2 - off_x) * scale_x), y1 = (int)((b->y2 - off_y) * scale_y);
+		if (x0 < 0)
+			x0 = 0;
+		if (y0 < 0)
+			y0 = 0;
+		if (x1 >= frame_w)
+			x1 = frame_w - 1;
+		if (y1 >= frame_h)
+			y1 = frame_h - 1;
+		result->detections[i].box = (rss_rect_t){x0, y0, x1, y1};
+		result->detections[i].confidence = b->score;
+		result->detections[i].class_id = b->cls;
+	}
+	result->count = n;
+}
+
 int hal_yolo_run(hal_yolo_t *y, const float *out, size_t n, int frame_w, int frame_h,
 		 rss_ivs_detect_result_t *result)
 {
-	float sx = (float)frame_w / y->input_w, sy = (float)frame_h / y->input_h;
-	int kept;
-
 	result->count = 0;
 	result->timestamp = 0; /* caller sets this */
 	if (y->nheads == 0 || n != y->out_len) {
@@ -216,25 +271,7 @@ int hal_yolo_run(hal_yolo_t *y, const float *out, size_t n, int frame_w, int fra
 		HAL_LOG_INFO("JZDL: %d head(s), %zu outputs", y->nheads, n);
 	}
 	decode(y, out);
-	kept = nms(y->cand, y->ncand, y->nms);
-	if (kept > RSS_IVS_MAX_DETECTIONS)
-		kept = RSS_IVS_MAX_DETECTIONS;
-	for (int i = 0; i < kept; i++) {
-		const hal_yolo_box_t *b = &y->cand[i];
-		int x0 = (int)(b->x1 * sx), y0 = (int)(b->y1 * sy);
-		int x1 = (int)(b->x2 * sx), y1 = (int)(b->y2 * sy);
-		if (x0 < 0)
-			x0 = 0;
-		if (y0 < 0)
-			y0 = 0;
-		if (x1 >= frame_w)
-			x1 = frame_w - 1;
-		if (y1 >= frame_h)
-			y1 = frame_h - 1;
-		result->detections[i].box = (rss_rect_t){x0, y0, x1, y1};
-		result->detections[i].confidence = b->score;
-		result->detections[i].class_id = b->cls;
-	}
-	result->count = kept;
+	hal_yolo_emit(y, hal_yolo_finish(y), (float)frame_w / y->input_w,
+		      (float)frame_h / y->input_h, 0.0f, 0.0f, frame_w, frame_h, result);
 	return RSS_OK;
 }
