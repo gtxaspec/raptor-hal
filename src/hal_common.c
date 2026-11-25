@@ -639,6 +639,212 @@ static int hal_sys_get_bind_by_dest(void *ctx, rss_cell_t *dst, rss_cell_t *src)
 
 extern const rss_hal_caps_t g_hal_caps;
 
+#ifdef HAL_MODULE_VIDEO
+/* ================================================================
+ * TUNING THAT SURVIVES A RUNNING-MODE SWITCH (hal_tune.h)
+ *
+ * The ops table points the tuning setters at these wrappers, which
+ * record each value set and replay them after a mode change. Plain
+ * setters address sensor 0, the _n variants their index.
+ * ================================================================ */
+
+static hal_tune_t *tune_of(void *ctx, int sensor)
+{
+    rss_hal_ctx_t *c = ctx;
+    if (!c || sensor < 0 || sensor >= RSS_MAX_SENSORS)
+        return NULL;
+    return &c->tune[sensor];
+}
+
+static void tune_note(void *ctx, int sensor, hal_tune_key_t key, int val, int ret)
+{
+    hal_tune_t *t = tune_of(ctx, sensor);
+    if (t && ret == RSS_OK)
+        hal_tune_record(t, key, val);
+}
+
+static int tune_set_int(void *ctx, int sensor, hal_tune_key_t key, int val)
+{
+    bool n = sensor != 0;
+
+    switch (key) {
+    case HAL_TUNE_BRIGHTNESS:
+        return n ? hal_isp_set_brightness_n(ctx, sensor, val) : hal_isp_set_brightness(ctx, val);
+    case HAL_TUNE_CONTRAST:
+        return n ? hal_isp_set_contrast_n(ctx, sensor, val) : hal_isp_set_contrast(ctx, val);
+    case HAL_TUNE_SATURATION:
+        return n ? hal_isp_set_saturation_n(ctx, sensor, val) : hal_isp_set_saturation(ctx, val);
+    case HAL_TUNE_SHARPNESS:
+        return n ? hal_isp_set_sharpness_n(ctx, sensor, val) : hal_isp_set_sharpness(ctx, val);
+    case HAL_TUNE_HUE:
+        return n ? hal_isp_set_hue_n(ctx, sensor, val) : hal_isp_set_hue(ctx, val);
+    case HAL_TUNE_SINTER:
+        return n ? hal_isp_set_sinter_strength_n(ctx, sensor, val)
+                 : hal_isp_set_sinter_strength(ctx, val);
+    case HAL_TUNE_TEMPER:
+        return n ? hal_isp_set_temper_strength_n(ctx, sensor, val)
+                 : hal_isp_set_temper_strength(ctx, val);
+    case HAL_TUNE_AE_COMP:
+        return n ? hal_isp_set_ae_comp_n(ctx, sensor, val) : hal_isp_set_ae_comp(ctx, val);
+    case HAL_TUNE_MAX_AGAIN:
+        return n ? hal_isp_set_max_again_n(ctx, sensor, val) : hal_isp_set_max_again(ctx, val);
+    case HAL_TUNE_MAX_DGAIN:
+        return n ? hal_isp_set_max_dgain_n(ctx, sensor, val) : hal_isp_set_max_dgain(ctx, val);
+    case HAL_TUNE_ANTIFLICKER:
+        return n ? hal_isp_set_antiflicker_n(ctx, sensor, (rss_antiflicker_t)val)
+                 : hal_isp_set_antiflicker(ctx, (rss_antiflicker_t)val);
+    default:
+        break;
+    }
+    if (n)
+        return RSS_ERR_NOTSUP; /* the rest have no per-sensor setter */
+    switch (key) {
+    case HAL_TUNE_DPC:
+        return hal_isp_set_dpc_strength(ctx, val);
+    case HAL_TUNE_DRC:
+        return hal_isp_set_drc_strength(ctx, val);
+    case HAL_TUNE_HIGHLIGHT:
+        return hal_isp_set_highlight_depress(ctx, val);
+    case HAL_TUNE_BACKLIGHT:
+        return hal_isp_set_backlight_comp(ctx, val);
+    case HAL_TUNE_DEFOG:
+        return hal_isp_set_defog(ctx, val);
+    case HAL_TUNE_DEFOG_STRENGTH:
+        return hal_isp_set_defog_strength(ctx, val);
+    default:
+        return RSS_ERR_INVAL;
+    }
+}
+
+static int tune_set_wb(void *ctx, int sensor, const rss_wb_config_t *wb)
+{
+    return sensor ? RSS_ERR_NOTSUP : hal_isp_set_wb(ctx, wb);
+}
+
+static int tune_set_coefft(void *ctx, int sensor, uint16_t r, uint16_t g, uint16_t b)
+{
+    return sensor ? RSS_ERR_NOTSUP : hal_isp_set_awb_rgb_coefft(ctx, r, g, b);
+}
+
+static const hal_tune_ops_t g_tune_ops = {tune_set_int, tune_set_wb, tune_set_coefft};
+
+#define TUNE_SETTLE_FRAMES 2
+
+#define TUNE_INT(name, key)                                                                        \
+    static int tune_##name(void *ctx, int val)                                                     \
+    {                                                                                              \
+        int ret = hal_isp_##name(ctx, val);                                                        \
+        tune_note(ctx, 0, key, val, ret);                                                          \
+        return ret;                                                                                \
+    }                                                                                              \
+    static int tune_##name##_n(void *ctx, int sensor, int val)                                     \
+    {                                                                                              \
+        int ret = hal_isp_##name##_n(ctx, sensor, val);                                            \
+        tune_note(ctx, sensor, key, val, ret);                                                     \
+        return ret;                                                                                \
+    }
+
+#define TUNE_INT_SINGLE(name, key)                                                                 \
+    static int tune_##name(void *ctx, int val)                                                     \
+    {                                                                                              \
+        int ret = hal_isp_##name(ctx, val);                                                        \
+        tune_note(ctx, 0, key, val, ret);                                                          \
+        return ret;                                                                                \
+    }
+
+TUNE_INT(set_brightness, HAL_TUNE_BRIGHTNESS)
+TUNE_INT(set_contrast, HAL_TUNE_CONTRAST)
+TUNE_INT(set_saturation, HAL_TUNE_SATURATION)
+TUNE_INT(set_sharpness, HAL_TUNE_SHARPNESS)
+TUNE_INT(set_hue, HAL_TUNE_HUE)
+TUNE_INT(set_sinter_strength, HAL_TUNE_SINTER)
+TUNE_INT(set_temper_strength, HAL_TUNE_TEMPER)
+TUNE_INT(set_ae_comp, HAL_TUNE_AE_COMP)
+TUNE_INT(set_max_again, HAL_TUNE_MAX_AGAIN)
+TUNE_INT(set_max_dgain, HAL_TUNE_MAX_DGAIN)
+TUNE_INT_SINGLE(set_dpc_strength, HAL_TUNE_DPC)
+TUNE_INT_SINGLE(set_drc_strength, HAL_TUNE_DRC)
+TUNE_INT_SINGLE(set_highlight_depress, HAL_TUNE_HIGHLIGHT)
+TUNE_INT_SINGLE(set_backlight_comp, HAL_TUNE_BACKLIGHT)
+TUNE_INT_SINGLE(set_defog, HAL_TUNE_DEFOG)
+TUNE_INT_SINGLE(set_defog_strength, HAL_TUNE_DEFOG_STRENGTH)
+
+static int tune_set_antiflicker(void *ctx, rss_antiflicker_t mode)
+{
+    int ret = hal_isp_set_antiflicker(ctx, mode);
+    tune_note(ctx, 0, HAL_TUNE_ANTIFLICKER, (int)mode, ret);
+    return ret;
+}
+
+static int tune_set_antiflicker_n(void *ctx, int sensor, rss_antiflicker_t mode)
+{
+    int ret = hal_isp_set_antiflicker_n(ctx, sensor, mode);
+    tune_note(ctx, sensor, HAL_TUNE_ANTIFLICKER, (int)mode, ret);
+    return ret;
+}
+
+/* Same SDK call as set_defog_strength, so the same recorded value */
+static int tune_set_defog_strength_adv(void *ctx, const void *defog_attr)
+{
+    int ret = hal_isp_set_defog_strength_adv(ctx, defog_attr);
+    if (defog_attr)
+        tune_note(ctx, 0, HAL_TUNE_DEFOG_STRENGTH, *(const uint8_t *)defog_attr, ret);
+    return ret;
+}
+
+static int tune_set_wb_rec(void *ctx, const rss_wb_config_t *wb)
+{
+    int ret = hal_isp_set_wb(ctx, wb);
+    hal_tune_t *t = tune_of(ctx, 0);
+    if (t && wb && ret == RSS_OK)
+        hal_tune_record_wb(t, wb);
+    return ret;
+}
+
+static int tune_set_awb_rgb_coefft(void *ctx, uint16_t r, uint16_t g, uint16_t b)
+{
+    int ret = hal_isp_set_awb_rgb_coefft(ctx, r, g, b);
+    hal_tune_t *t = tune_of(ctx, 0);
+    if (t && ret == RSS_OK)
+        hal_tune_record_coefft(t, r, g, b);
+    return ret;
+}
+
+/* Replay what a switch reloaded; the setter reports whether it took */
+static int tune_running_mode(void *ctx, int sensor, rss_isp_mode_t mode)
+{
+    int ret = sensor ? hal_isp_set_running_mode_n(ctx, sensor, mode)
+                     : hal_isp_set_running_mode(ctx, mode);
+    if (ret != RSS_OK)
+        return ret;
+    hal_tune_t *t = tune_of(ctx, sensor);
+    if (!t || !hal_tune_mode_changed(t, mode))
+        return RSS_OK;
+    /* T31 applies the bin copy on a later frame, so a replay issued right
+     * after the switch is overwritten (T31 silicon, 20 switches each: no
+     * wait lost all 20, one frame kept all 20; two for margin). T41
+     * copies in the call itself; T32+ has no WaitFrame. */
+    for (int i = 0; i < TUNE_SETTLE_FRAMES; i++)
+        if (hal_isp_wait_frame(ctx, 500) == RSS_ERR_NOTSUP)
+            break;
+    int failed = hal_tune_replay(t, &g_tune_ops, ctx, sensor);
+    if (failed)
+        HAL_LOG_WARN("sensor %d: %d tuning value(s) not restored after the %s switch", sensor,
+                     failed, mode == RSS_ISP_NIGHT ? "night" : "day");
+    return RSS_OK;
+}
+
+static int tune_set_running_mode(void *ctx, rss_isp_mode_t mode)
+{
+    return tune_running_mode(ctx, 0, mode);
+}
+
+static int tune_set_running_mode_n(void *ctx, int sensor, rss_isp_mode_t mode)
+{
+    return tune_running_mode(ctx, sensor, mode);
+}
+#endif /* HAL_MODULE_VIDEO */
+
 /* ================================================================
  * OPS VTABLE
  * ================================================================ */
@@ -794,28 +1000,28 @@ static const rss_hal_ops_t g_ops = {
     .enc_get_jpeg_qp = hal_enc_get_jpeg_qp,
 
     /* ISP tuning */
-    .isp_set_brightness = hal_isp_set_brightness,
-    .isp_set_contrast = hal_isp_set_contrast,
-    .isp_set_saturation = hal_isp_set_saturation,
-    .isp_set_sharpness = hal_isp_set_sharpness,
-    .isp_set_hue = hal_isp_set_hue,
+    .isp_set_brightness = tune_set_brightness,
+    .isp_set_contrast = tune_set_contrast,
+    .isp_set_saturation = tune_set_saturation,
+    .isp_set_sharpness = tune_set_sharpness,
+    .isp_set_hue = tune_set_hue,
     .isp_set_hflip = hal_isp_set_hflip,
     .isp_set_vflip = hal_isp_set_vflip,
-    .isp_set_running_mode = hal_isp_set_running_mode,
+    .isp_set_running_mode = tune_set_running_mode,
     .isp_set_sensor_fps = hal_isp_set_sensor_fps,
-    .isp_set_antiflicker = hal_isp_set_antiflicker,
-    .isp_set_wb = hal_isp_set_wb,
+    .isp_set_antiflicker = tune_set_antiflicker,
+    .isp_set_wb = tune_set_wb_rec,
     .isp_get_exposure = hal_isp_get_exposure,
-    .isp_set_sinter_strength = hal_isp_set_sinter_strength,
-    .isp_set_temper_strength = hal_isp_set_temper_strength,
-    .isp_set_defog = hal_isp_set_defog,
-    .isp_set_dpc_strength = hal_isp_set_dpc_strength,
-    .isp_set_drc_strength = hal_isp_set_drc_strength,
-    .isp_set_ae_comp = hal_isp_set_ae_comp,
-    .isp_set_max_again = hal_isp_set_max_again,
-    .isp_set_max_dgain = hal_isp_set_max_dgain,
-    .isp_set_highlight_depress = hal_isp_set_highlight_depress,
-    .isp_set_defog_strength = hal_isp_set_defog_strength,
+    .isp_set_sinter_strength = tune_set_sinter_strength,
+    .isp_set_temper_strength = tune_set_temper_strength,
+    .isp_set_defog = tune_set_defog,
+    .isp_set_dpc_strength = tune_set_dpc_strength,
+    .isp_set_drc_strength = tune_set_drc_strength,
+    .isp_set_ae_comp = tune_set_ae_comp,
+    .isp_set_max_again = tune_set_max_again,
+    .isp_set_max_dgain = tune_set_max_dgain,
+    .isp_set_highlight_depress = tune_set_highlight_depress,
+    .isp_set_defog_strength = tune_set_defog_strength,
 
     /* ISP getters */
     .isp_get_brightness = hal_isp_get_brightness,
@@ -861,7 +1067,7 @@ static const rss_hal_ops_t g_ops = {
     .isp_get_awb_zone = hal_isp_get_awb_zone,
     .isp_get_awb_ct = hal_isp_get_awb_ct,
     .isp_get_awb_rgb_coefft = hal_isp_get_awb_rgb_coefft,
-    .isp_set_awb_rgb_coefft = hal_isp_set_awb_rgb_coefft,
+    .isp_set_awb_rgb_coefft = tune_set_awb_rgb_coefft,
     .isp_get_awb_hist = hal_isp_get_awb_hist,
 
     /* ISP gamma / CCM / WDR */
@@ -903,9 +1109,9 @@ static const rss_hal_ops_t g_ops = {
     .isp_set_awb_ct_attr = hal_isp_set_awb_ct_attr,
     .isp_get_awb_ct_trend = hal_isp_get_awb_ct_trend,
     .isp_set_awb_ct_trend = hal_isp_set_awb_ct_trend,
-    .isp_set_backlight_comp = hal_isp_set_backlight_comp,
+    .isp_set_backlight_comp = tune_set_backlight_comp,
     .isp_get_defog_strength_adv = hal_isp_get_defog_strength_adv,
-    .isp_set_defog_strength_adv = hal_isp_set_defog_strength_adv,
+    .isp_set_defog_strength_adv = tune_set_defog_strength_adv,
     .isp_get_front_crop = hal_isp_get_front_crop,
     .isp_set_front_crop = hal_isp_set_front_crop,
     .isp_get_blc_attr = hal_isp_get_blc_attr,
@@ -931,21 +1137,21 @@ static const rss_hal_ops_t g_ops = {
     .isp_set_scaler_lv = hal_isp_set_scaler_lv,
 
     /* Multi-sensor ISP tuning */
-    .isp_set_brightness_n = hal_isp_set_brightness_n,
-    .isp_set_contrast_n = hal_isp_set_contrast_n,
-    .isp_set_saturation_n = hal_isp_set_saturation_n,
-    .isp_set_sharpness_n = hal_isp_set_sharpness_n,
-    .isp_set_hue_n = hal_isp_set_hue_n,
+    .isp_set_brightness_n = tune_set_brightness_n,
+    .isp_set_contrast_n = tune_set_contrast_n,
+    .isp_set_saturation_n = tune_set_saturation_n,
+    .isp_set_sharpness_n = tune_set_sharpness_n,
+    .isp_set_hue_n = tune_set_hue_n,
     .isp_set_hflip_n = hal_isp_set_hflip_n,
     .isp_set_vflip_n = hal_isp_set_vflip_n,
-    .isp_set_running_mode_n = hal_isp_set_running_mode_n,
+    .isp_set_running_mode_n = tune_set_running_mode_n,
     .isp_set_sensor_fps_n = hal_isp_set_sensor_fps_n,
-    .isp_set_antiflicker_n = hal_isp_set_antiflicker_n,
-    .isp_set_sinter_strength_n = hal_isp_set_sinter_strength_n,
-    .isp_set_temper_strength_n = hal_isp_set_temper_strength_n,
-    .isp_set_ae_comp_n = hal_isp_set_ae_comp_n,
-    .isp_set_max_again_n = hal_isp_set_max_again_n,
-    .isp_set_max_dgain_n = hal_isp_set_max_dgain_n,
+    .isp_set_antiflicker_n = tune_set_antiflicker_n,
+    .isp_set_sinter_strength_n = tune_set_sinter_strength_n,
+    .isp_set_temper_strength_n = tune_set_temper_strength_n,
+    .isp_set_ae_comp_n = tune_set_ae_comp_n,
+    .isp_set_max_again_n = tune_set_max_again_n,
+    .isp_set_max_dgain_n = tune_set_max_dgain_n,
     .isp_get_exposure_n = hal_isp_get_exposure_n,
     .isp_set_custom_mode_n = hal_isp_set_custom_mode_n,
     .isp_set_ae_freeze_n = hal_isp_set_ae_freeze_n,

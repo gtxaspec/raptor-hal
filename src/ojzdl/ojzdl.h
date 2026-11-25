@@ -73,6 +73,12 @@ int ojzdl_resize_rgb(ojzdl_resize *r, const uint8_t *src, uint8_t *dst);
  * row is requested at most once per call, in increasing order. */
 int ojzdl_resize_rows(ojzdl_resize *r, const uint8_t *(*get_row)(void *ctx, int y), void *ctx,
                       uint8_t *dst);
+/* Same from an NV12 frame (src_w x src_h luma, then interleaved UV, stride =
+ * src_w), converted with the integer formula of raptor-hal's nv12_to_rgb:
+ * R = y + (359v >> 8), G = y - ((88u + 183v) >> 8), B = y + (454u >> 8),
+ * u, v = chroma - 128, each clamped to 0..255. Identical bytes to converting
+ * the frame row by row and calling ojzdl_resize_rows. */
+int ojzdl_resize_nv12(ojzdl_resize *r, const uint8_t *nv12, uint8_t *dst);
 
 #ifdef __cplusplus
 }

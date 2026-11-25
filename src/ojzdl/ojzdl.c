@@ -25,7 +25,13 @@ enum {
 	T_INPUT = 16, T_SPLIT = 33, T_CONV_FIRST = 46, T_HEAD = 51, T_PW = 53,
 	T_UPSAMPLE = 69, T_CONCAT = 71, T_DW = 73, T_PW_POOL = 74, T_POOL = 75,
 	T_PACK = 76, T_ELTWISE = 78,
+	/* 8-bit variants (the Magik 1.0 kit's Txx YOLOv5 at 8 bits): int32
+	 * bias/mult/shift with Q31, as the first conv [fmt: Layer types] */
+	T_HEAD8 = 50, T_PW8 = 52, T_DW8 = 65,
 };
+
+/* the 8-bit types: int32 requant, Q31, no int16 wrap */
+#define IS8(t) ((t) == T_PW8 || (t) == T_DW8)
 
 /* [fmt: Arithmetic] MXU2 weight blocks: 16 outputs x 2 inputs = 32 bytes */
 #define GRP 16
@@ -66,6 +72,8 @@ typedef struct {
 	uint8_t simd;          /* MXU2 kernel applies to this layer */
 	int32_t *q;            /* conv: bias[co], mult[co], shift[co] decoded once */
 	int32_t *qtab;         /* first conv MXU2: even/odd-arranged q [ojzdl_mxu2.h] */
+	int32_t *fix;          /* 52 on MXU2: outputs whose pair sums can leave int16, redone in C */
+	int nfix;
 	size_t scratch;        /* scratch bytes this layer needs */
 	uint64_t ns;
 } layer_t;
@@ -141,9 +149,20 @@ static int param_count(int type, int version)
 	case T_UPSAMPLE: return 5;
 	case T_POOL: return v5 ? 12 : -1;
 	case T_PACK: return 0;
-	case T_ELTWISE: return v5 ? -1 : 2;   /* only seen, and verified, in v4 */
+	case T_ELTWISE: return 2;   /* v4 yolov5; v5 = Magik 1.0 kit's Txx YOLOv5 */
+	case T_HEAD8: return v5 ? 17 : -1;
+	case T_PW8: return v5 ? 18 : -1;
+	case T_DW8: return v5 ? 19 : -1;
 	default: return -1;
 	}
+}
+
+/* weights stored in the v5 block layout: version 5 with the trailing flag set
+ * (persondet). Version 5 with flag 0 (the Magik 1.0 kit's Txx YOLOv5) stores
+ * them plain, as version 4 does [fmt: Weight layouts] */
+static int blocked(const ojzdl_net *n, const layer_t *l)
+{
+	return n->version >= 5 && l->np > 0 && l->p[l->np - 1] != 0;
 }
 
 /* data blob byte sizes in load order [fmt: Layer types] */
@@ -151,10 +170,11 @@ static int blob_sizes(const layer_t *l, size_t sz[4])
 {
 	int32_t c = l->p ? l->p[0] : 0;
 	switch (l->type) {
-	case T_CONV_FIRST:
+	case T_CONV_FIRST: case T_PW8: case T_DW8:
+		/* weights, then int32 bias, mult, shift */
 		sz[0] = (size_t)l->p[12]; sz[1] = sz[2] = sz[3] = 4 * (size_t)c;
 		return 4;
-	case T_HEAD:
+	case T_HEAD: case T_HEAD8:
 		sz[0] = (size_t)l->p[12]; sz[1] = sz[2] = 4 * (size_t)c;
 		return 3;
 	case T_PW: case T_DW: case T_PW_POOL:
@@ -183,25 +203,26 @@ static int plan_memory(ojzdl_net *n);
 
 #define ALIGN16(x) (((x) + 15) & ~(size_t)15)
 
-/* bias/mult/shift as int32 [fmt: Arithmetic]: int32 for 46, int16 for 53/73/74 */
+/* bias/mult/shift as int32 [fmt: Arithmetic]: int32 for 46/52/65, int16 for 53/73/74 */
 static int decode_requant(ojzdl_net *n)
 {
 	int i, o;
 	for (i = 0; i < n->nlayers; i++) {
 		layer_t *l = &n->L[i];
 		int co = l->p ? l->p[0] : 0, k;
-		if (l->type != T_CONV_FIRST && l->type != T_DW && l->type != T_PW && l->type != T_PW_POOL)
+		if (l->type != T_CONV_FIRST && l->type != T_DW && l->type != T_PW && l->type != T_PW_POOL &&
+		    !IS8(l->type))
 			continue;
 		l->q = malloc(3 * (size_t)co * sizeof(int32_t));
 		if (!l->q)
 			return -1;
 		for (k = 0; k < 3; k++)
 			for (o = 0; o < co; o++)
-				l->q[k * co + o] = l->type == T_CONV_FIRST ? rd32(l->blob[k + 1] + 4 * o)
-				                                           : rd16(l->blob[k + 1] + 2 * o);
+				l->q[k * co + o] = l->type == T_CONV_FIRST || IS8(l->type)
+				                   ? rd32(l->blob[k + 1] + 4 * o) : rd16(l->blob[k + 1] + 2 * o);
 		/* [fmt: Arithmetic] libjzdl takes an int16 layer's shift modulo 16 (a shift of
 		 * 16 acts as 0; verified 2026-11-25): normalise once for the C and MXU2 paths */
-		if (l->type != T_CONV_FIRST)
+		if (l->type != T_CONV_FIRST && !IS8(l->type))
 			for (o = 0; o < co; o++)
 				l->q[2 * co + o] &= 15;
 		if (l->type == T_CONV_FIRST && l->simd) {
@@ -257,7 +278,7 @@ static void mark_simd(ojzdl_net *n)
 			l->simd = (uint8_t)ok;
 			continue;
 		}
-		if (l->type == T_HEAD) {
+		if (l->type == T_HEAD || l->type == T_HEAD8) {
 			/* DOTPS.h pair sums must fit int16: 2 * max|w| * 2^(bits_in-1) <= 32767 */
 			int maxw = 0, ci = n->B[l->bottom[0]].c;
 			size_t k;
@@ -265,6 +286,28 @@ static void mark_simd(ojzdl_net *n)
 				if (abs(W[k]) > maxw)
 					maxw = abs(W[k]);
 			l->simd = (uint8_t)(ci % 16 == 0 && 2L * maxw * (1L << (P[13] - 1)) <= 32767);
+			continue;
+		}
+		if (l->type == T_PW8) {
+			/* int32 sums on the head kernels. A DOTPS.h pair sum can leave int16 only
+			 * if (|w0| + |w1|) * 2^(bits_in-1) > 32767 (8 bits: both weights -128);
+			 * such outputs are listed and redone in C after the kernel */
+			int ci = n->B[l->bottom[0]].c, k;
+			l->simd = (uint8_t)(ci % 16 == 0);
+			for (o = 0; l->simd && o < P[0]; o++) {
+				const int8_t *w = l->w + (size_t)o * ci;
+				for (k = 0; k < ci; k += 2)
+					if ((long)(abs(w[k]) + abs(w[k + 1])) << (P[14] - 1) > 32767) {
+						int32_t *f = realloc(l->fix, (size_t)(l->nfix + 1) * sizeof(*f));
+						if (!f) {
+							l->simd = 0;
+							break;
+						}
+						l->fix = f;
+						l->fix[l->nfix++] = o;
+						break;
+					}
+			}
 			continue;
 		}
 		if (l->type == T_DW) {
@@ -436,6 +479,7 @@ void ojzdl_free(ojzdl_net *n)
 			free(n->L[i].w);
 			free(n->L[i].q);
 			free(n->L[i].qtab);
+			free(n->L[i].fix);
 			free(n->L[i].wp_own);
 		}
 	free(n->arena);
@@ -485,11 +529,12 @@ static int infer_shapes(ojzdl_net *n, const char **err)
 		*y = (blob_t){ 0, 0, 0, 0, NULL, NULL, 0, l->top[0], -1 };
 
 		switch (l->type) {
-		case T_CONV_FIRST: case T_DW: {
+		case T_CONV_FIRST: case T_DW: case T_DW8: {
 			int kh = P[1], kw = P[2], sh = P[5], sw = P[6];
 			int pt = P[8], pb = P[9], pl = P[10], pr = P[11];
-			int bin = l->type == T_CONV_FIRST ? P[15] : P[14];
-			int bout = l->type == T_CONV_FIRST ? P[16] : P[15];
+			/* 46 and 65 carry bits_w before bits_in/bits_out */
+			int bin = l->type == T_DW ? P[14] : P[15];
+			int bout = l->type == T_DW ? P[15] : P[16];
 			if (kh != 3 || kw != 3 || P[3] != 1 || P[4] != 1 || sh < 1 || sw < 1 || sh > 2 || sw > 2)
 				FAIL("conv: only 3x3, dilation 1, stride 1/2");
 			if (pt < 0 || pb < 0 || pl < 0 || pr < 0 || pt > 1 || pb > 1 || pl > 1 || pr > 1)
@@ -501,7 +546,7 @@ static int infer_shapes(ojzdl_net *n, const char **err)
 			if (l->type == T_CONV_FIRST) {
 				if (P[14] < 1 || P[14] > 8)
 					FAIL("first conv: weight bits");
-				if (n->version >= 5) {
+				if (blocked(n, l)) {
 					/* tap s = ky*10 + kx*cin + ci must fit a 10-wide row [fmt: Weight layouts] */
 					if (x->c * kw > TAPS_PADDED)
 						FAIL("first conv: kw*cin > 10");
@@ -511,7 +556,9 @@ static int infer_shapes(ojzdl_net *n, const char **err)
 					FAIL("first conv: weight_bytes != cout*kh*kw*cin");
 				}
 			} else {
-				if (P[0] != x->c || P[12] != P[0] * (n->version >= 5 ? TAPS_PADDED : 9))
+				if (l->type == T_DW8 && (blocked(n, l) || P[14] < 1 || P[14] > 8))
+					FAIL("8-bit depthwise: only plain weights, weight bits 1..8");
+				if (P[0] != x->c || P[12] != P[0] * (blocked(n, l) ? TAPS_PADDED : 9))
 					FAIL("depthwise: channel/weight size mismatch");
 			}
 			y->h = (x->h + pt + pb - kh) / sh + 1;
@@ -520,12 +567,14 @@ static int infer_shapes(ojzdl_net *n, const char **err)
 			y->bits = (uint8_t)bout;
 			break;
 		}
-		case T_PW: case T_PW_POOL: case T_HEAD:
+		case T_PW: case T_PW_POOL: case T_HEAD: case T_PW8: case T_HEAD8:
 			if (P[2] != 1 || P[3] != 1)
 				FAIL("1x1: kernel must be 1x1");
 			if (P[0] <= 0 || (size_t)P[12] != (size_t)P[0] * (size_t)x->c)
 				FAIL("1x1: weight_bytes != cin*cout");
-			if (l->type == T_HEAD) {
+			if (l->type == T_PW8 && blocked(n, l))
+				FAIL("8-bit 1x1: only plain weights");
+			if (l->type == T_HEAD || l->type == T_HEAD8) {
 				if (P[13] != x->bits)
 					FAIL("head: bits mismatch");
 				y->h = x->h; y->w = x->w; y->c = P[0]; y->bits = 0;
@@ -553,9 +602,11 @@ static int infer_shapes(ojzdl_net *n, const char **err)
 			y->h = x->h / 2; y->w = x->w / 2; y->c = x->c; y->bits = x->bits;
 			break;
 		case T_UPSAMPLE:
-			/* [fmt: Layer types] verified: mode 4 + f4 0 = zero insertion (persondet);
-			 * modes 4 and 5 + f4 1 = nearest neighbour (yolov5). Others refused. */
-			if (!((P[1] == 4 && P[4] == 0) || ((P[1] == 4 || P[1] == 5) && P[4] == 1)) ||
+			/* [fmt: Layer types] P[1] = input bits; P[4] = mode, verified: 0 = zero
+			 * insertion (persondet), 1 = nearest neighbour (yolov5). Others refused.
+			 * P[1] only matters for mode 0 (the fill value): mode 1 copies bytes, and
+			 * libjzdl runs thingino-ai graphs whose P[1] (4) is not the input's 5 bits. */
+			if ((P[4] == 0 && P[1] != x->bits) || (P[4] != 0 && P[4] != 1) ||
 			    P[2] < 1 || P[3] < 1 || P[2] > 4 || P[3] > 4)
 				FAIL("upsample: unverified mode");
 			y->h = x->h * P[2]; y->w = x->w * P[3]; y->c = x->c; y->bits = x->bits;
@@ -653,9 +704,10 @@ static int get_first(const int8_t *w, int o, int sl, void *ctx)
 
 static int unpack_weights(ojzdl_net *n, const char **err)
 {
-	int i, v5 = n->version >= 5;
+	int i, v5;
 	for (i = 0; i < n->nlayers; i++) {
 		layer_t *l = &n->L[i];
+		v5 = blocked(n, l);
 		const int32_t *P = l->p;
 		const int8_t *W = (const int8_t *)l->blob[0];
 		int co, ci, o, g, k;
@@ -690,7 +742,7 @@ static int unpack_weights(ojzdl_net *n, const char **err)
 					pack_blocks(l->wp_own, l->w, co, 3 * TAPS_PADDED, l->wper, get_first, NULL);
 				}
 			}
-		} else if (l->type == T_DW) {
+		} else if (l->type == T_DW || l->type == T_DW8) {
 			/* tap slots: t0..t7 then a pad slot, t8 last */
 			static const uint8_t slot[9] = { 0, 1, 2, 3, 4, 5, 6, 7, 9 };
 			co = P[0];
@@ -713,7 +765,7 @@ static int unpack_weights(ojzdl_net *n, const char **err)
 					FAIL("out of memory");
 				pack_blocks(l->wp_own, l->w, co, TAPS_PADDED, GRP * TAPS_PADDED, get_dw, NULL);
 			}
-		} else if (l->type == T_PW || l->type == T_PW_POOL) {
+		} else if (l->type == T_PW || l->type == T_PW_POOL || l->type == T_PW8) {
 			int ncp, cp;
 			ci = n->B[l->bottom[0]].c; co = P[0]; ncp = ci / 2;
 			l->w = malloc((size_t)co * ci);
@@ -843,9 +895,12 @@ static void conv_first_c(const layer_t *l, const blob_t *x, blob_t *y)
 						}
 					}
 				}
-				/* [fmt: Arithmetic] the sum wraps to int16 before the int32 bias (as the
-				 * MXU2 path's int16 accumulators); Q31, int32 bias/mult/shift, multiply floors */
-				v = ((int64_t)(int16_t)(uint16_t)(uint32_t)acc + l->q[o]) * l->q[co + o];
+				/* [fmt: Arithmetic] with weights under 8 bits the sum wraps to int16 before
+				 * the int32 bias (as the MXU2 path's int16 accumulators); 8-bit weights keep
+				 * it in int32 (verified 2026-11-25). Q31, int32 bias/mult/shift, multiply floors */
+				if (l->p[14] < 8)
+					acc = (int16_t)(uint16_t)(uint32_t)acc;
+				v = ((int64_t)acc + l->q[o]) * l->q[co + o];
 				v >>= Q_FIRST;
 				v = rsr64(v, l->q[2 * co + o]);
 				y->i8[((size_t)oy * y->w + ox) * co + o] = clamp_out(v, bits);
@@ -860,6 +915,15 @@ static inline int8_t requant16(int32_t acc, int16_t bias, int16_t mult, int16_t 
 	/* >> on a negative int is arithmetic in GCC (implementation-defined, C99 6.5.7) */
 	int32_t v = ((int32_t)a * mult) >> Q_OTHER;
 	return clamp_out(rsr32(v, sh), bits);
+}
+
+/* 8-bit types: int32 bias/mult/shift, Q31, as the first conv; acc + bias does
+ * not wrap (bit-exact vs libjzdl 2026-11-25) [fmt: Layer types] */
+static inline int8_t requant32(int32_t acc, const int32_t *q, int co, int o, int bits)
+{
+	int64_t v = ((int64_t)acc + q[o]) * q[co + o];
+	v >>= Q_FIRST;
+	return clamp_out(rsr64(v, q[2 * co + o]), bits);
 }
 
 static void conv_dw_c(const layer_t *l, const blob_t *x, blob_t *y);
@@ -910,8 +974,10 @@ static void conv_dw_c(const layer_t *l, const blob_t *x, blob_t *y)
 						acc += (int32_t)l->w[(size_t)o * 9 + ky * 3 + kx] * v;
 					}
 				}
-				dst[o] = requant16(acc, (int16_t)l->q[o], (int16_t)l->q[c + o],
-				                   (int16_t)l->q[2 * c + o], bits);
+				dst[o] = l->type == T_DW8
+					? requant32(acc, l->q, c, o, bits)
+					: requant16(acc, (int16_t)l->q[o], (int16_t)l->q[c + o],
+					            (int16_t)l->q[2 * c + o], bits);
 			}
 		}
 }
@@ -925,11 +991,33 @@ static int32_t dot8(const int8_t *a, const int8_t *b, int n)
 	return s;
 }
 
+/* type 52 on MXU2: exact int32 sums from the head kernels, PW8_CHUNK pixels at
+ * a time into scratch, then the int32 requant [plan_memory] */
+#define PW8_CHUNK 32
+
 static void conv_pw(const ojzdl_net *n, const layer_t *l, const blob_t *x, int8_t *dst, int bits)
 {
 	int ci = x->c, co = l->p[0], o;
 	size_t px = 0, npx = (size_t)x->h * x->w;
 #if OJZDL_HAVE_MXU2
+	if (n->simd && l->simd && l->type == T_PW8) {
+		int32_t *acc = (int32_t *)(void *)n->scratch;
+		for (; px < npx; px += PW8_CHUNK) {
+			size_t k, m = npx - px < PW8_CHUNK ? npx - px : PW8_CHUNK;
+			if (ci <= 256 && co <= 256)
+				ojzdl_head4_mxu2(x->i8 + px * ci, m, ci, l->w, co, acc);
+			else
+				ojzdl_head_mxu2(x->i8 + px * ci, m, ci, l->w, co, acc);
+			for (k = 0; k < m; k++) {
+				int f;
+				for (f = 0; f < l->nfix; f++)
+					acc[k * co + l->fix[f]] = dot8(x->i8 + (px + k) * ci, l->w + (size_t)l->fix[f] * ci, ci);
+				for (o = 0; o < co; o++)
+					dst[(px + k) * co + o] = requant32(acc[k * co + o], l->q, co, o, bits);
+			}
+		}
+		return;
+	}
 	if (n->simd && l->simd)
 		px = ojzdl_pw_mxu2(x->i8, npx, ci, l->wp, co,
 		                   l->blob[1], l->blob[2], l->blob[3], bits, dst);
@@ -939,9 +1027,13 @@ static void conv_pw(const ojzdl_net *n, const layer_t *l, const blob_t *x, int8_
 	for (; px < npx; px++) {
 		const int8_t *src = x->i8 + px * ci;
 		int8_t *d = dst + px * co;
-		for (o = 0; o < co; o++)
-			d[o] = requant16(dot8(src, l->w + (size_t)o * ci, ci), (int16_t)l->q[o],
-			                 (int16_t)l->q[co + o], (int16_t)l->q[2 * co + o], bits);
+		if (l->type == T_PW8)
+			for (o = 0; o < co; o++)
+				d[o] = requant32(dot8(src, l->w + (size_t)o * ci, ci), l->q, co, o, bits);
+		else
+			for (o = 0; o < co; o++)
+				d[o] = requant16(dot8(src, l->w + (size_t)o * ci, ci), (int16_t)l->q[o],
+				                 (int16_t)l->q[co + o], (int16_t)l->q[2 * co + o], bits);
 	}
 }
 
@@ -975,7 +1067,25 @@ static void head(const ojzdl_net *n, const layer_t *l, const blob_t *x, blob_t *
 #if OJZDL_HAVE_MXU2
 	if (n->simd && l->simd) {
 		int32_t *acc = (int32_t *)(void *)n->scratch; /* [plan_memory] */
-		ojzdl_head_mxu2(x->i8, npx, ci, (const int8_t *)l->blob[0], co, acc);
+		int32_t bias[256];
+		float scale[256];
+		if (ci <= 256 && co <= 256)
+			ojzdl_head4_mxu2(x->i8, npx, ci, (const int8_t *)l->blob[0], co, acc);
+		else
+			ojzdl_head_mxu2(x->i8, npx, ci, (const int8_t *)l->blob[0], co, acc);
+		if (co <= 256) {
+			for (o = 0; o < co; o++) {
+				bias[o] = rd32(l->blob[1] + 4 * o);
+				scale[o] = rdf(l->blob[2] + 4 * o);
+			}
+			for (px = 0; px < npx; px++) {
+				const int32_t *a = acc + px * co;
+				float *d = y->f32 + px * co;
+				for (o = 0; o < co; o++)
+					d[o] = (float)(a[o] + bias[o]) * scale[o];
+			}
+			return;
+		}
 		for (px = 0; px < npx; px++)
 			for (o = 0; o < co; o++)
 				y->f32[px * co + o] = (float)(acc[px * co + o] + rd32(l->blob[1] + 4 * o)) *
@@ -997,14 +1107,14 @@ static void upsample(const layer_t *l, const blob_t *x, blob_t *y)
 {
 	int sy = l->p[2], sx = l->p[3], iy, ix, oy, ox;
 	if (l->p[4] == 1) {
-		/* [fmt: Layer types] f4 = 1 (modes 4, 5): nearest neighbour */
+		/* [fmt: Layer types] mode 1: nearest neighbour */
 		for (oy = 0; oy < y->h; oy++)
 			for (ox = 0; ox < y->w; ox++)
 				memcpy(y->i8 + ((size_t)oy * y->w + ox) * y->c,
 				       x->i8 + ((size_t)(oy / sy) * x->w + ox / sx) * x->c, (size_t)x->c);
 		return;
 	}
-	/* [fmt: Layer types] mode 4, f4 = 0: out[s*i, s*j] = x, else the activation zero */
+	/* [fmt: Layer types] mode 0: out[s*i, s*j] = x, else the activation zero */
 	memset(y->i8, -(1 << (x->bits - 1)), y->n);
 	for (iy = 0; iy < x->h; iy++)
 		for (ix = 0; ix < x->w; ix++)
@@ -1013,11 +1123,17 @@ static void upsample(const layer_t *l, const blob_t *x, blob_t *y)
 }
 
 /* [fmt: Layer types] type 78, equal input widths: u = round_half_even((ua + ub) / 2) */
-static void eltwise(const blob_t *a, const blob_t *b, blob_t *y)
+static void eltwise(const ojzdl_net *n, const blob_t *a, const blob_t *b, blob_t *y)
 {
 	int off = 1 << (a->bits - 1), hi = (1 << y->bits) - 1, yo = 1 << (y->bits - 1);
-	size_t i;
-	for (i = 0; i < y->n; i++) {
+	size_t i = 0;
+#if OJZDL_HAVE_MXU2
+	if (n->simd && a->bits <= 6 && y->bits <= 8)
+		i = ojzdl_add_mxu2(a->i8, b->i8, y->n, a->bits, y->bits, y->i8);
+#else
+	(void)n;
+#endif
+	for (; i < y->n; i++) {
 		int s2 = a->i8[i] + b->i8[i] + 2 * off, k = s2 >> 1;
 		int u = k + ((s2 & 1) & (k & 1));
 		if (u > hi)
@@ -1070,8 +1186,10 @@ static size_t layer_scratch(const ojzdl_net *n, const layer_t *l)
 	switch (l->type) {
 	case T_PW_POOL:
 		return (size_t)2 * x->w * y->c;
-	case T_HEAD:
+	case T_HEAD: case T_HEAD8:
 		return OJZDL_HAVE_MXU2 && l->simd ? (size_t)x->h * x->w * y->c * sizeof(int32_t) : 0;
+	case T_PW8:
+		return OJZDL_HAVE_MXU2 && l->simd ? (size_t)PW8_CHUNK * y->c * sizeof(int32_t) : 0;
 	case T_DW:
 		return OJZDL_HAVE_MXU2 && l->simd
 			? (size_t)(x->h + l->p[8] + l->p[9]) * (x->w + l->p[10] + l->p[11]) * x->c : 0;
@@ -1208,8 +1326,8 @@ int ojzdl_forward(ojzdl_net *n)
 			continue; /* tops alias the bottom [plan_memory] */
 		switch (l->type) {
 		case T_CONV_FIRST: conv_first(n, l, x, y); break;
-		case T_DW: conv_dw(n, l, x, y); break;
-		case T_PW: conv_pw(n, l, x, y->i8, y->bits); break;
+		case T_DW: case T_DW8: conv_dw(n, l, x, y); break;
+		case T_PW: case T_PW8: conv_pw(n, l, x, y->i8, y->bits); break;
 		case T_PW_POOL: {
 			/* [fmt: Layer types] conv -> requant -> 2x2/2 max-pool */
 			/* two input rows at a time: conv into scratch, pool into one output row */
@@ -1231,9 +1349,9 @@ int ojzdl_forward(ojzdl_net *n)
 				         x->w, x->c, y->i8 + (size_t)oy * y->w * y->c);
 			break;
 		}
-		case T_HEAD: head(n, l, x, y); break;
+		case T_HEAD: case T_HEAD8: head(n, l, x, y); break;
 		case T_UPSAMPLE: upsample(l, x, y); break;
-		case T_ELTWISE: eltwise(x, &n->B[l->bottom[1]], y); break;
+		case T_ELTWISE: eltwise(n, x, &n->B[l->bottom[1]], y); break;
 		case T_CONCAT: concat(n, l, y); break;
 		case T_PACK: pack(n, l, y); break;
 		default: return -1;
