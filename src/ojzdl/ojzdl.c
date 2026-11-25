@@ -199,6 +199,11 @@ static int decode_requant(ojzdl_net *n)
 			for (o = 0; o < co; o++)
 				l->q[k * co + o] = l->type == T_CONV_FIRST ? rd32(l->blob[k + 1] + 4 * o)
 				                                           : rd16(l->blob[k + 1] + 2 * o);
+		/* [fmt: Arithmetic] libjzdl takes an int16 layer's shift modulo 16 (a shift of
+		 * 16 acts as 0; verified 2026-11-25): normalise once for the C and MXU2 paths */
+		if (l->type != T_CONV_FIRST)
+			for (o = 0; o < co; o++)
+				l->q[2 * co + o] &= 15;
 		if (l->type == T_CONV_FIRST && l->simd) {
 			/* even/odd arrangement for the vector requant; also its limits:
 			 * acc + bias must not wrap int32, SRAR.w shifts mod 32 [mxu2.h] */
@@ -799,13 +804,23 @@ static void conv_first(const ojzdl_net *n, const layer_t *l, const blob_t *x, bl
 	conv_first_c(l, x, y);
 }
 
+/* TF 'SAME' padding before the data: libjzdl ignores type 46's pad fields [fmt: Layer types] */
+static int same_pad_before(int n, int k, int s)
+{
+	int out = (n + s - 1) / s, tot = (out - 1) * s + k - n;
+	return tot > 0 ? tot / 2 : 0;
+}
+
 static void conv_first_c(const layer_t *l, const blob_t *x, blob_t *y)
 {
 	const int32_t *P = l->p;
-	int sh = P[5], sw = P[6], pt = P[8], pl = P[10], bits = y->bits;
+	int sh = P[5], sw = P[6], bits = y->bits;
 	int kh = P[1], kw = P[2], ci = x->c, co = y->c;
+	int pt = same_pad_before(x->h, kh, sh), pl = same_pad_before(x->w, kw, sw);
 	int oy, ox, o, ky, kx, k;
-	const int8_t pad = -IMG_OFFSET; /* [fmt: Arithmetic] image pad = pixel 0 */
+	/* [fmt: Arithmetic] the pad is input code 0: -128 (pixel 0) on the image,
+	 * -2^(bits_in-1) for a type 46 inside the graph (P[15] = input bits) */
+	const int8_t pad = (int8_t)-(1 << (P[15] - 1));
 
 	for (oy = 0; oy < y->h; oy++)
 		for (ox = 0; ox < y->w; ox++)
@@ -828,8 +843,9 @@ static void conv_first_c(const layer_t *l, const blob_t *x, blob_t *y)
 						}
 					}
 				}
-				/* [fmt: Arithmetic] Q31, int32 bias/mult/shift, multiply floors */
-				v = ((int64_t)acc + l->q[o]) * l->q[co + o];
+				/* [fmt: Arithmetic] the sum wraps to int16 before the int32 bias (as the
+				 * MXU2 path's int16 accumulators); Q31, int32 bias/mult/shift, multiply floors */
+				v = ((int64_t)(int16_t)(uint16_t)(uint32_t)acc + l->q[o]) * l->q[co + o];
 				v >>= Q_FIRST;
 				v = rsr64(v, l->q[2 * co + o]);
 				y->i8[((size_t)oy * y->w + ox) * co + o] = clamp_out(v, bits);
