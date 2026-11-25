@@ -33,7 +33,11 @@ struct ojzdl_resize {
 	int16_t *alpha, *beta;
 	int16_t *rows[2];      /* horizontally resized source rows */
 	int have[2];           /* source row index held in rows[k], or -1 */
+	uint8_t *rgb;          /* one converted NV12 row (ojzdl_resize_nv12) */
+	uint8_t clip[1024];    /* clip[v + CLIP_OFS] = v clamped to 0..255 */
 };
+
+#define CLIP_OFS 384 /* y + chroma term spans -227 .. 480 */
 
 static void tab_x(int src, int dst, int *ofs, int16_t *a)
 {
@@ -106,12 +110,17 @@ ojzdl_resize *ojzdl_resize_create(int src_w, int src_h, int dst_w, int dst_h)
 	/* +16 bytes: the vector pass reads whole 16-byte blocks */
 	r->rows[0] = malloc((size_t)dst_w * 3 * sizeof(int16_t) + 32);
 	r->rows[1] = malloc((size_t)dst_w * 3 * sizeof(int16_t) + 32);
-	if (!r->xofs || !r->yofs || !r->alpha || !r->beta || !r->rows[0] || !r->rows[1]) {
+	r->rgb = malloc((size_t)src_w * 3);
+	if (!r->xofs || !r->yofs || !r->alpha || !r->beta || !r->rows[0] || !r->rows[1] || !r->rgb) {
 		ojzdl_resize_free(r);
 		return NULL;
 	}
 	tab_x(src_w, dst_w, r->xofs, r->alpha);
 	tab_y(src_h, dst_h, r->yofs, r->beta);
+	for (int v = 0; v < (int)sizeof(r->clip); v++) {
+		int c = v - CLIP_OFS;
+		r->clip[v] = (uint8_t)(c < 0 ? 0 : (c > 255 ? 255 : c));
+	}
 	return r;
 }
 
@@ -125,6 +134,7 @@ void ojzdl_resize_free(ojzdl_resize *r)
 	free(r->beta);
 	free(r->rows[0]);
 	free(r->rows[1]);
+	free(r->rgb);
 	free(r);
 }
 
@@ -205,4 +215,47 @@ int ojzdl_resize_rgb(ojzdl_resize *r, const uint8_t *src, uint8_t *dst)
 {
 	struct rgb_src s = { src, (size_t)r->sw * 3 };
 	return ojzdl_resize_rows(r, rgb_row, &s, dst);
+}
+
+struct nv12_src {
+	ojzdl_resize *r;
+	const uint8_t *p;
+};
+
+/* One NV12 row to RGB: the chroma terms once per pixel pair, clamping by table.
+ * Same integer arithmetic as the per-pixel formula, so the same bytes (an odd
+ * last column reads uv[col | 1] past the row, as the per-pixel form does). */
+static const uint8_t *nv12_row(void *ctx, int y)
+{
+	const struct nv12_src *s = ctx;
+	const ojzdl_resize *r = s->r;
+	const int w = r->sw;
+	const uint8_t *yp = s->p + (size_t)y * w;
+	const uint8_t *uvp = s->p + (size_t)w * r->sh + (size_t)(y / 2) * w;
+	const uint8_t *clip = r->clip + CLIP_OFS;
+	uint8_t *o = r->rgb;
+	int col;
+
+	for (col = 0; col < w; col += 2) {
+		int u = uvp[col] - 128, v = uvp[col + 1] - 128;
+		int dr = (359 * v) >> 8, dg = -((88 * u + 183 * v) >> 8), db = (454 * u) >> 8;
+		int y0 = yp[col];
+		o[0] = clip[y0 + dr];
+		o[1] = clip[y0 + dg];
+		o[2] = clip[y0 + db];
+		if (col + 1 < w) {
+			int y1 = yp[col + 1];
+			o[3] = clip[y1 + dr];
+			o[4] = clip[y1 + dg];
+			o[5] = clip[y1 + db];
+		}
+		o += 6;
+	}
+	return r->rgb;
+}
+
+int ojzdl_resize_nv12(ojzdl_resize *r, const uint8_t *nv12, uint8_t *dst)
+{
+	struct nv12_src s = { r, nv12 };
+	return ojzdl_resize_rows(r, nv12_row, &s, dst);
 }
