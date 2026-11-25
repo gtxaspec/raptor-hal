@@ -161,7 +161,7 @@ $(error ONNA=1, OJZDL=1 and JZDL_INCLUDE are mutually exclusive)
 endif
 ONNA_SRCS := src/hal_ivs_onna.c src/onna/onnaq.c src/onna/nnaeng.c src/onna/nnacpu.c \
              src/onna/be_mxu3.c src/ojzdl/ojzdl_resize.c
-VIDEO_SRCS += $(ONNA_SRCS)
+VIDEO_SRCS += $(ONNA_SRCS) src/hal_ivs_yolo.c
 ONNA_FLAGS := -D_POSIX_C_SOURCE=200809L -ffp-contract=off -O2 -DONNA_MXU3 -DONNAQ_LIB -DOJZDL_MXU3
 $(ONNA_SRCS:.c=.o): CFLAGS += $(ONNA_FLAGS)
 endif

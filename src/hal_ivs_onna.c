@@ -30,6 +30,7 @@
 
 #define _GNU_SOURCE
 #include "hal_internal.h"
+#include "hal_ivs_yolo.h"
 #include "ojzdl/ojzdl.h"
 #include "onna/onnaq.h"
 
@@ -209,6 +210,8 @@ void *hal_jzdl_create(const rss_ivs_jzdl_param_t *param)
     int rc;
 
     if (!param)
+        return NULL;
+    if (!hal_yolo_preprocess_ok(param, RSS_IVS_PREPROCESS_STRETCH))
         return NULL;
     if (strnlen(param->model_path, sizeof(param->model_path)) >= sizeof(param->model_path)) {
         HAL_LOG_ERR("ONNA: model_path not null-terminated");
