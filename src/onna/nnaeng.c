@@ -558,6 +558,8 @@ int nna_conv(const struct nna_be *be, const uint8_t *in, int H, int W, int C, in
 		ps = C;
 	if (nd->rec < 0 || nd->rec >= NNA_MAXREC)
 		ERR("conv record %d (the W cache holds %d)", nd->rec, NNA_MAXREC);
+	if (!wcache[nd->rec] && !nd->wq)	/* a caller may drop wq once the W is cached */
+		ERR("conv record %d: no weights", nd->rec);
 	if (nd->stem)
 		return stem(be, in, H, W, nd, S, rq, OH, OW);
 	if (kh > 3 || kw > 3 || P > 16)

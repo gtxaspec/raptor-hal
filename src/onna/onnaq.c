@@ -111,7 +111,7 @@ struct qrec {
 	 * the record's 32-segment SiLU table (nnacpu.h); the T slot is Fl */
 	int silu;		/* the record has a SiLU table (heads and QSUM records have none) */
 	struct nna_silu st;
-	uint8_t *lut;		/* NNA_SILU_LUT bytes */
+	uint8_t *lut;		/* NNA_SILU_LUT bytes, built by rec_lut() when a CPU requant needs it */
 	int32_t *B;		/* per oc, contiguous */
 	long after;		/* file offset after the table's two copies: a type-30 (Normalize) record may follow */
 };
@@ -245,9 +245,7 @@ static void load_bin(const char *path)
 
 				memcpy(raw, b + m + 8, 128);
 				nna_silu_load(&r->st, raw);
-				if (!(r->lut = malloc(NNA_SILU_LUT)) || !(r->B = malloc(sizeof(int32_t) * (size_t)oc)))
-					DIE("out of memory");
-				nna_silu_lut(&r->st, r->lut);
+				r->B = xmalloc(sizeof(int32_t) * (size_t)oc);	/* r->lut: rec_lut(), on first need */
 				for (int c = 0; c < oc; c++)
 					r->B[c] = r->bt[64 * (c / 32) + c % 32];
 				r->silu = 1;
@@ -357,6 +355,19 @@ static void load_bin(const char *path)
 			DIE("%d Convolution ops, %d W blocks", k, nrec);
 	}
 	free(b);
+}
+
+/* the record's whole requant as a byte table by t (32 KB): for the CPU requant and the oracle; the
+ * camera's MXU3 requant reads the 32-segment table itself, so it is never built there */
+static const uint8_t *rec_lut(int ri)
+{
+	struct qrec *r = &rec[ri];
+
+	if (!r->lut) {
+		r->lut = xmalloc(NNA_SILU_LUT);
+		nna_silu_lut(&r->st, r->lut);
+	}
+	return r->lut;
 }
 
 /* ---- the graph */
@@ -670,6 +681,8 @@ static struct nna_node *silu_node(int ri, int oc, int ic, int k, int st, int pad
 		DIE("conv record %d: %d of %d out channels", ri, oc, roc);
 	if (!(nd->wq = calloc((size_t)k * k * oc * ic, 1)))
 		DIE("out of memory");
+	if (!r->wq)
+		DIE("conv record %d: used twice", ri);
 	if (stem) {
 		if (k != 6 || ic != 4 || st != 2 || r->kh != 1 || r->nic != 6)
 			DIE("stem record %d: k %d ic %d stride %d (record %dx%d, %d chunks)", ri, k, ic, st, r->kh, r->kw, r->nic);
@@ -678,18 +691,22 @@ static struct nna_node *silu_node(int ri, int oc, int ic, int k, int st, int pad
 				for (int o = 0; o < oc; o++)
 					for (int c = 0; c < 4; c++)
 						nd->wq[(((long)ky * 6 + kx) * oc + o) * 4 + c] = r->wq[(long)o * lanes + 32 * kx + 4 * ky + c];
-		return nd;
+	} else {
+		if (r->kh != k || r->kw != k || nch != r->nic)
+			DIE("conv record %d: %dx%d with %d input chunks, the graph has %dx%d and %d", ri, r->kh, r->kw, r->nic,
+			    k, k, nch);
+		for (int t = 0, c0; t < k * k; t++)
+			for (int o = 0; o < oc; o++) {
+				c0 = 0;
+				for (int ck = 0; ck < nch; c0 += chk[ck++])
+					for (int i = 0; i < chk[ck]; i++)
+						nd->wq[((long)t * oc + o) * ic + c0 + i] =
+							r->wq[((long)t * roc + o) * lanes + 32 * ck + i];
+			}
 	}
-	if (r->kh != k || r->kw != k || nch != r->nic)
-		DIE("conv record %d: %dx%d with %d input chunks, the graph has %dx%d and %d", ri, r->kh, r->kw, r->nic, k, k,
-		    nch);
-	for (int t = 0, c0; t < k * k; t++)
-		for (int o = 0; o < oc; o++) {
-			c0 = 0;
-			for (int ck = 0; ck < nch; c0 += chk[ck++])
-				for (int i = 0; i < chk[ck]; i++)
-					nd->wq[((long)t * oc + o) * ic + c0 + i] = r->wq[((long)t * roc + o) * lanes + 32 * ck + i];
-		}
+	/* the node has its own copy: only it reads this record */
+	free(rec[ri].wq);
+	rec[ri].wq = NULL;
 	return nd;
 }
 
@@ -975,15 +992,85 @@ static void load_graph_bin(const char *path)
 struct tensor { int h, w, c, ps; uint8_t *u8; float *f; size_t cap; };	/* ps: bytes per pixel (0: c) */
 static struct tensor T[MAXTENS];
 
-/* tensor buffers live across runs: allocated on first use (page faults once, not per frame) */
+/* tensor memory: a pool of 64-byte aligned buffers. An op's output takes the smallest free buffer
+ * that fits (a new one only if none does); after a tensor's last reader has run its buffer goes
+ * back (plan_life). The outputs (float heads) and the caller's frame are never pooled. Every frame
+ * asks for the same sizes in the same order, so from the second frame on the same buffers come
+ * back: no allocations and no page faults per frame, and the peak is the largest live set, not
+ * the sum of all tensors */
+#define MAXPOOL 256
+static struct { uint8_t *p; size_t cap; int busy; } pool[MAXPOOL];
+static int npool;
+static size_t pool_bytes;
+static int last_use[MAXTENS];		/* the node after which a tensor's buffer goes back; -1 never */
+
+static uint8_t *pool_get(size_t n, size_t *cap)
+{
+	int b = -1;
+
+	for (int k = 0; k < npool; k++)
+		if (!pool[k].busy && pool[k].cap >= n && (b < 0 || pool[k].cap < pool[b].cap))
+			b = k;
+	if (b < 0) {
+		if (npool == MAXPOOL)
+			DIE("tensor pool: more than %d buffers", MAXPOOL);
+		b = npool++;
+		pool[b].cap = (n + 63) & ~(size_t)63;
+		if (posix_memalign((void **)&pool[b].p, 64, pool[b].cap))
+			DIE("out of memory (%zu bytes)", pool[b].cap);
+		pool_bytes += pool[b].cap;
+	}
+	pool[b].busy = 1;
+	*cap = pool[b].cap;
+	return pool[b].p;
+}
+
+static void pool_put(uint8_t *p)
+{
+	for (int k = 0; k < npool; k++)
+		if (pool[k].p == p) {
+			pool[k].busy = 0;
+			return;
+		}
+	DIE("tensor pool: buffer %p not from the pool", (void *)p);
+}
+
 static void need_u8(struct tensor *t, size_t n)
 {
-	if (t->cap < n) {
-		free(t->u8);
-		if (posix_memalign((void **)&t->u8, 64, (n + 63) & ~(size_t)63))
-			DIE("out of memory");
-		t->cap = n;
+	if (t->u8 && t->cap >= n)
+		return;
+	if (t->u8)
+		pool_put(t->u8);
+	t->u8 = pool_get(n, &t->cap);
+}
+
+/* the tensor's buffer back to the pool */
+static void tensor_done(int id)
+{
+	if (id > 0 && T[id].u8) {
+		pool_put(T[id].u8);
+		T[id].u8 = NULL, T[id].cap = 0;
 	}
+}
+
+/* after the graph passes: each tensor's last reader among the nodes that run (a concat reads a
+ * folded deconv's input itself). Outputs and the frame are never returned; a tensor nothing reads
+ * goes back right after its producer */
+static void plan_life(void)
+{
+	for (int t = 0; t < MAXTENS; t++)
+		last_use[t] = -2;
+	for (int i = 0; i < ng; i++) {
+		if (G[i].skip)
+			continue;
+		if (last_use[G[i].out] == -2)
+			last_use[G[i].out] = i;
+		for (int k = 0; k < G[i].nin; k++)
+			last_use[G[i].dec[k] ? G[G[i].dec[k] - 1].in[0] : G[i].in[k]] = i;
+	}
+	last_use[0] = -1;
+	for (int k = 0; k < nouts; k++)
+		last_use[outs[k]] = -1;
 }
 
 static void need_f(struct tensor *t, size_t n)
@@ -1316,6 +1403,8 @@ static void set_readers(void)
 				conv_readers_only[G[i].in[k]] = 0;
 }
 
+static uint8_t rec_cpu[MAXREC];	/* a conv record whose sums the CPU computes every frame */
+
 static void conv_op(const struct gnode *g, const struct qrec *r, const uint8_t *in, int H, int W, int C, int ips,
 		    struct tensor *o, int head)
 {
@@ -1348,6 +1437,8 @@ static void conv_op(const struct gnode *g, const struct qrec *r, const uint8_t *
 		need_f(o, (size_t)(npx * oc));
 	else
 		need_u8(o, (size_t)(npx * ops));
+	if (!nna)
+		rec_cpu[g->rec] = 1;		/* its weights stay (drop_weights) */
 	if (!nna || check) {
 		S = xmalloc(sizeof(*S) * (size_t)(npx * oc));
 		cpu_sums(r, in, H, W, C, ips, oc, k, pad, pb, st, S);
@@ -1382,8 +1473,9 @@ static void conv_op(const struct gnode *g, const struct qrec *r, const uint8_t *
 		memset(&rq, 0, sizeof(rq));
 		nd.rec = g->rec, nd.oc = oc, nd.ic = r->dw ? 1 : 32 * r->nic, nd.kh = nd.kw = k, nd.stride = st;
 		nd.pad = pad, nd.padval = 0, nd.dw = r->dw, nd.wq = r->wq;
-		/* nna_conv reads wq as [ky][kx][oc][ic] with oc = nd.oc; the records have oc = 32 nob */
-		if (oc != 32 * r->nob) {
+		/* nna_conv reads wq as [ky][kx][oc][ic] with oc = nd.oc; the records have oc = 32 nob. No wq
+		 * after drop_weights: nnaeng has the record's W encoded */
+		if (oc != 32 * r->nob && r->wq) {
 			int taps = k * k;
 
 			if (!wtrim[g->rec]) {
@@ -1532,10 +1624,12 @@ static void silu_conv(int i, const struct gnode *g, const struct tensor *x, stru
 		int oh, ow;
 
 		memset(&rq, 0, sizeof(rq));
-		rq.B = r->B, rq.Fl = r->fl, rq.lut = r->lut, rq.q = o->u8, rq.ps = ops;
+		rq.B = r->B, rq.Fl = r->fl, rq.q = o->u8, rq.ps = ops;
 #ifdef ONNA_MXU3
-		rq.vrq = vrq_of(i, r, oc, ops == 32);
+		rq.vrq = vrq_of(i, r, oc, oc == 16 && ops == 32);	/* not a 32-channel conv */
+		if (!be.direct)
 #endif
+			rq.lut = rec_lut(g->rec);
 		if (nna_conv(&be, x->u8, x->h, x->w, x->c, ips, nd, NULL, &rq, &oh, &ow) || oh != OH || ow != OW)
 			DIE("rec %d: nna_conv failed (%dx%d, want %dx%d)", g->rec, oh, ow, OH, OW);
 	}
@@ -1546,7 +1640,7 @@ static void silu_conv(int i, const struct gnode *g, const struct tensor *x, stru
 		if (!S || !q)
 			DIE("out of memory");
 		silu_sums(nd, x->u8, x->h, x->w, ips, S);
-		nna_requant_lut(S, (int)npx, oc, r->B, r->fl, r->lut, q);
+		nna_requant_lut(S, (int)npx, oc, r->B, r->fl, rec_lut(g->rec), q);
 		if (use_nna) {
 			for (long k = 0; k < npx * oc; k++)
 				if (q[k] != o->u8[k / oc * ops + k % oc])
@@ -1629,6 +1723,25 @@ static void dump_tensor(const char *dir, int id)
 	fclose(f);
 }
 
+/* on the camera, after the first frame: every engine conv's W is encoded in nnaeng's cache and every
+ * table built from weights (per-channel ops, deconvs, concats) exists, so the decoded int8 weights
+ * go: the records' (except convs the CPU runs every frame), the trimmed copies and the SiLU
+ * convs'. ONNAQ_KEEP_W=1 keeps them; ONNAQ_DROP_W=1 drops them on the host oracle too (test) */
+static int weights_dropped;
+
+static void drop_weights(void)
+{
+	for (int i = 0; i < nrec; i++) {
+		if (!rec_cpu[i])
+			free(rec[i].wq), rec[i].wq = NULL;
+		free(wtrim[i]), wtrim[i] = NULL;
+	}
+	for (int i = 0; i < ng; i++)
+		if (G[i].nn)
+			free(G[i].nn->wq), G[i].nn->wq = NULL;
+	weights_dropped = 1;
+}
+
 static void run(const uint8_t *rgb)
 {
 	const char *dump = getenv("ONNAQ_DUMP");
@@ -1640,11 +1753,24 @@ static void run(const uint8_t *rgb)
 		run_op(i);
 		if (dump && !G[i].skip)
 			dump_tensor(dump, G[i].out);
+		if (!G[i].skip) {	/* buffers whose last reader this was */
+			for (int k = 0; k < G[i].nin; k++) {
+				int t = G[i].dec[k] ? G[G[i].dec[k] - 1].in[0] : G[i].in[k];
+
+				if (last_use[t] == i)
+					tensor_done(t);
+			}
+			if (last_use[G[i].out] == i)
+				tensor_done(G[i].out);
+		}
 		if (timing) {
 			optime[G[i].op] += now_ms() - t0;
 			nodetime[i] += now_ms() - t0;
 		}
 	}
+	/* the camera (MXU3 backend); ONNAQ_DROP_W=1 forces it on any engine (host test with the oracle) */
+	if (use_nna && !check && !weights_dropped && !getenv("ONNAQ_KEEP_W") && (be.direct || getenv("ONNAQ_DROP_W")))
+		drop_weights();
 }
 
 static void run_op(int i)
@@ -1711,9 +1837,14 @@ static void run_op(int i)
 
 			if (y->h != x->h || y->w != x->w || y->c != x->c)
 				DIE("node %d: add of %dx%dx%d and %dx%dx%d", i, x->h, x->w, x->c, y->h, y->w, y->c);
-			if (!tabs[i]) {		/* the whole (a, b) -> out table, built once */
-				if (!(tabs[i] = malloc(65536)))
-					DIE("out of memory");
+			/* the whole (a, b) -> out table (64 KB), built once; with the MXU3 add it is only the
+			 * reference for its check, and is freed after it passes */
+			if (!tabs[i]
+#ifdef ONNA_MXU3
+			    && vadd_ok[i] <= 0
+#endif
+			   ) {
+				tabs[i] = xmalloc(65536);
 				for (int a = 0; a < 256; a++)
 					for (int b = 0; b < 256; b++)
 						tabs[i][a << 8 | b] = add_q(&addr[g->crec], a, b);
@@ -1737,6 +1868,8 @@ static void run_op(int i)
 				nna_vadd(va, vb, 65536, addr[g->crec].wa, addr[g->crec].wb, addr[g->crec].B, addr[g->crec].T, vo);
 				vadd_ok[i] = memcmp(vo, tabs[i], 65536) ? -1 : 1;
 				free(va), free(vb), free(vo);
+				if (vadd_ok[i] > 0)
+					free(tabs[i]), tabs[i] = NULL;
 			}
 			if (vadd_ok[i] > 0) {
 				nna_vadd(x->u8, y->u8, (int)(npx * x->c), addr[g->crec].wa, addr[g->crec].wb, addr[g->crec].B,
@@ -1978,17 +2111,20 @@ void onnaq_close(void)
 		free(padbuf[i]);
 		wtrim[i] = NULL, padbuf[i] = NULL;
 	}
-	for (int i = 0; i < MAXTENS; i++) {
-		if (i)			/* T[0] is the caller's frame */
-			free(T[i].u8);
+	for (int i = 0; i < MAXTENS; i++)	/* u8 buffers belong to the pool; T[0] is the caller's frame */
 		free(T[i].f);
-	}
+	for (int k = 0; k < npool; k++)
+		free(pool[k].p);
+	memset(pool, 0, sizeof(pool));
+	npool = 0, pool_bytes = 0;
 	free(stem_buf);
 	free(rgba);
 	stem_buf = NULL, rgba = NULL;
 	memset(T, 0, sizeof(T));
 	memset(G, 0, sizeof(G));
 	memset(rec, 0, sizeof(rec));
+	memset(rec_cpu, 0, sizeof(rec_cpu));
+	weights_dropped = 0;
 	nrec = ncat = nadd = ng = ntens = nouts = nanc = in_h = in_w = 0;
 	in_c = 3;
 	use_nna = 0;
@@ -2022,6 +2158,7 @@ int onnaq_open(const char *bin_path, const char *graph_path, int nna)
 		load_graph_bin(bin_path);		/* no graph file: the .bin's own op list */
 	fold();
 	set_readers();
+	plan_life();
 	die_jb = NULL;
 	return 0;
 }
@@ -2148,6 +2285,7 @@ int main(int argc, char **argv)
 	int nfold = getenv("ONNAQ_NOFOLD") ? 0 : fold();
 
 	set_readers();
+	plan_life();
 
 	fprintf(stderr, "onnaq: %d W blocks, %d concat records, %d ops (%d folded into convs), input %dx%d\n", nrec,
 		ncat, ng, nfold, in_w, in_h);
@@ -2164,12 +2302,15 @@ int main(int argc, char **argv)
 	 * on the camera a copy of yolov5n's first head alone is 3.9 MB) */
 	uint64_t first[4] = { 0 };
 	double best = 1e30, tot = 0;
+	int pool0 = 0;		/* pool buffers after run 0: later runs must not add any */
 
 	for (int it = 0; it < loops; it++) {
 		double t0 = now_ms(), dt;
 
 		run(rgb);
 		dt = now_ms() - t0;
+		if (!it)
+			pool0 = npool;
 		tot += dt;
 		best = dt < best ? dt : best;
 		for (int k = 0; k < nouts; k++) {
@@ -2210,6 +2351,9 @@ int main(int argc, char **argv)
 					printf("  node %2d %-8s rec %2d %3dx%3dx%3d -> %3d  %6.2f ms\n", i, nm[G[i].op], G[i].rec,
 					       T[G[i].in[0]].h, T[G[i].in[0]].w, T[G[i].in[0]].c, T[G[i].out].c, nodetime[i] / loops);
 	}
+	if (timing)
+		printf("  tensors: %d pooled buffers, %.2f MB%s\n", npool, pool_bytes / 1e6,
+		       npool != pool0 ? " (GREW after run 0)" : "");
 	printf("%d run%s: %.2f ms avg, %.2f ms best (%s)%s\n", loops, loops > 1 ? "s" : "", tot / loops, best, eng,
 	       loops > 1 ? ", heads identical in every run" : "");
 	return 0;
