@@ -7,12 +7,13 @@
  *   - onna (src/onna/) drives the NNA with the MXU3 NN instructions directly.
  *     It runs venus .bin models of the QSUM kind (ReLU, the NNA requantizes)
  *     with output byte-identical to venus on the camera; model_path names the
- *     .bin, and the onnaq text graph sits next to it (model.qgraph for model.bin,
- *     else model.bin.qgraph);
+ *     .bin; an onnaq text graph next to it (model.qgraph for model.bin, else
+ *     model.bin.qgraph) is optional: without one onnaq reads the .bin's own op list;
  *   - the frame is resized as ojzdl_resize does (= libjzdl's jzdl::resize), so a
  *     model trained for both SoCs sees the same input on the T31 and the T41;
  *   - every output is a YOLOv5-style head (NHWC, 3 anchors x (5 + classes)); the
- *     stride comes from its grid, the anchors from the graph (YOLOv5's defaults
+ *     stride comes from its grid, the anchors from the caller (param->anchors: rvd [motion]
+ *     anchors_<stride>, e.g. from the model's model.conf), else the graph, else YOLOv5's defaults
  *     for strides 8/16/32 when it names none).
  *
  * The NN instructions only run on core 0: detect pins its thread (rvd's
@@ -160,6 +161,7 @@ typedef struct {
     float conf_thresh, nms_thresh;
     int nheads, nc, stride[ONNA_MAX_HEADS];
     float anc[ONNA_MAX_HEADS][6];
+    float panc[3][6]; /* the caller's anchors for strides 8, 16, 32 (param->anchors; 0 = none) */
     uint8_t *rgb_row, *in_buf;
     ojzdl_resize *rs;
     const uint8_t *nv12;
@@ -211,7 +213,8 @@ static int pin_cpu0(cpu_set_t *old)
     return sched_setaffinity(0, sizeof(cs), &cs);
 }
 
-/* model.bin -> model.qgraph, else model.bin.qgraph */
+/* model.bin -> model.qgraph, else model.bin.qgraph, else "" (no graph file: onnaq builds the
+ * graph from the .bin's own op list) */
 static int graph_path(const char *model, char *out, size_t n)
 {
     size_t l = strlen(model);
@@ -219,7 +222,11 @@ static int graph_path(const char *model, char *out, size_t n)
         if ((size_t)snprintf(out, n, "%.*s.qgraph", (int)(l - 4), model) < n && !access(out, R_OK))
             return 0;
     }
-    return (size_t)snprintf(out, n, "%s.qgraph", model) < n ? 0 : -1;
+    if ((size_t)snprintf(out, n, "%s.qgraph", model) >= n)
+        return -1;
+    if (access(out, R_OK))
+        out[0] = 0;
+    return 0;
 }
 
 void *hal_jzdl_create(const rss_ivs_jzdl_param_t *param)
@@ -254,14 +261,15 @@ void *hal_jzdl_create(const rss_ivs_jzdl_param_t *param)
     /* loading does no NN work, but keep every runtime call on core 0 */
     int restore = !pin_cpu0(&old);
 #ifdef ONNA_MXU3
-    rc = onnaq_open(param->model_path, gpath, 1);
+    rc = onnaq_open(param->model_path, gpath[0] ? gpath : NULL, 1);
 #else /* host test build: the same network on the CPU */
-    rc = onnaq_open(param->model_path, gpath, 0);
+    rc = onnaq_open(param->model_path, gpath[0] ? gpath : NULL, 0);
 #endif
     if (restore)
         sched_setaffinity(0, sizeof(old), &old);
     if (rc) {
-        HAL_LOG_ERR("ONNA: failed to load %s + %s: %s", param->model_path, gpath, onnaq_error());
+        HAL_LOG_ERR("ONNA: failed to load %s + %s: %s", param->model_path, gpath[0] ? gpath : "(graph from the .bin)",
+                    onnaq_error());
         free(c);
         return NULL;
     }
@@ -272,6 +280,7 @@ void *hal_jzdl_create(const rss_ivs_jzdl_param_t *param)
         goto bad_heads;
     /* head shapes are known after the first run (heads_setup) */
 
+    memcpy(c->panc, param->anchors, sizeof(c->panc));
     c->frame_w = param->width;
     c->frame_h = param->height;
     c->conf_thresh = param->conf_threshold;
@@ -291,7 +300,7 @@ void *hal_jzdl_create(const rss_ivs_jzdl_param_t *param)
     return c;
 
 bad_heads:
-    HAL_LOG_ERR("ONNA: %s: %d outputs (1..%d supported)", gpath, c->nheads, ONNA_MAX_HEADS);
+    HAL_LOG_ERR("ONNA: %s: %d outputs (1..%d supported)", param->model_path, c->nheads, ONNA_MAX_HEADS);
     onnaq_close();
     in_use = 0;
     free(c);
@@ -312,8 +321,15 @@ static int heads_setup(onna_ctx_t *c)
         c->stride[k] = c->input_h / h;
         if (c->stride[k] * h != c->input_h || c->stride[k] * w != c->input_w)
             goto bad;
-        if (onnaq_anchors(c->stride[k], c->anc[k])) {
-            HAL_LOG_ERR("ONNA: no anchors for stride %d (add an anchors line to the graph)",
+        /* anchors: the caller's ([motion] anchors_<stride>, e.g. from the model's model.conf),
+         * else the graph's anchors line, else YOLOv5's (onnaq_anchors) */
+        int si = c->stride[k] == 8 ? 0 : c->stride[k] == 16 ? 1 : c->stride[k] == 32 ? 2 : -1, set = 0;
+        for (int j = 0; si >= 0 && j < 6; j++)
+            set |= c->panc[si][j] != 0.0f;
+        if (set) {
+            memcpy(c->anc[k], c->panc[si], sizeof(c->anc[k]));
+        } else if (onnaq_anchors(c->stride[k], c->anc[k])) {
+            HAL_LOG_ERR("ONNA: no anchors for stride %d ([motion] anchors_%d or the graph)", c->stride[k],
                         c->stride[k]);
             return -1;
         }

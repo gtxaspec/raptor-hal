@@ -1,9 +1,11 @@
 /*
- * onnaq: run a venus .bin of the QSUM kind (the NNA requantizes every conv; ReLU; depthwise 3x3,
- * per-channel 1x1, 2x2 maxpool, ConvTranspose 2x2/2, concat) on the T41 NNA, or on the CPU.
- * First model: the thingino-ai person/pet/package detector (416x320, 2 heads).
+ * onnaq: run a venus .bin of the QSUM kind (the NNA requantizes every conv; ReLU; dense and
+ * depthwise 3x3 (stride 1/2), per-channel 1x1, 2x2 maxpool, ConvTranspose 2x2/2, concat, adds) on the
+ * T41 NNA, or on the CPU: the thingino-ai model types (persondet, YOLO-N, YOLOX-Nano, MobileNetV4).
  *
- *   onnaq [-e cpu|oracle|nna] [-c] [-T] [-n N] model.bin model.qgraph frame.rgb prefix
+ *   onnaq [-e cpu|oracle|nna] [-c] [-T] [-n N] model.bin [model.qgraph | -] frame.rgb prefix
+ * "-" (or onnaq_open(bin, NULL, nna)): the graph comes from the .bin's own op list (load_graph_bin);
+ * a .qgraph (mkgraphq.py) is still read when given, e.g. for its anchors lines.
  * With -DONNAQ_LIB there is no main: onnaq.h is the API (raptor-hal's onna backend).
  *   -e  where convs run: cpu (integer loops), oracle (the NNA driver against the host test
  *       oracle; ORACLE=1 build) or nna (the real NNA; T41 build, pins itself to CPU0)
@@ -12,7 +14,8 @@
  *   -n  run N times (timing); the heads must be identical in every run
  * frame.rgb: H x W x 3 RGB bytes (the network size). Writes prefix.<k>.f32 per head (NHWC float).
  *
- * The arithmetic (docs/nna-runtime.md, "QSUM models"): conv q = clamp(floor((4 S + B) / T) + 128),
+ * The arithmetic (docs/nna-runtime.md, "QSUM models"): conv q = clamp(floor(((S << sh) + B) / T) + 128), sh
+ * from the op list (usually 2),
  * S = sum (raw - 128) * x over raw input bytes x; heads f32(S + B) * Fl; 2x2 maxpool = byte max;
  * concat input i = rint(x * s_i / s_out); padding 0. All numbers come from the .bin.
  *
@@ -425,6 +428,229 @@ static uint8_t add_q(const struct addrec *r, int a, int b)
 		q--;					/* floor division */
 	q += 128;
 	return (uint8_t)(q < 0 ? 0 : q > 255 ? 255 : q);
+}
+
+/* ---- the graph from the .bin alone: the converter's op list in its header
+ *
+ * Each op: <type> <out> "UNIQUE" <type> <out> ["AIE": NNA ops; CPU ops such as UpSample have none],
+ * then (name, dtype, layout) per input and output, then its kernel string and record. A plain conv
+ * record ("Convolution/base_i8/...", the stem's "first_layer_i8", a head's "base_i8of"): 01, int32
+ * 2, int32 1, <name>, then int32 fields: [2] requant shift, [7] 2 when a pads array follows, [8] in
+ * channels, [9] out channels, then length-prefixed arrays: pads (top, bottom, left, right; only
+ * when [7] = 2), kernel, stride. W blocks, add records and concat records are numbered in op order.
+ * A ConvTranspose is an UpSample op (CPU) plus a 2x2 conv: one deconv2 node. The input shape
+ * follows the first "data_1" name: int32 4, 1, H, W, C. */
+struct bstr { long off; int len; char s[96]; };
+
+static int is_dtype(const char *s)
+{
+	return !strcmp(s, "UINT8") || !strcmp(s, "INT8") || !strcmp(s, "FP32") || !strcmp(s, "FLOAT32") ||
+	       !strcmp(s, "INT32") || !strcmp(s, "INT16") || !strcmp(s, "UINT16");
+}
+
+static int tname(char names[][96], int *n, const char *s)
+{
+	for (int i = 0; i < *n; i++)
+		if (!strcmp(names[i], s))
+			return i;
+	if (*n == MAXTENS)
+		DIE("graph: more than %d tensors", MAXTENS);
+	{
+		size_t m = strlen(s) < 95 ? strlen(s) : 95;
+
+		memcpy(names[*n], s, m);
+		names[*n][m] = 0;
+	}
+	return (*n)++;
+}
+
+/* plain conv record after its kernel string at e: 0 and the fields, or -1 */
+static int conv_rec(const uint8_t *b, long n, long e, int *sh, int *ic, int *oc, int pads[4], int *k, int *st)
+{
+	int32_t nl, f[64];
+	long p;
+	int q, arr = 0;
+
+	if (e + 13 > n || b[e] != 1 || rd32(b + e + 1) != 2 || rd32(b + e + 5) != 1)
+		return -1;
+	nl = rd32(b + e + 9);
+	if (nl <= 0 || nl > 256 || e + 13 + nl + 4L * 64 > n)
+		return -1;
+	p = e + 13 + nl;
+	for (int i = 0; i < 64; i++)
+		f[i] = rd32(b + p + 4L * i);
+	*sh = f[2], *ic = f[8], *oc = f[9];
+	pads[0] = pads[1] = pads[2] = pads[3] = 0;
+	*k = *st = 1;
+	q = 10;
+	for (int a = 0; a < (f[7] == 2 ? 4 : 3); a++) {
+		int len = f[q];
+
+		if (len < 0 || len > 8 || q + 1 + len >= 64)
+			return -1;
+		if (f[7] == 2 && a == 0)
+			for (int j = 0; j < 4 && j < len; j++)
+				pads[j] = f[q + 1 + j];
+		else if (arr == 0)
+			*k = f[q + 1], arr = 1;
+		else if (arr == 1)
+			*st = f[q + 1], arr = 2;
+		q += 1 + len;
+	}
+	return 0;
+}
+
+static void load_graph_bin(const char *path)
+{
+	FILE *fp = fopen(path, "rb");
+	uint8_t *b;
+	long n;
+	struct bstr *S;
+	int ns = 0, cap = 1 << 15, nt = 0, kconv = 0, kadd = 0, kcat = 0, first = 1;
+	static char names[MAXTENS][96];
+	static int chn[MAXTENS], upsrc[MAXTENS];
+
+	if (!fp || fseek(fp, 0, SEEK_END) || (n = ftell(fp)) <= 0)
+		DIE("cannot read %s", path);
+	rewind(fp);
+	if (!(b = malloc((size_t)n)) || fread(b, 1, (size_t)n, fp) != (size_t)n || !(S = malloc(sizeof(*S) * cap)))
+		DIE("cannot read %s", path);
+	fclose(fp);
+	for (long o = 0; o + 4 < n && o < (2L << 20); o++) {		/* the header's names, in order */
+		char t[260];
+		int L = dstr(b, n, o, t, sizeof(t));
+
+		if (L < 1)
+			continue;
+		if (ns == cap && !(S = realloc(S, sizeof(*S) * (cap *= 2))))
+			DIE("out of memory");
+		S[ns].off = o, S[ns].len = L;
+		{
+			size_t m = (size_t)L < sizeof(S[ns].s) - 1 ? (size_t)L : sizeof(S[ns].s) - 1;	/* names are short */
+
+			memcpy(S[ns].s, t, m);
+			S[ns].s[m] = 0;
+		}
+		ns++;
+		o += 4 + L - 1;
+	}
+	ng = nouts = nanc = 0;
+	in_h = in_w = 0;
+	for (int i = 0; i < ns && !in_h; i++)
+		if (!strcmp(S[i].s, "data_1")) {
+			long p = S[i].off + 4 + S[i].len;
+
+			if (p + 20 <= n && rd32(b + p) == 4 && rd32(b + p + 4) == 1)
+				in_h = rd32(b + p + 8), in_w = rd32(b + p + 12);
+		}
+	if (in_h <= 0 || in_w <= 0)
+		DIE("%s: no input shape after data_1", path);
+	for (int t = 0; t < MAXTENS; t++)
+		upsrc[t] = -1;
+	tname(names, &nt, "data_1");
+	chn[0] = 3;
+	for (int i = 0; i + 5 < ns;) {
+		int nna_op, j, nin = 0, ins[8], out, kix;
+		const char *ty = S[i].s;
+		long e;
+
+		if (strcmp(S[i + 2].s, "UNIQUE") || strcmp(ty, S[i + 3].s) || strcmp(S[i + 1].s, S[i + 4].s)) {
+			i++;
+			continue;
+		}
+		nna_op = !strcmp(S[i + 5].s, "AIE");
+		j = i + (nna_op ? 6 : 5);
+		int tr[16], ntr = 0;
+
+		while (j + 2 < ns && is_dtype(S[j + 1].s) && S[j + 2].s[0] == 'N' && ntr < 16)
+			tr[ntr++] = j, j += 3;
+		if (j >= ns || ntr < 1)
+			DIE("op %s %s: no tensors", ty, S[i + 1].s);
+		kix = j;
+		e = S[kix].off + 4 + S[kix].len;
+		for (int k = 0; k < ntr - 1 && nin < 8; k++)
+			ins[nin++] = tname(names, &nt, S[tr[k]].s);
+		out = tname(names, &nt, S[i + 1].s);
+
+		struct gnode g;
+
+		memset(&g, 0, sizeof(g));
+		g.out = out, g.in[0] = nin ? ins[0] : 0, g.nin = 1;
+		if (!strcmp(ty, "UpSample")) {			/* half of a ConvTranspose, see below */
+			if (nin != 1)
+				DIE("UpSample %s: %d inputs", S[i + 1].s, nin);
+			upsrc[out] = ins[0];
+			i = kix + 1;
+			continue;
+		} else if (!strcmp(ty, "FormatConvert")) {	/* the float head outputs: nothing to run */
+			i = kix + 1;
+			continue;
+		} else if (!strcmp(ty, "Convolution")) {
+			int sh, ic, oc, pd[4], k, st;
+			const struct qrec *r;
+
+			if (kconv >= nrec)
+				DIE("more Convolution ops than W blocks (%d)", nrec);
+			r = &rec[kconv];
+			g.rec = kconv++;
+			if (conv_rec(b, n, e, &sh, &ic, &oc, pd, &k, &st))
+				DIE("conv %s: record not understood", S[i + 1].s);
+			if (first) {				/* the stem: 3x3/2 on the image */
+				first = 0;
+				g.op = G_STEM, g.in[0] = 0, g.oc = oc;
+			} else if (!strncmp(S[kix].s, "Convolution/base_i8of", 21)) {
+				g.op = G_HEAD, g.oc = oc, g.ic = chn[g.in[0]];
+				if (nouts == 4)
+					DIE("more than 4 heads");
+				outs[nouts++] = out;
+			} else if (r->kh == 2) {		/* UpSample + 2x2 conv = ConvTranspose 2x2/2 */
+				if (upsrc[g.in[0]] < 0)
+					DIE("2x2 conv %s without an UpSample before it", S[i + 1].s);
+				g.op = G_DECONV, g.in[0] = upsrc[g.in[0]], g.oc = oc;
+			} else if (r->dw && r->kh == 1) {
+				g.op = G_PC, g.oc = oc;
+			} else {
+				g.op = G_CONV, g.oc = oc, g.ic = r->dw ? oc : ic, g.k = r->kh, g.pad = pd[0], g.dw = r->dw;
+				g.stride = st, g.padb = pd[1];
+				if (k != r->kh || st < 1 || st > 2 || pd[0] != pd[2] || pd[1] != pd[3])
+					DIE("conv %s: k %d (W %d), stride %d, pads %d %d %d %d", S[i + 1].s, k, r->kh, st,
+					    pd[0], pd[1], pd[2], pd[3]);
+			}
+			chn[out] = g.op == G_HEAD ? 0 : oc;
+		} else if (!strcmp(ty, "Add")) {
+			if (nin != 2)
+				DIE("Add %s: %d inputs", S[i + 1].s, nin);
+			g.op = G_ADD, g.nin = 2, g.in[1] = ins[1], g.crec = kadd++;
+			if (g.crec >= nadd)
+				DIE("more Add ops than add records (%d)", nadd);
+			chn[out] = chn[ins[0]];
+		} else if (!strcmp(ty, "Concat")) {
+			if (nin < 2 || nin > 4)
+				DIE("Concat %s: %d inputs", S[i + 1].s, nin);
+			g.op = G_CAT, g.nin = nin, g.crec = kcat++;
+			chn[out] = 0;
+			for (int k = 0; k < nin; k++)
+				g.in[k] = ins[k], chn[out] += chn[ins[k]];
+			if (g.crec >= ncat || cat_n[g.crec] != nin)
+				DIE("Concat %s: concat record %d", S[i + 1].s, g.crec);
+		} else if (!strcmp(ty, "Pooling")) {
+			g.op = G_POOL;
+			chn[out] = chn[g.in[0]];
+		} else {
+			DIE("op type %s (%s) not supported", ty, S[i + 1].s);
+		}
+		if (ng == MAXNODE)
+			DIE("graph too long");
+		G[ng++] = g;
+		i = kix + 1;
+	}
+	ntens = nt;
+	free(S);
+	free(b);
+	if (!ng || !nouts)
+		DIE("%s: no ops / heads in the header", path);
+	if (kconv != nrec || kadd != nadd)
+		DIE("%s: %d convs for %d W blocks, %d adds for %d add records", path, kconv, nrec, kadd, nadd);
 }
 
 /* ---- tensors and CPU ops */
@@ -1291,7 +1517,10 @@ int onnaq_open(const char *bin_path, const char *graph_path, int nna)
 #endif
 	}
 	load_bin(bin_path);
-	load_graph(graph_path);
+	if (graph_path && *graph_path && strcmp(graph_path, "-"))
+		load_graph(graph_path);
+	else
+		load_graph_bin(bin_path);		/* no graph file: the .bin's own op list */
 	fold();
 	set_readers();
 	die_jb = NULL;
@@ -1404,7 +1633,10 @@ int main(int argc, char **argv)
 	mallopt(M_MMAP_THRESHOLD, 64 << 20);	/* tensors from the heap, not fresh mmaps */
 	mallopt(M_TRIM_THRESHOLD, 128 << 20);
 	load_bin(argv[ai]);
-	load_graph(argv[ai + 1]);
+	if (strcmp(argv[ai + 1], "-"))
+		load_graph(argv[ai + 1]);
+	else
+		load_graph_bin(argv[ai]);		/* "-": the graph from the .bin's own op list */
 	int nfold = getenv("ONNAQ_NOFOLD") ? 0 : fold();
 
 	set_readers();
