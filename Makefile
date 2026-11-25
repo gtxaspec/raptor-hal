@@ -110,6 +110,7 @@ endif
 CORE_SRCS := src/hal_caps.c
 
 VIDEO_SRCS := src/hal_encoder.c \
+              src/hal_tune.c \
               src/hal_framesource.c \
               src/hal_isp.c \
               src/hal_osd.c \
