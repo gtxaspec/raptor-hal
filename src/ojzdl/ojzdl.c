@@ -72,6 +72,8 @@ typedef struct {
 	uint8_t simd;          /* MXU2 kernel applies to this layer */
 	int32_t *q;            /* conv: bias[co], mult[co], shift[co] decoded once */
 	int32_t *qtab;         /* first conv MXU2: even/odd-arranged q [ojzdl_mxu2.h] */
+	int32_t *fix;          /* 52 on MXU2: outputs whose pair sums can leave int16, redone in C */
+	int nfix;
 	size_t scratch;        /* scratch bytes this layer needs */
 	uint64_t ns;
 } layer_t;
@@ -286,6 +288,28 @@ static void mark_simd(ojzdl_net *n)
 			l->simd = (uint8_t)(ci % 16 == 0 && 2L * maxw * (1L << (P[13] - 1)) <= 32767);
 			continue;
 		}
+		if (l->type == T_PW8) {
+			/* int32 sums on the head kernels. A DOTPS.h pair sum can leave int16 only
+			 * if (|w0| + |w1|) * 2^(bits_in-1) > 32767 (8 bits: both weights -128);
+			 * such outputs are listed and redone in C after the kernel */
+			int ci = n->B[l->bottom[0]].c, k;
+			l->simd = (uint8_t)(ci % 16 == 0);
+			for (o = 0; l->simd && o < P[0]; o++) {
+				const int8_t *w = l->w + (size_t)o * ci;
+				for (k = 0; k < ci; k += 2)
+					if ((long)(abs(w[k]) + abs(w[k + 1])) << (P[14] - 1) > 32767) {
+						int32_t *f = realloc(l->fix, (size_t)(l->nfix + 1) * sizeof(*f));
+						if (!f) {
+							l->simd = 0;
+							break;
+						}
+						l->fix = f;
+						l->fix[l->nfix++] = o;
+						break;
+					}
+			}
+			continue;
+		}
 		if (l->type == T_DW) {
 			/* equal strides 1 or 2, pads 0/1 (checked at load); pad slot (pair 4,
 			 * slot 0) weight 0 */
@@ -455,6 +479,7 @@ void ojzdl_free(ojzdl_net *n)
 			free(n->L[i].w);
 			free(n->L[i].q);
 			free(n->L[i].qtab);
+			free(n->L[i].fix);
 			free(n->L[i].wp_own);
 		}
 	free(n->arena);
@@ -966,11 +991,33 @@ static int32_t dot8(const int8_t *a, const int8_t *b, int n)
 	return s;
 }
 
+/* type 52 on MXU2: exact int32 sums from the head kernels, PW8_CHUNK pixels at
+ * a time into scratch, then the int32 requant [plan_memory] */
+#define PW8_CHUNK 32
+
 static void conv_pw(const ojzdl_net *n, const layer_t *l, const blob_t *x, int8_t *dst, int bits)
 {
 	int ci = x->c, co = l->p[0], o;
 	size_t px = 0, npx = (size_t)x->h * x->w;
 #if OJZDL_HAVE_MXU2
+	if (n->simd && l->simd && l->type == T_PW8) {
+		int32_t *acc = (int32_t *)(void *)n->scratch;
+		for (; px < npx; px += PW8_CHUNK) {
+			size_t k, m = npx - px < PW8_CHUNK ? npx - px : PW8_CHUNK;
+			if (ci <= 256 && co <= 256)
+				ojzdl_head4_mxu2(x->i8 + px * ci, m, ci, l->w, co, acc);
+			else
+				ojzdl_head_mxu2(x->i8 + px * ci, m, ci, l->w, co, acc);
+			for (k = 0; k < m; k++) {
+				int f;
+				for (f = 0; f < l->nfix; f++)
+					acc[k * co + l->fix[f]] = dot8(x->i8 + (px + k) * ci, l->w + (size_t)l->fix[f] * ci, ci);
+				for (o = 0; o < co; o++)
+					dst[(px + k) * co + o] = requant32(acc[k * co + o], l->q, co, o, bits);
+			}
+		}
+		return;
+	}
 	if (n->simd && l->simd)
 		px = ojzdl_pw_mxu2(x->i8, npx, ci, l->wp, co,
 		                   l->blob[1], l->blob[2], l->blob[3], bits, dst);
@@ -1141,6 +1188,8 @@ static size_t layer_scratch(const ojzdl_net *n, const layer_t *l)
 		return (size_t)2 * x->w * y->c;
 	case T_HEAD: case T_HEAD8:
 		return OJZDL_HAVE_MXU2 && l->simd ? (size_t)x->h * x->w * y->c * sizeof(int32_t) : 0;
+	case T_PW8:
+		return OJZDL_HAVE_MXU2 && l->simd ? (size_t)PW8_CHUNK * y->c * sizeof(int32_t) : 0;
 	case T_DW:
 		return OJZDL_HAVE_MXU2 && l->simd
 			? (size_t)(x->h + l->p[8] + l->p[9]) * (x->w + l->p[10] + l->p[11]) * x->c : 0;
