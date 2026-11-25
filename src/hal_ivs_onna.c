@@ -135,25 +135,6 @@ static void nms(box_vec_t *in, box_vec_t *out, unsigned char *gone, float thr)
     }
 }
 
-/* NV12 -> RGB one row at a time (the formula of hal_ivs_jzdl.cpp's nv12_to_rgb) */
-static inline uint8_t clamp_u8(int v)
-{
-    return v < 0 ? 0 : (v > 255 ? 255 : (uint8_t)v);
-}
-
-static void nv12_row_to_rgb(const uint8_t *nv12, uint8_t *rgb, int w, int h, int row)
-{
-    const uint8_t *yp = nv12 + (size_t)row * w;
-    const uint8_t *uvp = nv12 + (size_t)w * h + (size_t)(row / 2) * w;
-
-    for (int col = 0; col < w; col++) {
-        int y = yp[col], u = uvp[col & ~1] - 128, v = uvp[col | 1] - 128;
-        rgb[col * 3 + 0] = clamp_u8(y + ((359 * v) >> 8));
-        rgb[col * 3 + 1] = clamp_u8(y - ((88 * u + 183 * v) >> 8));
-        rgb[col * 3 + 2] = clamp_u8(y + ((454 * u) >> 8));
-    }
-}
-
 #define ONNA_MAX_HEADS 4
 
 typedef struct {
@@ -162,9 +143,8 @@ typedef struct {
     int nheads, nc, stride[ONNA_MAX_HEADS];
     float anc[ONNA_MAX_HEADS][6];
     float panc[3][6]; /* the caller's anchors for strides 8, 16, 32 (param->anchors; 0 = none) */
-    uint8_t *rgb_row, *in_buf;
+    uint8_t *in_buf;
     ojzdl_resize *rs;
-    const uint8_t *nv12;
     box_vec_t candidates, detections;
     unsigned char *gone;
     size_t gone_cap;
@@ -176,18 +156,10 @@ typedef struct {
 
 static int in_use;
 
-static const uint8_t *nv12_get_row(void *ctx, int y)
-{
-    onna_ctx_t *c = ctx;
-    nv12_row_to_rgb(c->nv12, c->rgb_row, c->frame_w, c->frame_h, y);
-    return c->rgb_row;
-}
-
 static void ctx_free(onna_ctx_t *c)
 {
     if (!c)
         return;
-    free(c->rgb_row);
     free(c->in_buf);
     ojzdl_resize_free(c->rs);
     free(c->candidates.v);
@@ -285,10 +257,9 @@ void *hal_jzdl_create(const rss_ivs_jzdl_param_t *param)
     c->frame_h = param->height;
     c->conf_thresh = param->conf_threshold;
     c->nms_thresh = param->nms_threshold;
-    c->rgb_row = malloc((size_t)c->frame_w * 3);
     c->in_buf = malloc((size_t)c->input_w * c->input_h * 3);
     c->rs = ojzdl_resize_create(c->frame_w, c->frame_h, c->input_w, c->input_h);
-    if (!c->rgb_row || !c->in_buf || !c->rs) {
+    if (!c->in_buf || !c->rs) {
         onnaq_close();
         in_use = 0;
         ctx_free(c);
@@ -358,8 +329,7 @@ int hal_jzdl_detect(void *handle, const uint8_t *nv12_data, rss_ivs_detect_resul
     }
 
     double t0 = now_ms();
-    c->nv12 = nv12_data;
-    if (ojzdl_resize_rows(c->rs, nv12_get_row, c, c->in_buf))
+    if (ojzdl_resize_nv12(c->rs, nv12_data, c->in_buf))
         return RSS_ERR;
     double t1 = now_ms();
     if (onnaq_run(c->in_buf)) {
