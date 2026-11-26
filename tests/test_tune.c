@@ -7,6 +7,7 @@
 
 #include "greatest.h"
 #include "hal_tune.h"
+#include "log_capture.h"
 
 #define MAX_CALLS 64
 
@@ -167,6 +168,34 @@ TEST mode_change_is_tracked_from_day(void)
     PASS();
 }
 
+TEST a_switch_replay_with_failures_warns_once(void)
+{
+    hal_tune_t t;
+    reset(&t);
+    log_capture_reset();
+    hal_tune_record(&t, HAL_TUNE_BRIGHTNESS, 150);
+    hal_tune_record(&t, HAL_TUNE_MAX_AGAIN, 120);
+    calls.ret_for[HAL_TUNE_BRIGHTNESS] = -EIO;
+    calls.ret_for[HAL_TUNE_MAX_AGAIN] = -EIO;
+    ASSERT_EQ(2, hal_tune_replay_switch(&t, &ops, NULL, 1, RSS_ISP_NIGHT));
+    ASSERT_EQ(1, logged.warns);
+    ASSERT(strstr(logged.msg, "sensor 1: 2 tuning value(s) not restored after the night switch"));
+    PASS();
+}
+
+TEST a_clean_switch_replay_is_silent(void)
+{
+    hal_tune_t t;
+    reset(&t);
+    log_capture_reset();
+    hal_tune_record(&t, HAL_TUNE_BRIGHTNESS, 150);
+    calls.ret_for[HAL_TUNE_SINTER] = RSS_ERR_NOTSUP;
+    ASSERT_EQ(0, hal_tune_replay_switch(&t, &ops, NULL, 0, RSS_ISP_DAY));
+    ASSERT_EQ(1, calls.n);
+    ASSERT_EQ(0, logged.warns);
+    PASS();
+}
+
 SUITE(tune_suite)
 {
     RUN_TEST(nothing_recorded_replays_nothing);
@@ -177,4 +206,6 @@ SUITE(tune_suite)
     RUN_TEST(failures_are_counted_unsupported_is_not);
     RUN_TEST(replay_targets_the_given_sensor);
     RUN_TEST(mode_change_is_tracked_from_day);
+    RUN_TEST(a_switch_replay_with_failures_warns_once);
+    RUN_TEST(a_clean_switch_replay_is_silent);
 }
