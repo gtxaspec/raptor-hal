@@ -17,6 +17,7 @@
 
 #include "hal_internal.h"
 #include "hal_direct.h"
+#include "hal_mode.h"
 
 /* Per-SoC caps (defined in hal_caps.c) */
 extern const rss_hal_caps_t g_hal_caps;
@@ -188,15 +189,9 @@ int hal_isp_get_running_mode(void *ctx, rss_isp_mode_t *mode);
 
 static int running_mode_result(int ret, rss_isp_mode_t mode)
 {
-    rss_isp_mode_t now;
-    if (hal_isp_get_running_mode(NULL, &now) != RSS_OK)
-        return ret;
-    if (now != mode) {
-        HAL_LOG_WARN("ISP did not switch to %s mode (set returned %d; no tuning bin for it?)",
-                     mode == RSS_ISP_NIGHT ? "night" : "day", ret);
-        return RSS_ERR_IO;
-    }
-    return RSS_OK;
+    rss_isp_mode_t now = mode;
+    int got = hal_isp_get_running_mode(NULL, &now);
+    return hal_mode_switch_result(ret, got, now, mode);
 }
 
 int hal_isp_set_running_mode(void *ctx, rss_isp_mode_t mode)

@@ -1,3 +1,4 @@
+#include "hal_log.h"
 #include "hal_tune.h"
 
 void hal_tune_record(hal_tune_t *t, hal_tune_key_t key, int val)
@@ -46,5 +47,15 @@ int hal_tune_replay(const hal_tune_t *t, const hal_tune_ops_t *ops, void *ctx, i
         if (ret != RSS_OK && ret != RSS_ERR_NOTSUP)
             failed++;
     }
+    return failed;
+}
+
+int hal_tune_replay_switch(const hal_tune_t *t, const hal_tune_ops_t *ops, void *ctx, int sensor,
+                           rss_isp_mode_t mode)
+{
+    int failed = hal_tune_replay(t, ops, ctx, sensor);
+    if (failed)
+        HAL_LOG_WARN("sensor %d: %d tuning value(s) not restored after the %s switch", sensor,
+                     failed, mode == RSS_ISP_NIGHT ? "night" : "day");
     return failed;
 }

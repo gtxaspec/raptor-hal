@@ -119,6 +119,7 @@ VIDEO_SRCS := src/hal_encoder.c \
               src/hal_framesource.c \
               src/hal_isp.c \
               src/hal_direct.c \
+              src/hal_mode.c \
               src/hal_osd.c \
               src/hal_gpio.c \
               src/hal_ivs.c \

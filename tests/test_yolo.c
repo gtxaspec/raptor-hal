@@ -8,28 +8,14 @@
  * its exact length, so a read past it is an ASan error.
  */
 
-#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "greatest.h"
 #include "hal_ivs_yolo.h"
+#include "log_capture.h"
 
 #include "yolo_vectors.h"
-
-/* hal_common.c's logger, counted */
-static int log_errors;
-
-static void count_log(int level, const char *file, int line, const char *fmt, ...)
-{
-    (void)file;
-    (void)line;
-    (void)fmt;
-    if (level == HAL_LOG_LVL_ERR)
-        log_errors++;
-}
-
-rss_hal_log_func_t rss_hal_log_fn = count_log;
 
 /* one head, background everywhere but the given slots */
 static float *head(const yv_slot_t *s, int ns, int gh, int gw)
@@ -131,11 +117,11 @@ static enum greatest_test_res run(const rss_ivs_jzdl_param_t *p, int iw, int ih,
     float *out = pack(hs, nh, &len);
 
     hal_yolo_init(&y, p, iw, ih);
-    log_errors = 0;
+    log_capture_reset();
     int ret = hal_yolo_run(&y, out, len, 640, 360, &r);
     free(out);
     ASSERT_EQ_FMT(RSS_OK, ret, "%d");
-    ASSERT_EQ_FMT(0, log_errors, "%d");
+    ASSERT_EQ_FMT(0, logged.errors, "%d");
     ASSERT_EQ_FMT(nh, y.nheads, "%d");
     CHECK_CALL(same(&r, want, n));
     PASS();
@@ -312,12 +298,12 @@ TEST bad_output_refused_logged_once(void)
 
     param(&p, 0.5f, 0.45f);
     hal_yolo_init(&y, &p, YV_TWO_W, YV_TWO_H);
-    log_errors = 0;
+    log_capture_reset();
     out[len - 1] = 3.0f; /* the trailer's head count off by one */
     ASSERT_EQ(RSS_ERR, hal_yolo_run(&y, out, len, 640, 360, &r));
     ASSERT_EQ_FMT(0, r.count, "%d");
     ASSERT_EQ(RSS_ERR, hal_yolo_run(&y, out, len, 640, 360, &r));
-    ASSERT_EQ_FMT(1, log_errors, "%d");
+    ASSERT_EQ_FMT(1, logged.errors, "%d");
 
     hal_yolo_init(&y, &p, YV_TWO_W, YV_TWO_H);
     out[len - 1] = 2.0f;
@@ -359,7 +345,7 @@ TEST preprocess_must_match_the_backend(void)
 
     memset(&p, 0, sizeof(p));
     strcpy(p.model_path, "m.bin");
-    log_errors = 0;
+    log_capture_reset();
     /* zeroed param = stretch, what the JZDL backends do */
     ASSERT(hal_yolo_preprocess_ok(&p, RSS_IVS_PREPROCESS_STRETCH));
     ASSERT_FALSE(hal_yolo_preprocess_ok(&p, RSS_IVS_PREPROCESS_LETTERBOX));
@@ -368,7 +354,7 @@ TEST preprocess_must_match_the_backend(void)
     ASSERT(hal_yolo_preprocess_ok(&p, RSS_IVS_PREPROCESS_LETTERBOX));
     p.preprocess = (rss_ivs_preprocess_t)7;
     ASSERT_FALSE(hal_yolo_preprocess_ok(&p, RSS_IVS_PREPROCESS_STRETCH));
-    ASSERT_EQ_FMT(3, log_errors, "%d"); /* one line per refusal */
+    ASSERT_EQ_FMT(3, logged.errors, "%d"); /* one line per refusal */
     PASS();
 }
 
