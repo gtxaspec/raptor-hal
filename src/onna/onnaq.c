@@ -380,7 +380,7 @@ struct gnode {
 	int stride, padb;	/* a conv: stride, and the bottom/right pad (pad = top/left) */
 	int skip;		/* folded into the conv before it, or a deconv folded into its concat */
 	int dec[4];		/* a concat: input k comes from deconv node dec[k] - 1 (0: none) */
-	uint8_t *post;		/* a conv: the folded per-channel ops as one byte table (all channels) */
+	uint8_t *post;		/* a conv or an add: the folded per-channel ops as one byte table (all channels) */
 	float ca[4];		/* a concat: input k's factor (1: none); a normalize: ca[0] */
 	int zp;			/* a concat / normalize: the zero point of the rescale, rint((x - zp) a) + zp */
 	struct nna_node *nn;	/* a SiLU-kind conv (stem included): nnaeng's node, wq [ky][kx][oc][ic] */
@@ -1150,18 +1150,6 @@ static int clamp_fold(struct gnode *g, uint8_t *tab, const int *uses, int *nthis
 	return 1;
 }
 
-/* a 2x2 deconv record whose taps 0..2 are all zero (only output phase 0 reads the input) */
-static int deconv_zero_insert(const struct qrec *r, int oc)
-{
-	if (r->kh != 2 || r->kw != 2 || !r->dw)
-		return 0;
-	for (int t = 0; t < 3; t++)
-		for (int c = 0; c < oc; c++)
-			if (r->wq[(long)t * 32 * r->nob + c])
-				return 0;
-	return 1;
-}
-
 /* fold per-channel 1x1 ops into the conv before them: conv -> pc -> pc ... becomes one conv whose
  * output bytes go through one composed table, when that table is the same for every channel and
  * each intermediate tensor has no other reader */
@@ -1224,14 +1212,59 @@ static int fold(void)
 		}
 		nf += nthis;
 	}
-	/* a zero-insert deconv read only by a concat: the concat builds that input itself. Only taps 3
-	 * (phase 0) may be non-zero: the other three phases are then constants. A nearest-neighbour
-	 * deconv (all four taps, YOLO-style upsampling) stays an op of its own */
+	/* a residual add read only by per-channel 1x1 ops (the same table for every channel): the add
+	 * writes post[add] itself, in the same pass (nna_vadd_post / the add's 64 KB table) */
+	for (int i = 0; i < ng; i++) {
+		struct gnode *g = &G[i];
+		uint8_t tab[256];
+		int nthis = 0, ident = 1;
+
+		if (g->op != G_ADD || g->skip)
+			continue;
+		for (int x = 0; x < 256; x++)
+			tab[x] = (uint8_t)x;
+		for (;;) {
+			int j = -1, same = 1;
+			uint8_t *pt, t2[256];
+
+			if (uses[g->out] != 1)
+				break;
+			for (int k = i + 1; k < ng && j < 0; k++)
+				if (!G[k].skip && G[k].nin == 1 && G[k].in[0] == g->out)
+					j = k;
+			if (j < 0 || G[j].op != G_PC || G[j].oc < 1)
+				break;
+			pt = pc_table(&rec[G[j].rec], G[j].oc, 0);
+			for (int c = 1; c < G[j].oc && same; c++)
+				same = !memcmp(pt, pt + 256 * c, 256);
+			if (same)
+				for (int x = 0; x < 256; x++)
+					t2[x] = pt[tab[x]];
+			free(pt);
+			if (!same)
+				break;
+			memcpy(tab, t2, 256);
+			G[j].skip = 1;
+			g->out = G[j].out;
+			nthis++;
+		}
+		for (int x = 0; x < 256 && ident; x++)
+			ident = tab[x] == x;
+		if (nthis && !ident) {
+			if (posix_memalign((void **)&g->post, 64, 256))	/* 64-aligned: VPR loads */
+				DIE("out of memory");
+			memcpy(g->post, tab, 256);
+		}
+		nf += nthis;
+	}
+	/* a 2x2 deconv read only by a concat: the concat builds that input itself, each output phase
+	 * through the deconv's per-channel table for its tap and the concat's rescale in one table (a
+	 * zero-insert deconv: phases 1..3 are constants per channel) */
 	for (int c = 0; c < ng; c++)
 		for (int k = 0; G[c].op == G_CAT && k < G[c].nin; k++)
 			for (int j = 0; j < c; j++)
 				if (G[j].op == G_DECONV && !G[j].skip && G[j].out == G[c].in[k] && uses[G[j].out] == 1 &&
-				    deconv_zero_insert(&rec[G[j].rec], G[j].oc)) {
+				    rec[G[j].rec].kh == 2 && rec[G[j].rec].kw == 2 && rec[G[j].rec].dw) {
 					G[j].skip = 1;
 					G[c].dec[k] = j + 1;
 					nf++;
@@ -1400,7 +1433,7 @@ static void set_readers(void)
 	for (int i = 0; i < ng; i++)
 		if (!G[i].skip && G[i].op != G_CONV && G[i].op != G_HEAD)
 			for (int k = 0; k < G[i].nin; k++)
-				conv_readers_only[G[i].in[k]] = 0;
+				conv_readers_only[G[i].dec[k] ? G[G[i].dec[k] - 1].in[0] : G[i].in[k]] = 0;
 }
 
 static uint8_t rec_cpu[MAXREC];	/* a conv record whose sums the CPU computes every frame */
@@ -1846,14 +1879,18 @@ static void run_op(int i)
 			   ) {
 				tabs[i] = xmalloc(65536);
 				for (int a = 0; a < 256; a++)
-					for (int b = 0; b < 256; b++)
-						tabs[i][a << 8 | b] = add_q(&addr[g->crec], a, b);
+					for (int b = 0; b < 256; b++) {
+						uint8_t q = add_q(&addr[g->crec], a, b);
+
+						tabs[i][a << 8 | b] = g->post ? g->post[q] : q;
+					}
 			}
 			o->h = x->h, o->w = x->w, o->c = x->c;
 			need_u8(o, (size_t)(npx * x->c));
 #ifdef ONNA_MXU3
-			/* MXU3 add (nna_vadd, 64 bytes a step), once checked against this node's table on all
-			 * 65536 (a, b) pairs: it was verified on yolov5n's records, these differ (wB 0, T) */
+			/* MXU3 add (nna_vadd, 64 bytes a step; with a folded table nna_vadd_post), once checked
+			 * against this node's table on all 65536 (a, b) pairs: it was verified on yolov5n's
+			 * records, these differ (wB 0, T) */
 			/* ONNA_NO_VADD=1: the scalar table only (A/B for the T41 NN/MXU3 deadlock hunt) */
 			if (!vadd_ok[i] && getenv("ONNA_NO_VADD"))
 				vadd_ok[i] = -1;
@@ -1865,15 +1902,16 @@ static void run_op(int i)
 					DIE("out of memory");
 				for (int v = 0; v < 65536; v++)
 					va[v] = (uint8_t)(v >> 8), vb[v] = (uint8_t)v;
-				nna_vadd(va, vb, 65536, addr[g->crec].wa, addr[g->crec].wb, addr[g->crec].B, addr[g->crec].T, vo);
+				nna_vadd_post(va, vb, 65536, addr[g->crec].wa, addr[g->crec].wb, addr[g->crec].B, addr[g->crec].T,
+					      g->post, vo);
 				vadd_ok[i] = memcmp(vo, tabs[i], 65536) ? -1 : 1;
 				free(va), free(vb), free(vo);
 				if (vadd_ok[i] > 0)
 					free(tabs[i]), tabs[i] = NULL;
 			}
 			if (vadd_ok[i] > 0) {
-				nna_vadd(x->u8, y->u8, (int)(npx * x->c), addr[g->crec].wa, addr[g->crec].wb, addr[g->crec].B,
-					 addr[g->crec].T, o->u8);
+				nna_vadd_post(x->u8, y->u8, (int)(npx * x->c), addr[g->crec].wa, addr[g->crec].wb,
+					      addr[g->crec].B, addr[g->crec].T, g->post, o->u8);
 				break;
 			}
 #endif
@@ -1929,9 +1967,11 @@ static void run_op(int i)
 		}
 		case G_CAT: {
 			/* per input: a byte table rint(x s_i / s_out) (a memcpy when it is the identity); an
-			 * input from a folded deconv is built here: even (y, x) through the deconv's per-channel
-			 * table and the concat's, the other three phases a constant per channel */
-			struct catf { int ident[4]; uint8_t *comp[4], *cst[4][3]; } *cf = cfuse[i];
+			 * input from a folded deconv is built here, straight into its slice: output phase
+			 * (y & 1, x & 1) of pixel (y / 2, x / 2) through the deconv's per-channel table for that
+			 * phase's tap and the concat's, as one table per phase (full). A zero-insert deconv:
+			 * only phase 0 reads the input (comp), the other three are a constant per channel (cst) */
+			struct catf { int ident[4]; uint8_t *comp[4], *cst[4][3], *full[4]; } *cf = cfuse[i];
 			int ctot = 0, off = 0, h = -1, w = -1;
 
 			for (int k = 0; k < g->nin; k++) {
@@ -1969,25 +2009,30 @@ static void run_op(int i)
 
 						if (dr->kh != 2 || dr->kw != 2 || !dr->dw)
 							DIE("deconv record %d", dn->rec);
-						cf->comp[k] = xmalloc(256L * (size_t)C);
+						uint8_t *ft = xmalloc(4 * 256L * (size_t)C);	/* [phase][c][v] */
+						int zi = 1;		/* phases 1..3 do not depend on the input */
+
 						for (int ph = 0; ph < 4; ph++) {	/* output phase (dy, dx) uses tap 3 - ph */
-							uint8_t *pt = pc_table(dr, C, 3 - ph);
+							uint8_t *pt = pc_table(dr, C, 3 - ph), *fp = ft + ph * 256L * C;
 
-							if (ph)
-								cf->cst[k][ph - 1] = xmalloc((size_t)(C & 0xffff));
-							for (int c = 0; c < C; c++)
-								for (int v = 0; v < 256; v++) {
-									uint8_t y = tb[pt[c * 256 + v]];
-
-									if (!ph)
-										cf->comp[k][c * 256 + v] = y;
-									else if (!v)
-										cf->cst[k][ph - 1][c] = y;
-									else if (y != cf->cst[k][ph - 1][c])
-										DIE("deconv %d: phase %d depends on the input", dn->rec, ph);
-								}
+							for (long e = 0; e < 256L * C; e++)
+								fp[e] = tb[pt[e]];
 							free(pt);
+							for (int c = 0; ph && c < C && zi; c++)
+								for (int v = 1; v < 256 && zi; v++)
+									zi = fp[c * 256 + v] == fp[c * 256];
 						}
+						if (zi) {
+							cf->comp[k] = xmalloc(256L * (size_t)C);
+							memcpy(cf->comp[k], ft, 256L * (size_t)C);
+							for (int ph = 1; ph < 4; ph++) {
+								cf->cst[k][ph - 1] = xmalloc((size_t)C);
+								for (int c = 0; c < C; c++)
+									cf->cst[k][ph - 1][c] = ft[ph * 256L * C + c * 256];
+							}
+							free(ft);
+						} else
+							cf->full[k] = ft;
 					} else if (!cf->ident[k]) {
 						cf->comp[k] = xmalloc(256);
 						memcpy(cf->comp[k], tb, 256);
@@ -2002,6 +2047,22 @@ static void run_op(int i)
 					const struct tensor *a = &T[G[g->dec[k] - 1].in[0]];
 					int C = a->c;
 
+					if (cf->full[k]) {	/* nearest x2: each input pixel -> its 2 x 2 output pixels */
+						for (int sy = 0; sy < a->h; sy++)
+							for (int sx = 0; sx < a->w; sx++) {
+								const uint8_t *sp = a->u8 + ((long)sy * a->w + sx) * C;
+
+								for (int ph = 0; ph < 4; ph++) {
+									const uint8_t *tb = cf->full[k] + ph * 256L * C;
+									uint8_t *d = o->u8 + ((long)(2 * sy + (ph >> 1)) * w + 2 * sx + (ph & 1)) * ctot + off;
+
+									for (int c = 0; c < C; c++)
+										d[c] = tb[c * 256 + sp[c]];
+								}
+							}
+						off += C;
+						continue;
+					}
 					for (int y = 0; y < h; y++)
 						for (int xx = 0; xx < w; xx++) {
 							uint8_t *d = o->u8 + ((long)y * w + xx) * ctot + off;
@@ -2066,7 +2127,7 @@ static void run_op(int i)
 
 /* ---- library API (onnaq.h) */
 
-struct catf { int ident[4]; uint8_t *comp[4], *cst[4][3]; };
+struct catf { int ident[4]; uint8_t *comp[4], *cst[4][3], *full[4]; };
 
 const char *onnaq_error(void)
 {
@@ -2083,6 +2144,7 @@ void onnaq_close(void)
 		if (cf) {
 			for (int k = 0; k < 4; k++) {
 				free(cf->comp[k]);
+				free(cf->full[k]);
 				for (int ph = 0; ph < 3; ph++)
 					free(cf->cst[k][ph]);
 			}
@@ -2347,9 +2409,12 @@ int main(int argc, char **argv)
 			printf("  %-9s %7.2f ms/run\n", nm[k], optime[k] / loops);
 		if (timing > 1)		/* -TT: per node */
 			for (int i = 0; i < ng; i++)
-				if (!G[i].skip)
+				if (!G[i].skip) {	/* a concat's input 0 from a folded deconv: that deconv's input */
+					int t = G[i].dec[0] ? G[G[i].dec[0] - 1].in[0] : G[i].in[0];
+
 					printf("  node %2d %-8s rec %2d %3dx%3dx%3d -> %3d  %6.2f ms\n", i, nm[G[i].op], G[i].rec,
-					       T[G[i].in[0]].h, T[G[i].in[0]].w, T[G[i].in[0]].c, T[G[i].out].c, nodetime[i] / loops);
+					       T[t].h, T[t].w, T[t].c, T[G[i].out].c, nodetime[i] / loops);
+				}
 	}
 	if (timing)
 		printf("  tensors: %d pooled buffers, %.2f MB%s\n", npool, pool_bytes / 1e6,

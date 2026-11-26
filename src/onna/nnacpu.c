@@ -492,7 +492,8 @@ void nna_vrescale(const uint8_t *x, int n, float a, uint8_t *out)
 	MXU3_WORD(ADDW_W(6, 6, 18)) MXU3_WORD(MAXSW_W(6, 6, 20)) MXU3_WORD(MINSW_W(6, 6, 21)) \
 	MXU3_WORD(GSHUFVB_W(d, 14 + (g), 6)) MXU3_WORD(ORV_W(4, 4, d))
 
-void nna_vadd(const uint8_t *a, const uint8_t *b, int n, int wa, int wb, int32_t B, int32_t T, uint8_t *out)
+void nna_vadd_post(const uint8_t *a, const uint8_t *b, int n, int wa, int wb, int32_t B, int32_t T,
+		   const uint8_t *post, uint8_t *out)
 {
 	int32_t k4[4][16] __attribute__((aligned(64)));
 	float it[16] __attribute__((aligned(64)));
@@ -504,15 +505,33 @@ void nna_vadd(const uint8_t *a, const uint8_t *b, int n, int wa, int wb, int32_t
 	}
 	vb_load();
 	VLOAD(22, k4[0]); VLOAD(23, k4[1]); VLOAD(24, k4[2]); VLOAD(25, k4[3]); VLOAD(26, it);
+	if (post) {		/* the table in VPRs 27..30; LUT256 V4 -> V1, scratch 5..7 */
+		VLOAD(27, post); VLOAD(28, post + 64); VLOAD(29, post + 128); VLOAD(30, post + 192);
+	}
 	for (; i + 64 <= n; i += 64) {
 		VLOAD(1, a + i);
 		VLOAD(5, b + i);
 		__asm__ volatile(VADD_G(0, 4) VADD_G(1, 3) VADD_G(2, 3) VADD_G(3, 3) ::: "memory");
-		VSTORE(4, out + i);
+		if (post) {
+			__asm__ volatile(LUT256(1, 4, 27, 5) ::: "memory");
+			VSTORE(1, out + i);
+		} else {
+			VSTORE(4, out + i);
+		}
 	}
-	if (i < n)
+	if (i < n) {
 		nna_add_ref(a + i, b + i, n - i, wa, wb, B, T, out + i);
+		if (post)
+			for (; i < n; i++)
+				out[i] = post[out[i]];
+	}
 }
+
+void nna_vadd(const uint8_t *a, const uint8_t *b, int n, int wa, int wb, int32_t B, int32_t T, uint8_t *out)
+{
+	nna_vadd_post(a, b, n, wa, wb, B, T, NULL, out);
+}
+
 void nna_vrescale_px(const uint8_t *src, int sps, uint8_t *dst, int dps, int c, long npx, float a)
 {
 	float av[16] __attribute__((aligned(64)));

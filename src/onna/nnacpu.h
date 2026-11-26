@@ -69,6 +69,10 @@ void nna_vhead_drd_px(int p, float *f0, float *f1);
  * step, pointers 32-byte aligned; n any (the tail runs the scalar code) */
 void nna_vrescale(const uint8_t *x, int n, float a, uint8_t *out);
 void nna_vadd(const uint8_t *a, const uint8_t *b, int n, int wa, int wb, int32_t B, int32_t T, uint8_t *out);
+/* nna_vadd, then each output byte through a 256-byte table (post, 64-byte aligned) in the same pass:
+ * out = post[add] (a per-channel 1x1 folded into the add) */
+void nna_vadd_post(const uint8_t *a, const uint8_t *b, int n, int wa, int wb, int32_t B, int32_t T,
+		   const uint8_t *post, uint8_t *out);
 /* nna_vrescale over npx pixels of c bytes (c a multiple of 64): src stride sps, dst stride dps */
 void nna_vrescale_px(const uint8_t *src, int sps, uint8_t *dst, int dps, int c, long npx, float a);
 /* two 16-channel tensors in 32-byte pixels -> one dense 32-channel tensor [a | b], npx even */
