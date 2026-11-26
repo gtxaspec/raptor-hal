@@ -501,6 +501,12 @@ static int hal_enc_create_channel_new(int chn, const rss_video_config_t *cfg)
             HAL_LOG_ERR("SetDefaultParam (JPEG) failed: %d", ret);
             return ret;
         }
+#if defined(HAL_HYBRID_SDK) || defined(PLATFORM_T41)
+        /* a snapshot of an IVDC main is IVDC too, as in the vendor sample */
+        chnAttr.bEnableIvdc = cfg->ivdc;
+        if (cfg->ivdc)
+            HAL_LOG_INFO("enc chn %d: IVDC enabled", chn);
+#endif
         ret = IMP_Encoder_CreateChn(chn, &chnAttr);
         if (ret != 0)
             return ret;

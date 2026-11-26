@@ -973,6 +973,13 @@ typedef struct rss_hal_ops {
     int (*isp_get_highlight_depress)(void *ctx, uint8_t *val);
     int (*isp_get_backlight_comp)(void *ctx, uint8_t *val);
 
+    /* Sensors whose main channel the ISP driver was loaded to feed straight
+     * to the encoder (IVDC, direct_mode=N on T32/T33: sensors 0..N-1).
+     * Their main encoder channels must be created with ivdc set, and their
+     * OSD must go through the ISP. RSS_ERR_NOTSUP where the driver has no
+     * such parameter or its meaning is not this count. */
+    int (*isp_get_direct_sensors)(void *ctx, int *count);
+
     /* ISP AE advanced */
     int (*isp_set_ae_weight)(void *ctx, const uint8_t weight[15][15]);
     int (*isp_get_ae_weight)(void *ctx, uint8_t weight[15][15]);
