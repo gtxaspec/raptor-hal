@@ -828,10 +828,7 @@ static int tune_running_mode(void *ctx, int sensor, rss_isp_mode_t mode)
     for (int i = 0; i < TUNE_SETTLE_FRAMES; i++)
         if (hal_isp_wait_frame(ctx, 500) == RSS_ERR_NOTSUP)
             break;
-    int failed = hal_tune_replay(t, &g_tune_ops, ctx, sensor);
-    if (failed)
-        HAL_LOG_WARN("sensor %d: %d tuning value(s) not restored after the %s switch", sensor,
-                     failed, mode == RSS_ISP_NIGHT ? "night" : "day");
+    hal_tune_replay_switch(t, &g_tune_ops, ctx, sensor, mode);
     return RSS_OK;
 }
 

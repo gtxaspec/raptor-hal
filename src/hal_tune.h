@@ -65,4 +65,8 @@ bool hal_tune_mode_changed(hal_tune_t *t, rss_isp_mode_t mode);
  * that failed; unsupported ones are not counted. */
 int hal_tune_replay(const hal_tune_t *t, const hal_tune_ops_t *ops, void *ctx, int sensor);
 
+/* hal_tune_replay after a switch to mode, warning when values were lost */
+int hal_tune_replay_switch(const hal_tune_t *t, const hal_tune_ops_t *ops, void *ctx, int sensor,
+                           rss_isp_mode_t mode);
+
 #endif /* HAL_TUNE_H */
