@@ -261,6 +261,10 @@ void *hal_jzdl_create(const rss_ivs_jzdl_param_t *param)
     c->conf_thresh = param->conf_threshold;
     c->nms_thresh = param->nms_threshold;
     c->num_classes = param->num_classes;
+    /* the values yolo_decode reads: 3 anchors x (5 + classes) per cell of the
+     * stride 8, 16 and 32 grids, sized as yolo_decode sizes them */
+    for (int s = 8; s <= 32; s *= 2)
+        c->need += (size_t)(c->input_h / s) * (c->input_w / s) * 3 * (5 + (size_t)c->num_classes);
     c->in_buf = malloc((size_t)c->input_w * c->input_h * 3);
     c->rs = ojzdl_resize_create(c->frame_w, c->frame_h, c->input_w, c->input_h);
     if (!c->in_buf || !c->rs) {
@@ -295,7 +299,8 @@ int hal_jzdl_detect(void *handle, const uint8_t *nv12_data, rss_ivs_detect_resul
     }
 
     /* yolo_decode reads 3 YOLOv5 heads (strides 8/16/32); a model with fewer
-     * outputs (e.g. persondet, 2 heads) would be read out of bounds */
+     * outputs (e.g. persondet, 2 heads) would be read out of bounds. The output
+     * is the heads plus a trailer (10 values), so it is longer than need. */
     if (count < c->need) {
         if (!c->warned)
             HAL_LOG_ERR("JZDL: model output has %zu values, the YOLOv5 decode needs %zu", count,
