@@ -209,6 +209,7 @@ extern int hal_isp_get_sharpness(void *ctx, uint8_t *val);
 extern int hal_isp_get_hue(void *ctx, uint8_t *val);
 extern int hal_isp_get_hvflip(void *ctx, int *hflip, int *vflip);
 extern int hal_isp_get_running_mode(void *ctx, rss_isp_mode_t *mode);
+extern int hal_isp_get_direct_sensors(void *ctx, int *count);
 extern int hal_isp_get_sensor_fps(void *ctx, uint32_t *fps_num, uint32_t *fps_den);
 extern int hal_isp_get_antiflicker(void *ctx, rss_antiflicker_t *mode);
 extern int hal_isp_get_wb(void *ctx, rss_wb_config_t *wb_cfg);
@@ -1031,6 +1032,7 @@ static const rss_hal_ops_t g_ops = {
     .isp_get_hue = hal_isp_get_hue,
     .isp_get_hvflip = hal_isp_get_hvflip,
     .isp_get_running_mode = hal_isp_get_running_mode,
+    .isp_get_direct_sensors = hal_isp_get_direct_sensors,
     .isp_get_sensor_fps = hal_isp_get_sensor_fps,
     .isp_get_antiflicker = hal_isp_get_antiflicker,
     .isp_get_wb = hal_isp_get_wb,

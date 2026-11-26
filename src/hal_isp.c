@@ -16,6 +16,7 @@
  */
 
 #include "hal_internal.h"
+#include "hal_direct.h"
 
 /* Per-SoC caps (defined in hal_caps.c) */
 extern const rss_hal_caps_t g_hal_caps;
@@ -986,6 +987,27 @@ int hal_isp_get_running_mode(void *ctx, rss_isp_mode_t *mode)
         return ret;
     *mode = (imp_mode == IMPISP_RUNNING_MODE_NIGHT) ? RSS_ISP_NIGHT : RSS_ISP_DAY;
     return RSS_OK;
+}
+
+/* ================================================================
+ * DIRECT MODE (IVDC) GETTER
+ *
+ * T32/T33: the driver's direct_mode parameter is the number of sensors
+ * whose main channel goes straight to the encoder. Other SoCs use the
+ * parameter differently (a single-sensor T23 runs direct_mode=2).
+ * ================================================================ */
+
+int hal_isp_get_direct_sensors(void *ctx, int *count)
+{
+    (void)ctx;
+#if defined(PLATFORM_T32)
+    return hal_direct_sensors_from_file("/sys/module/tx_isp_t32/parameters/direct_mode", count);
+#elif defined(PLATFORM_T33)
+    return hal_direct_sensors_from_file("/sys/module/tx_isp_t33/parameters/direct_mode", count);
+#else
+    (void)count;
+    return RSS_ERR_NOTSUP;
+#endif
 }
 
 /* ================================================================
