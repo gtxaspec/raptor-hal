@@ -15,6 +15,11 @@
 #   HDAL_INCLUDE    - Path to the Novatek HDAL headers (NA51055 only)
 #   INGENIC_LIB     - Path to ingenic-lib repo (default: ../ingenic-lib)
 #   V4L2_OPENIMP    - Set to 1 for the optional V4L2/OpenIMP AVC bridge
+#   JZDL_INCLUDE    - Path to Ingenic jzdl headers: build hal_jzdl_* on libjzdl.m.so
+#   OJZDL           - Set to 1 to build hal_jzdl_* on ojzdl, the open runtime in
+#                     src/ojzdl (no libjzdl, no libstdc++); exclusive with JZDL_INCLUDE
+#   ONNA            - Set to 1 (T41) to build hal_jzdl_* on onna, the open NNA runtime in
+#                     src/onna (no venus/Magik libraries, no nmem); exclusive with the two above
 #   DEBUG           - Set to 1 for debug build
 #   V               - Set to 1 for verbose output
 
@@ -128,9 +133,47 @@ endif
 AUDIO_SRCS := src/hal_audio.c \
               src/hal_dmic.c
 
+# Open JZDL inference: same hal_jzdl_* API, results bit-identical to libjzdl.
+# T31 only: its MXU2 kernels are what make it usable (persondet ~85 ms on the T31, like
+# libjzdl). The plain C path is ~30x slower, so other SoCs are refused.
+OJZDL ?=
+ifeq ($(OJZDL),1)
+ifneq ($(JZDL_INCLUDE),)
+$(error OJZDL=1 and JZDL_INCLUDE are mutually exclusive)
+endif
+ifneq ($(PLATFORM),T31)
+$(error OJZDL=1 is for the T31 (MXU2 kernels); on $(PLATFORM) the C path would be ~30x slower than libjzdl)
+endif
+OJZDL_SRCS := src/hal_ivs_ojzdl.c src/ojzdl/ojzdl.c src/ojzdl/ojzdl_mxu2.c src/ojzdl/ojzdl_resize.c
+VIDEO_SRCS += $(OJZDL_SRCS) src/hal_ivs_yolo.c
+# -O2: the runtime's loops lose ~12 % at -Os on the T31 (measured)
+OJZDL_FLAGS := -D_POSIX_C_SOURCE=200809L -ffp-contract=off -O2 -DOJZDL_MXU2
+$(OJZDL_SRCS:.c=.o): CFLAGS += $(OJZDL_FLAGS)
+endif
+
+# onna: hal_jzdl_* on the T41 NNA through the open onna runtime (src/onna): venus
+# .bin models of the QSUM kind, no venus/Magik libraries, no nmem. Uses ojzdl's
+# resize, so the input matches the T31 path.
+ONNA ?=
+ifeq ($(ONNA),1)
+ifneq ($(PLATFORM),T41)
+$(error ONNA=1 is for the T41's NNA)
+endif
+ifneq ($(JZDL_INCLUDE)$(OJZDL),)
+$(error ONNA=1, OJZDL=1 and JZDL_INCLUDE are mutually exclusive)
+endif
+ONNA_SRCS := src/hal_ivs_onna.c src/onna/onnaq.c src/onna/nnaeng.c src/onna/nnacpu.c \
+             src/onna/be_mxu3.c src/ojzdl/ojzdl_resize.c
+VIDEO_SRCS += $(ONNA_SRCS) src/hal_ivs_yolo.c
+# -Isrc: src/onna/be_mxu3.c pins isp_fw_process through src/hal_ivs_nna_pin.h (shared with #21)
+ONNA_FLAGS := -D_POSIX_C_SOURCE=200809L -ffp-contract=off -O2 -DONNA_MXU3 -DOJZDL_MXU3 -Isrc
+$(ONNA_SRCS:.c=.o): CFLAGS += $(ONNA_FLAGS)
+endif
+
 CXX_SRCS :=
 ifneq ($(JZDL_INCLUDE),)
 CXX_SRCS += src/hal_ivs_jzdl.cpp
+VIDEO_SRCS += src/hal_ivs_yolo.c
 CXXFLAGS := $(filter-out -std=c11,$(CFLAGS)) -std=c++11 -Wno-missing-field-initializers -DJZ_MXU=0 -I$(JZDL_INCLUDE) -fno-exceptions -fno-rtti
 endif
 

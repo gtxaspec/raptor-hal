@@ -313,6 +313,7 @@ typedef struct {
 
 /* IVS person/object detection parameters and results */
 #define RSS_IVS_MAX_DETECTIONS 20
+#define RSS_IVS_MAX_CLASSES 16 /* classes with their own threshold */
 
 typedef struct {
     int skip_frame_count;
@@ -323,6 +324,12 @@ typedef struct {
     bool motion_trigger; /* enable motion-triggered detection */
 } rss_ivs_persondet_param_t;
 
+/* How the frame is fitted to the model input (model.conf `preprocess`) */
+typedef enum {
+    RSS_IVS_PREPROCESS_STRETCH = 0, /* scaled to the input on each axis (default) */
+    RSS_IVS_PREPROCESS_LETTERBOX,   /* aspect kept, padded to the input */
+} rss_ivs_preprocess_t;
+
 typedef struct {
     char model_path[256];
     int width;
@@ -330,6 +337,12 @@ typedef struct {
     int num_classes;
     float conf_threshold;
     float nms_threshold;
+    float class_threshold[RSS_IVS_MAX_CLASSES]; /* per class; 0 = conf_threshold */
+    float anchors[3][6]; /* (w, h) x 3 for strides 8, 16, 32 in model input pixels;
+                            a stride left all 0 = the YOLOv5 COCO anchors */
+    /* what the model was trained with; a backend that fits the frame
+       another way refuses it */
+    rss_ivs_preprocess_t preprocess;
 } rss_ivs_jzdl_param_t;
 
 typedef struct {

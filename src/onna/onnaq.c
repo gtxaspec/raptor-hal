@@ -1,0 +1,2291 @@
+/*
+ * onnaq: run a venus .bin of the QSUM kind (the NNA requantizes every conv; ReLU; dense and
+ * depthwise 3x3 (stride 1/2), per-channel 1x1, 2x2 maxpool, ConvTranspose 2x2/2, concat, adds) on the
+ * T41 NNA, or on the CPU: the thingino-ai model types (persondet, YOLO-N, YOLOX-Nano, MobileNetV4).
+ * Also the SiLU kind, Ingenic's yolov5n (graph from the .bin only): 6x6/2 stem on RGBA, SiLU
+ * requant, 5x5 maxpool (SPPF), nearest x2 upsample, implicit and recorded concats, Normalize.
+ *
+ *   onnaq [-e cpu|oracle|nna] [-c] [-T] [-n N] model.bin [model.qgraph | -] frame.rgb prefix
+ * "-" (or onnaq_open(bin, NULL, nna)): the graph comes from the .bin's own op list (load_graph_bin);
+ * a .qgraph (mkgraphq.py) is still read when given, e.g. for its anchors lines.
+ * This file is the library (onnaq.h, raptor-hal's onna backend); the command-line runner is
+ * onnaqmain.c, which includes it.
+ *   -e  where convs run: cpu (integer loops), oracle (the NNA driver against the host test
+ *       oracle; ORACLE=1 build) or nna (the real NNA; T41 build, pins itself to CPU0)
+ *   -c  check every engine conv against the CPU conv
+ *   -T  time per op kind
+ *   -n  run N times (timing); the heads must be identical in every run
+ * frame.rgb: H x W x 3 RGB bytes (the network size), or H x W x 4 RGBA for a 4-channel model
+ * (yolov5n; onnaq_run takes RGB and adds alpha 0). Writes prefix.<k>.f32 per head (NHWC float).
+ *
+ * The arithmetic (docs/nna-runtime.md, "QSUM models"): conv q = clamp(floor(((S << sh) + B) / T) + 128), sh
+ * from the op list (usually 2),
+ * S = sum (raw - 128) * x over raw input bytes x; heads f32(S + B) * Fl; 2x2 maxpool = byte max;
+ * concat input i = rint(x * s_i / s_out); padding 0. All numbers come from the .bin.
+ * The SiLU kind (venus's float requant, nnacpu.h): q = lut[rint(f32(S + B) * Fl)] through the
+ * record's SiLU table, padding 128 (the stem's 0), concat / Normalize rint((x - 128) a) + 128.
+ *
+ * Copyright (C) 2026 Thingino Project
+ * SPDX-License-Identifier: MIT
+ */
+#ifdef ONNA_MXU3
+#define _GNU_SOURCE
+#endif
+#include <malloc.h>
+#include <math.h>
+#include <setjmp.h>
+#include <stdarg.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include "nnaeng.h"
+#include "onnaq.h"
+#ifdef ONNA_ORACLE
+#include "be_oracle.h"
+#endif
+#ifdef ONNA_MXU3
+#include "be_mxu3.h"
+#include <sched.h>
+#endif
+
+/* errors: inside onnaq_open / onnaq_run they return -1 (longjmp back, message in onnaq_error());
+ * in the command-line tool they exit */
+static jmp_buf *die_jb;
+static char die_msg[256];
+
+static void die(const char *fmt, ...) __attribute__((noreturn, format(printf, 1, 2)));
+static void die(const char *fmt, ...)
+{
+	va_list ap;
+
+	va_start(ap, fmt);
+	vsnprintf(die_msg, sizeof(die_msg), fmt, ap);
+	va_end(ap);
+	if (die_jb)
+		longjmp(*die_jb, 1);
+	fprintf(stderr, "onnaq: %s\n", die_msg);
+	exit(1);
+}
+#define DIE(...) die(__VA_ARGS__)
+
+/* allocations that fail die (the camera can run out of memory; a NULL must never be written) */
+static void *xmalloc(size_t n)
+{
+	void *p = malloc(n ? n : 1);
+
+	if (!p)
+		DIE("out of memory (%zu bytes)", n);
+	return p;
+}
+
+static void *xcalloc(size_t n, size_t sz)
+{
+	void *p = calloc(n ? n : 1, sz ? sz : 1);
+
+	if (!p)
+		DIE("out of memory (%zu x %zu bytes)", n, sz);
+	return p;
+}
+
+/* ---- the .bin: W blocks with their param records, header concat records */
+
+/* capacities: YOLO-style graphs (yoloxn) have 300+ convs and 450+ ops */
+#define MAXREC 1024
+#define MAXADD 512
+#define MAXNODE 1024
+#define MAXTENS 1024
+#define MAXCAT 64
+#if MAXREC > NNA_MAXREC
+#error "nnaeng caches the W of NNA_MAXREC records"
+#endif
+
+struct qrec {
+	int nob, nic, kh, kw, dw;
+	int8_t *wq;		/* dense [ky][kx][oc][ic] (oc = 32 nob, ic = 32 nic); dw [ky][kx][oc] */
+	int32_t *bt;		/* per block: B[32], T[32] */
+	float *fl;		/* per oc: the head factor (the T slot read as float) */
+	int sh;			/* requant: q = floor(((S << sh) + B) / T) + 128; sh from the op list, 2 (x4) by default */
+	/* SiLU kind (yolov5n): the requant is venus's float one, q = lut[rint(f32(S + B) * Fl)] through
+	 * the record's 32-segment SiLU table (nnacpu.h); the T slot is Fl */
+	int silu;		/* the record has a SiLU table (heads and QSUM records have none) */
+	struct nna_silu st;
+	uint8_t *lut;		/* NNA_SILU_LUT bytes, built by rec_lut() when a CPU requant needs it */
+	int32_t *B;		/* per oc, contiguous */
+	long after;		/* file offset after the table's two copies: a type-30 (Normalize) record may follow */
+};
+
+static struct qrec rec[MAXREC];
+static int nrec;
+static float cat_a[MAXCAT][4];
+/* the header's name key: name byte i is stored XOR NAMEKEY[i % 9] (a 9-byte cycle, recovered
+ * from known tensor names) */
+static const uint8_t NAMEKEY[9] = { 0xf4, 0x36, 0xa5, 0x3e, 0x96, 0x7c, 0xce, 0x94, 0xe8 };
+
+/* a header name at o: int32 length, then the bytes XOR NAMEKEY. Returns the length (and the text in
+ * out) when every byte decodes to [A-Za-z0-9._-/:*], else -1 */
+static int dstr(const uint8_t *b, long n, long o, char *out, int cap)
+{
+	int32_t L = o + 4 <= n ? (int32_t)(b[o] | b[o + 1] << 8 | b[o + 2] << 16 | (uint32_t)b[o + 3] << 24) : -1;
+
+	if (L < 1 || L >= cap || o + 4 + L > n)
+		return -1;
+	for (int i = 0; i < L; i++) {
+		int c = b[o + 4 + i] ^ NAMEKEY[i % 9];
+
+		if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' ||
+		      c == '-' || c == '/' || c == ':' || c == '*'))
+			return -1;
+		out[i] = (char)c;
+	}
+	out[L] = 0;
+	return L;
+}
+struct addrec { int32_t wa, wb, B, T; };
+static struct addrec addr[MAXADD];
+static int nadd;
+static int ncat, cat_n[MAXCAT];
+
+static int32_t rd32(const uint8_t *p)
+{
+	int32_t v;
+
+	memcpy(&v, p, 4);
+	return v;
+}
+
+static const uint8_t SIG[10] = { 2, 0, 0, 0, 2, 0, 0, 0, 1, 0 };
+
+static void load_bin(const char *path)
+{
+	FILE *f = fopen(path, "rb");
+	long n;
+	uint8_t *b;
+
+	if (!f)
+		DIE("cannot open %s", path);
+	fseek(f, 0, SEEK_END);
+	n = ftell(f);
+	rewind(f);
+	b = malloc((size_t)n);
+	if (!b || fread(b, 1, (size_t)n, f) != (size_t)n)
+		DIE("cannot read %s", path);
+	fclose(f);
+	/* W header [bytes, 7, nob, nic, kh, kw, 4, 32, icg] + W, then the param record (SIG) */
+	for (long o = 36; o + 36 <= n; o++) {
+		const uint8_t *h = b + o - 36;
+		int32_t nb = rd32(h), nob = rd32(h + 8), nic = rd32(h + 12), kh = rd32(h + 16), kw = rd32(h + 20);
+		int32_t icg = rd32(h + 32);
+
+		if (rd32(h + 4) != 7 || rd32(h + 24) != 4 || rd32(h + 28) != 32 || (icg != 1 && icg != 32) ||
+		    nb <= 0 || nb > n - o || nb % (icg == 1 ? 32 : 256) || o + nb + 0x25 + 256L * nob > n ||
+		    memcmp(b + o + nb, SIG, sizeof(SIG)))
+			continue;
+		struct qrec *r = &rec[nrec];
+		const uint8_t *w = b + o, *p = b + o + nb;
+		int taps = kh * kw, ic = icg == 1 ? 1 : 32 * nic, oc = 32 * nob;
+
+		if (nrec == MAXREC)
+			DIE("too many W blocks");
+		if (nob < 1 || nob > 64 || nic < 1 || kh < 1 || kh > 3 || kw < 1 || kw > 3 ||
+		    nb != (icg == 1 ? 32 * nob * taps : 1024 * nob * nic * taps))
+			DIE("W block at %ld: bytes %d nob %d nic %d k %dx%d", o, nb, nob, nic, kh, kw);
+		if (rd32(p + 8) != (nob << 16 | 1) || rd32(p + 12) != 1280 || rd32(p + 20) != 512 * nob)
+			DIE("param record at %ld: fields %d %d %d", o + nb, rd32(p + 8), rd32(p + 12), rd32(p + 20));
+		r->nob = nob, r->nic = icg == 1 ? 1 : nic, r->kh = kh, r->kw = kw, r->dw = icg == 1;
+		r->wq = xmalloc((size_t)taps * oc * ic);
+		/* 2-bit slices: slice k of each weight in group entry k; raw - 128 */
+		if (r->dw) {
+			for (int ob = 0; ob < nob; ob++)	/* block -> tap (ky, kx) -> 4 slices x 8 B (32 oc) */
+				for (int t = 0; t < taps; t++) {
+					const uint8_t *e = w + 32L * (ob * taps + t);
+
+					for (int c = 0; c < 32; c++) {
+						int v = 0;
+
+						for (int k = 0; k < 4; k++)
+							v |= (e[8 * k + c / 4] >> (2 * (c % 4)) & 3) << (2 * k);
+						r->wq[(long)t * oc + 32 * ob + c] = (int8_t)(v - 128);
+					}
+				}
+		} else {
+			/* block -> input chunk -> tap (ky, kx) -> 4 entries [32 oc][8 B]; wq [t][oc][ic] */
+			for (int ob = 0; ob < nob; ob++)
+				for (int ck = 0; ck < nic; ck++)
+					for (int t = 0; t < taps; t++) {
+						const uint8_t *e = w + 1024L * (((long)ob * nic + ck) * taps + t);
+
+						for (int o2 = 0; o2 < 32; o2++)
+							for (int c = 0; c < 32; c++) {
+								int v = 0;
+
+								for (int k = 0; k < 4; k++)
+									v |= (e[256 * k + 8 * o2 + c / 4] >> (2 * (c % 4)) & 3) << (2 * k);
+								r->wq[((long)t * oc + 32 * ob + o2) * ic + 32 * ck + c] = (int8_t)(v - 128);
+							}
+					}
+		}
+		r->bt = xmalloc(256L * (size_t)nob);
+		r->fl = xmalloc(sizeof(float) * (size_t)oc);
+		for (int ob = 0; ob < nob; ob++) {
+			memcpy(r->bt + 64 * ob, p + 0x25 + 256 * ob, 256);
+			memcpy(r->fl + 32 * ob, p + 0xa5 + 256 * ob, 128);
+		}
+		/* a SiLU table: the first MARK past the record's B / Fl, within 4 KiB, then the table
+		 * stored twice */
+		{
+			static const uint8_t MARK[8] = { 4, 0, 0, 0, 0x20, 0, 0, 0 };
+			long m = o + nb + 0x25 + 256L * nob - 0x80, end = o + nb + 0x25 + 256L * nob + 4096;
+
+			while (m < end && m + 8 + 256 <= n && memcmp(b + m, MARK, 8))
+				m++;
+			if (m < end && m + 8 + 256 <= n && !memcmp(b + m + 8, b + m + 8 + 128, 128)) {
+				int16_t raw[64];
+
+				memcpy(raw, b + m + 8, 128);
+				nna_silu_load(&r->st, raw);
+				r->B = xmalloc(sizeof(int32_t) * (size_t)oc);	/* r->lut: rec_lut(), on first need */
+				for (int c = 0; c < oc; c++)
+					r->B[c] = r->bt[64 * (c / 32) + c % 32];
+				r->silu = 1;
+				r->after = m + 8 + 256;
+			}
+		}
+		nrec++;
+		o += nb - 1;
+	}
+	/* header concat records: n, 0 x n, n, float s_1..s_n, 1/s_out (zero point 0) */
+	for (int k = 2; k <= 4; k++)
+		for (long o = 0; o + 4 * (2 * k + 3) <= n; o++) {
+			int ok = rd32(b + o) == k && rd32(b + o + 4 * (k + 1)) == k;
+			float s[5];
+
+			for (int i = 0; ok && i < k; i++)
+				ok = rd32(b + o + 4 + 4 * i) == 0;
+			if (!ok)
+				continue;
+			memcpy(s, b + o + 4 * (k + 2), 4 * (size_t)(k + 1));
+			for (int i = 0; ok && i <= k; i++)
+				ok = s[i] > 1e-6f && s[i] < 1e3f;
+			if (!ok || ncat == MAXCAT)
+				continue;
+			/* records of different arity are not interleaved in the models seen; keep file order
+			 * per arity and fail later if a concat's arity does not match */
+			cat_n[ncat] = k;
+			for (int i = 0; i < k; i++)
+				cat_a[ncat][i] = s[i] * s[k];
+			ncat++;
+		}
+	/* add records, in the converter's op order. The header is the converter's op list: names are
+	 * length-prefixed strings XORed with a fixed per-position key (NAMEKEY; recovered from known
+	 * tensor names). Each Add op carries its kernel string "Add/add_..." and, a few bytes after it,
+	 * its record 2, wA, wB, 2, float sA, sB, B, T. out = clamp(floor((64 (wA a + wB b) + B) / T) +
+	 * 128): nna_add_ref's arithmetic (fitted 2026-11-25 on the PC executor's tensors, 0 of 532480
+	 * wrong). An identity clamp has wB = 0 (a plain rescale of a), so no value filter. The graph's
+	 * add count must match (load_graph) */
+	for (long o = 0; o + 4 + 8 <= n; o++) {
+		static const char pre[] = "Add/add_";
+		int32_t L = rd32(b + o);
+		int k;
+
+		if (L < 8 || L > 256 || o + 4 + L > n)
+			continue;
+		for (k = 0; k < 8 && (b[o + 4 + k] ^ NAMEKEY[k % 9]) == (uint8_t)pre[k]; k++)
+			;
+		if (k < 8)
+			continue;
+		for (long d = o + 4 + L; d + 32 <= n && d < o + 4 + L + 160; d++) {
+			const uint8_t *p = b + d;
+			int32_t wa = rd32(p + 4), wb = rd32(p + 8);
+			float bt[2];
+
+			if (rd32(p) != 2 || rd32(p + 12) != 2 || wa < 0 || wa > 255 || wb < 0 || wb > 255)
+				continue;
+			memcpy(bt, p + 24, sizeof(bt));
+			if (nadd == MAXADD)
+				DIE("too many add records");
+			if (!(bt[1] >= 1))
+				DIE("add record at %ld: T %g", d, (double)bt[1]);
+			addr[nadd++] = (struct addrec){ wa, wb, (int32_t)bt[0], (int32_t)bt[1] };
+			break;
+		}
+		o += 4 + L - 1;
+	}
+	/* per conv requant shift, in op order (= W block order). A Convolution op starts with the names
+	 * "Convolution", <out>, "UNIQUE"; heads are Convolution ops too. In an op, after its kernel
+	 * string "Convolution/...": 01, int32 2, int32 1, <name>, int32, int32, int32 shift. Most layers
+	 * use 2 (x4); a layer whose int8 weights the converter scaled down uses more (6: x64, fitted on
+	 * the PC executor). The stem's and heads' records differ: they keep 2 */
+	{
+		int k = 0, cur = -1, done = 0;
+		char s1[260], s2[260], s3[260];
+
+		for (int i = 0; i < nrec; i++)
+			rec[i].sh = 2;
+		for (long o = 0; o + 4 < n; o++) {
+			int l1 = dstr(b, n, o, s1, sizeof(s1)), l2, l3;
+
+			if (l1 < 0)
+				continue;
+			if (l1 == 11 && !strcmp(s1, "Convolution") && (l2 = dstr(b, n, o + 15, s2, sizeof(s2))) > 0 &&
+			    (l3 = dstr(b, n, o + 19 + l2, s3, sizeof(s3))) == 6 && !strcmp(s3, "UNIQUE")) {
+				cur = k++, done = 0;
+				o += 4 + l1 - 1;
+				continue;
+			}
+			/* "Convolution/base_i8/..." (byte out); heads are "base_i8of" (float out), another record */
+			if (l1 > 20 && !strncmp(s1, "Convolution/base_i8/", 20) && cur >= 0 && cur < nrec && !done) {
+				long e = o + 4 + l1;
+				int32_t nl = e + 13 <= n ? rd32(b + e + 9) : -1;
+
+				if (b[e] == 1 && rd32(b + e + 1) == 2 && rd32(b + e + 5) == 1 && nl > 0 && nl < 256 &&
+				    e + 13 + nl + 12 <= n) {
+					int32_t v = rd32(b + e + 13 + nl + 8);
+
+					if (v < 0 || v > 16)
+						DIE("conv op %d (%s): requant shift %d", cur, s1, v);
+					rec[cur].sh = v;
+				}
+				done = 1;
+			}
+			o += 4 + l1 - 1;
+		}
+		if (k && k != nrec)
+			DIE("%d Convolution ops, %d W blocks", k, nrec);
+	}
+	free(b);
+}
+
+/* the record's whole requant as a byte table by t (32 KB): for the CPU requant and the oracle; the
+ * camera's MXU3 requant reads the 32-segment table itself, so it is never built there */
+static const uint8_t *rec_lut(int ri)
+{
+	struct qrec *r = &rec[ri];
+
+	if (!r->lut) {
+		r->lut = xmalloc(NNA_SILU_LUT);
+		nna_silu_lut(&r->st, r->lut);
+	}
+	return r->lut;
+}
+
+/* ---- the graph */
+
+/* G_POOL5, G_UP2, G_NORM: the SiLU kind's 5x5/1 maxpool (SPPF), nearest x2 upsample, and Normalize
+ * (a concat input's rescale, its factor in a type-30 record) */
+enum { G_STEM, G_CONV, G_PC, G_HEAD, G_POOL, G_DECONV, G_CAT, G_ADD, G_POOL5, G_UP2, G_NORM, G_NOPS };
+struct gnode {
+	int op, out, in[4], nin, rec, oc, ic, k, pad, dw, crec;
+	int stride, padb;	/* a conv: stride, and the bottom/right pad (pad = top/left) */
+	int skip;		/* folded into the conv before it, or a deconv folded into its concat */
+	int dec[4];		/* a concat: input k comes from deconv node dec[k] - 1 (0: none) */
+	uint8_t *post;		/* a conv or an add: the folded per-channel ops as one byte table (all channels) */
+	float ca[4];		/* a concat: input k's factor (1: none); a normalize: ca[0] */
+	int zp;			/* a concat / normalize: the zero point of the rescale, rint((x - zp) a) + zp */
+	struct nna_node *nn;	/* a SiLU-kind conv (stem included): nnaeng's node, wq [ky][kx][oc][ic] */
+};
+static struct gnode G[MAXNODE];
+static int ng, ntens, in_h, in_w, in_c = 3, outs[4], nouts;
+static int nanc, anc_stride[4];		/* "anchors <stride> w0 h0 w1 h1 w2 h2" lines */
+static float anc_wh[4][6];
+
+static void load_graph(const char *path)
+{
+	FILE *f = fopen(path, "r");
+	char line[512];
+
+	if (!f)
+		DIE("cannot open %s", path);
+	ng = ntens = in_h = in_w = nouts = nanc = 0;
+	in_c = 3;
+	while (fgets(line, sizeof(line), f)) {
+		struct gnode g;
+		char op[32];
+		int a[12], na;
+
+		memset(&g, 0, sizeof(g));
+		na = sscanf(line, "%31s %d %d %d %d %d %d %d %d %d %d", op, &a[0], &a[1], &a[2], &a[3], &a[4],
+			    &a[5], &a[6], &a[7], &a[8], &a[9]) - 1;
+		if (na < 0)
+			continue;
+		if (!strcmp(op, "onnaq-graph"))
+			continue;
+		if (!strcmp(op, "tensors")) {
+			ntens = a[0];
+			if (ntens < 1 || ntens > MAXTENS)
+				DIE("graph: %d tensors (max %d)", ntens, MAXTENS);
+			continue;
+		}
+		if (!strcmp(op, "input")) {
+			in_h = a[1], in_w = a[2];
+			continue;
+		}
+		if (!strcmp(op, "anchors")) {
+			float v[7];
+
+			if (sscanf(line, "%*s %f %f %f %f %f %f %f", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6]) != 7 ||
+			    nanc == 4)
+				DIE("graph line: %s", line);
+			anc_stride[nanc] = (int)v[0];
+			memcpy(anc_wh[nanc++], v + 1, sizeof(anc_wh[0]));
+			continue;
+		}
+		if (!strcmp(op, "output")) {
+			for (nouts = 0; nouts < na && nouts < 4; nouts++)
+				outs[nouts] = a[nouts];
+			continue;
+		}
+		g.out = a[0], g.in[0] = a[1], g.nin = 1;
+		if (!strcmp(op, "stem") && na == 4)
+			g.op = G_STEM, g.rec = a[2], g.oc = a[3];
+		else if (!strcmp(op, "conv") && (na == 8 || na == 10)) {
+			g.op = G_CONV, g.rec = a[2], g.oc = a[3], g.ic = a[4], g.k = a[5], g.pad = a[6], g.dw = a[7];
+			g.stride = na == 10 ? a[8] : 1, g.padb = na == 10 ? a[9] : g.pad;
+			if (g.stride < 1 || g.stride > 2 || g.padb < 0 || g.padb > 2)
+				DIE("graph line: %s", line);
+		}
+		else if (!strcmp(op, "pc") && na == 4)
+			g.op = G_PC, g.rec = a[2], g.oc = a[3];
+		else if (!strcmp(op, "head") && na == 5)
+			g.op = G_HEAD, g.rec = a[2], g.oc = a[3], g.ic = a[4];
+		else if (!strcmp(op, "maxpool2") && na == 2)
+			g.op = G_POOL;
+		else if (!strcmp(op, "deconv2") && na == 4)
+			g.op = G_DECONV, g.rec = a[2], g.oc = a[3];
+		else if (!strcmp(op, "concat") && na >= 4 && na == a[1] + 3) {
+			g.op = G_CAT, g.nin = a[1];
+			if (g.nin > 4)
+				DIE("concat of %d", g.nin);
+			for (int i = 0; i < g.nin; i++)
+				g.in[i] = a[2 + i];
+			g.crec = a[2 + g.nin];
+			if (g.crec >= 0 && g.crec < ncat)
+				memcpy(g.ca, cat_a[g.crec], sizeof(g.ca));
+		} else if (!strcmp(op, "add") && na == 4) {
+			g.op = G_ADD, g.nin = 2, g.in[1] = a[2], g.crec = a[3];
+			if (g.crec < 0 || g.crec >= nadd)
+				DIE("graph: add record %d of %d", g.crec, nadd);
+		} else
+			DIE("graph line: %s", line);
+		if (g.op != G_POOL && g.op != G_CAT && g.op != G_ADD && (g.rec < 0 || g.rec >= nrec))
+			DIE("graph: record %d of %d", g.rec, nrec);
+		if (g.op == G_CAT && (g.crec >= ncat || cat_n[g.crec] != g.nin))
+			DIE("graph: concat record %d", g.crec);
+		if (ng == MAXNODE)
+			DIE("graph too long");
+		for (int k = 0; k < g.nin; k++)
+			if (g.in[k] < 0 || g.in[k] >= ntens)
+				DIE("graph: tensor %d of %d", g.in[k], ntens);
+		if (g.out < 0 || g.out >= ntens)
+			DIE("graph: tensor %d of %d", g.out, ntens);
+		G[ng++] = g;
+	}
+	fclose(f);
+	if (!ntens || !ng || !nouts || !in_h)
+		DIE("graph %s incomplete", path);
+	{
+		int na = 0;
+
+		for (int i = 0; i < ng; i++)
+			na += G[i].op == G_ADD;
+		if (na != nadd)
+			DIE("graph has %d adds, the .bin %d add records", na, nadd);
+	}
+}
+
+static uint8_t add_q(const struct addrec *r, int a, int b)
+{
+	int64_t num = 64LL * (r->wa * a + r->wb * b) + r->B, q = num / r->T;
+
+	if ((num % r->T) && ((num < 0) != (r->T < 0)))
+		q--;					/* floor division */
+	q += 128;
+	return (uint8_t)(q < 0 ? 0 : q > 255 ? 255 : q);
+}
+
+/* ---- the graph from the .bin alone: the converter's op list in its header
+ *
+ * Each op: <type> <out> "UNIQUE" <type> <out> ["AIE": NNA ops; CPU ops such as UpSample have none],
+ * then (name, dtype, layout) per input and output, then its kernel string and record. A plain conv
+ * record ("Convolution/base_i8/...", the stem's "first_layer_i8", a head's "base_i8of"): 01, int32
+ * 2, int32 1, <name>, then int32 fields: [2] requant shift, [7] 2 when a pads array follows, [8] in
+ * channels, [9] out channels, then length-prefixed arrays: pads (top, bottom, left, right; only
+ * when [7] = 2), kernel, stride. W blocks, add records and concat records are numbered in op order.
+ * A ConvTranspose is an UpSample op (CPU) plus a 2x2 conv: one deconv2 node. The input shape
+ * follows the first "data_1" name: int32 4, 1, H, W, C. */
+struct bstr { long off; int len; char s[96]; };
+
+static int is_dtype(const char *s)
+{
+	return !strcmp(s, "UINT8") || !strcmp(s, "INT8") || !strcmp(s, "FP32") || !strcmp(s, "FLOAT32") ||
+	       !strcmp(s, "INT32") || !strcmp(s, "INT16") || !strcmp(s, "UINT16");
+}
+
+static int tname(char names[][96], int *n, const char *s)
+{
+	for (int i = 0; i < *n; i++)
+		if (!strcmp(names[i], s))
+			return i;
+	if (*n == MAXTENS)
+		DIE("graph: more than %d tensors", MAXTENS);
+	{
+		size_t m = strlen(s) < 95 ? strlen(s) : 95;
+
+		memcpy(names[*n], s, m);
+		names[*n][m] = 0;
+	}
+	return (*n)++;
+}
+
+/* plain conv record after its kernel string at e: 0 and the fields, or -1. zp: field [1], the zero
+ * points: input in the low 16 bits (the pad value), output in the high 16 (0 for QSUM records;
+ * 128 / 128 for the SiLU kind, the stem's input 0) */
+static int conv_rec(const uint8_t *b, long n, long e, int *zp, int *sh, int *ic, int *oc, int pads[4], int *k,
+		    int *st)
+{
+	int32_t nl, f[64];
+	long p;
+	int q, arr = 0;
+
+	if (e + 13 > n || b[e] != 1 || rd32(b + e + 1) != 2 || rd32(b + e + 5) != 1)
+		return -1;
+	nl = rd32(b + e + 9);
+	if (nl <= 0 || nl > 256 || e + 13 + nl + 4L * 64 > n)
+		return -1;
+	p = e + 13 + nl;
+	for (int i = 0; i < 64; i++)
+		f[i] = rd32(b + p + 4L * i);
+	*zp = f[1], *sh = f[2], *ic = f[8], *oc = f[9];
+	pads[0] = pads[1] = pads[2] = pads[3] = 0;
+	*k = *st = 1;
+	q = 10;
+	for (int a = 0; a < (f[7] == 2 ? 4 : 3); a++) {
+		int len = f[q];
+
+		if (len < 0 || len > 8 || q + 1 + len >= 64)
+			return -1;
+		if (f[7] == 2 && a == 0)
+			for (int j = 0; j < 4 && j < len; j++)
+				pads[j] = f[q + 1 + j];
+		else if (arr == 0)
+			*k = f[q + 1], arr = 1;
+		else if (arr == 1)
+			*st = f[q + 1], arr = 2;
+		q += 1 + len;
+	}
+	return 0;
+}
+
+/* a Pooling record ("Pooling/pool2d_ubit8/..."): the same head as a conv's; int32 fields [8] 2 when
+ * a pads array follows (top, bottom, left, right), [9] channels, then the arrays: pads, kernel,
+ * stride. 2x2/2 (QSUM) and 5x5/1 pad 2 (SPPF). 0 and the fields, or -1 */
+static int pool_rec(const uint8_t *b, long n, long e, int *k, int *st, int *pad)
+{
+	int32_t nl, f[32];
+	int q = 10, a = 0;
+
+	if (e + 13 > n || b[e] != 1 || rd32(b + e + 1) != 2 || rd32(b + e + 5) != 1)
+		return -1;
+	nl = rd32(b + e + 9);
+	if (nl <= 0 || nl > 256 || e + 13 + nl + 4L * 32 > n)
+		return -1;
+	for (int i = 0; i < 32; i++)
+		f[i] = rd32(b + e + 13 + nl + 4L * i);
+	*pad = 0;
+	if (f[8] == 2) {
+		if (f[q] != 4 || f[q + 1] != f[q + 2] || f[q + 1] != f[q + 3] || f[q + 1] != f[q + 4])
+			return -1;
+		*pad = f[q + 1];
+		q += 5;
+	} else if (f[8] != 1) {
+		return -1;
+	}
+	for (; a < 2; a++) {
+		if (f[q] != 2 || f[q + 1] != f[q + 2])
+			return -1;
+		*(a ? st : k) = f[q + 1];
+		q += 3;
+	}
+	return 0;
+}
+
+/* a Concat op's own record, within its first bytes after the kernel string at e: int32 nin, the
+ * nin zero points (0, or -128 for the SiLU kind), nin, then float s_1..s_nin, 1/s_out. a[i] = s_i /
+ * s_out; *zp = 128 for -128 (the codes' zero point). 0, or -1 if there is none */
+static int cat_rec(const uint8_t *b, long n, long e, int nin, float a[4], int *zp)
+{
+	for (long d = e; d < e + 512 && d + 4L * (2 * nin + 3) <= n; d++) {
+		int32_t z = rd32(b + d + 4);
+		float s[5];
+		int ok = rd32(b + d) == nin && rd32(b + d + 4L * (nin + 1)) == nin && (z == 0 || z == -128);
+
+		for (int i = 1; ok && i < nin; i++)
+			ok = rd32(b + d + 4 + 4L * i) == z;
+		if (!ok)
+			continue;
+		memcpy(s, b + d + 4L * (nin + 2), 4 * (size_t)(nin + 1));
+		for (int i = 0; ok && i <= nin; i++)
+			ok = s[i] > 1e-6f && s[i] < 1e3f;
+		if (!ok)
+			continue;
+		for (int i = 0; i < nin; i++)
+			a[i] = s[i] * s[nin];
+		*zp = -z;
+		return 0;
+	}
+	return -1;
+}
+
+/* the Normalize factor: the type-30 record after conv record r's SiLU table:
+ * int32 30, ..., [148] nb, then at 148 + 28 + nb: 1, 2, ..., [33] 32, [37] nb / 4 equal floats */
+static float type30(const uint8_t *b, long n, int r)
+{
+	long o = r >= 0 && r < nrec && rec[r].silu ? rec[r].after : -1, nb;
+	float a, v;
+
+	if (o < 0 || o + 152 > n || rd32(b + o) != 30)
+		DIE("no type-30 record after conv record %d", r);
+	nb = rd32(b + o + 148);
+	o += 148 + 28 + nb;
+	if (nb <= 0 || nb > 4096 || o + 37 + nb > n || rd32(b + o) != 1 || rd32(b + o + 4) != 2 ||
+	    rd32(b + o + 33) != 32)
+		DIE("type-30 record after conv record %d: unexpected layout", r);
+	memcpy(&a, b + o + 37, 4);
+	for (long i = 1; i < nb / 4; i++) {
+		memcpy(&v, b + o + 37 + 4 * i, 4);
+		if (v != a)
+			DIE("type-30 record after conv record %d: per-channel factors differ", r);
+	}
+	if (!(a > 1e-3f && a < 1e3f))
+		DIE("type-30 record after conv record %d: factor %g", r, (double)a);
+	return a;
+}
+
+/* a SiLU-kind conv's nnaeng node: weights [ky][kx][oc][ic] over the input's real channels. The
+ * record's input chunks of 32 lanes follow the input's layout as venus stores it (a concat of two
+ * 16-channel tensors is two chunks of 16), given by nch / chk; the stem's record is a 1x1 over
+ * 6 chunks: chunk kx, lane 4 ky + c (RGBA) */
+static struct nna_node *silu_node(int ri, int oc, int ic, int k, int st, int pad, int padval, int stem, int nch,
+				   const int *chk)
+{
+	const struct qrec *r = &rec[ri];
+	struct nna_node *nd = calloc(1, sizeof(*nd));
+	int lanes = 32 * r->nic, roc = 32 * r->nob;
+
+	if (!nd || r->dw)
+		DIE("conv record %d: %s", ri, nd ? "depthwise in a SiLU model" : "out of memory");
+	nd->rec = ri, nd->oc = oc, nd->ic = ic, nd->kh = nd->kw = k, nd->stride = st, nd->pad = pad;
+	nd->padval = padval, nd->stem = stem;
+	if (oc > roc)
+		DIE("conv record %d: %d of %d out channels", ri, oc, roc);
+	if (!(nd->wq = calloc((size_t)k * k * oc * ic, 1)))
+		DIE("out of memory");
+	if (!r->wq)
+		DIE("conv record %d: used twice", ri);
+	if (stem) {
+		if (k != 6 || ic != 4 || st != 2 || r->kh != 1 || r->nic != 6)
+			DIE("stem record %d: k %d ic %d stride %d (record %dx%d, %d chunks)", ri, k, ic, st, r->kh, r->kw, r->nic);
+		for (int ky = 0; ky < 6; ky++)
+			for (int kx = 0; kx < 6; kx++)
+				for (int o = 0; o < oc; o++)
+					for (int c = 0; c < 4; c++)
+						nd->wq[(((long)ky * 6 + kx) * oc + o) * 4 + c] = r->wq[(long)o * lanes + 32 * kx + 4 * ky + c];
+	} else {
+		if (r->kh != k || r->kw != k || nch != r->nic)
+			DIE("conv record %d: %dx%d with %d input chunks, the graph has %dx%d and %d", ri, r->kh, r->kw, r->nic,
+			    k, k, nch);
+		for (int t = 0, c0; t < k * k; t++)
+			for (int o = 0; o < oc; o++) {
+				c0 = 0;
+				for (int ck = 0; ck < nch; c0 += chk[ck++])
+					for (int i = 0; i < chk[ck]; i++)
+						nd->wq[((long)t * oc + o) * ic + c0 + i] =
+							r->wq[((long)t * roc + o) * lanes + 32 * ck + i];
+			}
+	}
+	/* the node has its own copy: only it reads this record */
+	free(rec[ri].wq);
+	rec[ri].wq = NULL;
+	return nd;
+}
+
+/* per tensor, its channels in 32-lane chunks as venus lays them out (a SiLU conv's record has one W
+ * input chunk per entry): a conv's output in 32s, a concat's the inputs' lists one after another,
+ * other ops their input's */
+#define MAXCHK 64
+static int nchk[MAXTENS], chk[MAXTENS][MAXCHK];
+
+static void chunks_conv(int t, int oc)
+{
+	nchk[t] = 0;
+	for (int c = 0; c < oc; c += 32) {
+		if (nchk[t] == MAXCHK)
+			DIE("tensor %d: more than %d chunks", t, MAXCHK);
+		chk[t][nchk[t]++] = oc - c < 32 ? oc - c : 32;
+	}
+}
+
+static void chunks_append(int t, int s)
+{
+	for (int i = 0; i < nchk[s]; i++) {
+		if (nchk[t] == MAXCHK)
+			DIE("tensor %d: more than %d chunks", t, MAXCHK);
+		chk[t][nchk[t]++] = chk[s][i];
+	}
+}
+
+static void chunks_copy(int t, int s)
+{
+	nchk[t] = 0;
+	chunks_append(t, s);
+}
+
+/* the chunks are those of a plain tensor of c channels (32 each, the last the rest) */
+static int chunks_dense(int t, int c)
+{
+	int s = 0;
+
+	for (int i = 0; i < nchk[t]; s += chk[t][i++])
+		if (chk[t][i] != 32 && i != nchk[t] - 1)
+			return 0;
+	return s == c;
+}
+
+static void load_graph_bin(const char *path)
+{
+	FILE *fp = fopen(path, "rb");
+	uint8_t *b;
+	long n;
+	struct bstr *S;
+	int ns = 0, cap = 1 << 15, nt = 0, kconv = 0, kadd = 0, kcat = 0, first = 1;
+	static char names[MAXTENS][96];
+	static int chn[MAXTENS], upsrc[MAXTENS];
+	int ncatx = 0, silu_model = 0;	/* implicit concats (a conv with several inputs); a SiLU stem */
+
+	if (!fp || fseek(fp, 0, SEEK_END) || (n = ftell(fp)) <= 0)
+		DIE("cannot read %s", path);
+	rewind(fp);
+	if (!(b = malloc((size_t)n)) || fread(b, 1, (size_t)n, fp) != (size_t)n || !(S = malloc(sizeof(*S) * cap)))
+		DIE("cannot read %s", path);
+	fclose(fp);
+	for (long o = 0; o + 4 < n && o < (2L << 20); o++) {		/* the header's names, in order */
+		char t[260];
+		int L = dstr(b, n, o, t, sizeof(t));
+
+		if (L < 1)
+			continue;
+		if (ns == cap && !(S = realloc(S, sizeof(*S) * (cap *= 2))))
+			DIE("out of memory");
+		S[ns].off = o, S[ns].len = L;
+		{
+			size_t m = (size_t)L < sizeof(S[ns].s) - 1 ? (size_t)L : sizeof(S[ns].s) - 1;	/* names are short */
+
+			memcpy(S[ns].s, t, m);
+			S[ns].s[m] = 0;
+		}
+		ns++;
+		o += 4 + L - 1;
+	}
+	ng = nouts = nanc = 0;
+	in_h = in_w = 0;
+	for (int i = 0; i < ns && !in_h; i++)
+		if (!strcmp(S[i].s, "data_1")) {
+			long p = S[i].off + 4 + S[i].len;
+
+			if (p + 20 <= n && rd32(b + p) == 4 && rd32(b + p + 4) == 1)
+				in_h = rd32(b + p + 8), in_w = rd32(b + p + 12), in_c = rd32(b + p + 16);
+		}
+	if (in_h <= 0 || in_w <= 0)
+		DIE("%s: no input shape after data_1", path);
+	for (int t = 0; t < MAXTENS; t++)
+		upsrc[t] = -1, nchk[t] = 0;
+	tname(names, &nt, "data_1");
+	chn[0] = in_c;
+	chunks_conv(0, in_c);
+	for (int i = 0; i + 5 < ns;) {
+		int nna_op, j, nin = 0, ins[8], out, kix;
+		const char *ty = S[i].s;
+		long e;
+
+		if (strcmp(S[i + 2].s, "UNIQUE") || strcmp(ty, S[i + 3].s) || strcmp(S[i + 1].s, S[i + 4].s)) {
+			i++;
+			continue;
+		}
+		nna_op = !strcmp(S[i + 5].s, "AIE");
+		j = i + (nna_op ? 6 : 5);
+		int tr[16], ntr = 0;
+
+		while (j + 2 < ns && is_dtype(S[j + 1].s) && S[j + 2].s[0] == 'N' && ntr < 16)
+			tr[ntr++] = j, j += 3;
+		if (j >= ns || ntr < 1)
+			DIE("op %s %s: no tensors", ty, S[i + 1].s);
+		kix = j;
+		e = S[kix].off + 4 + S[kix].len;
+		for (int k = 0; k < ntr - 1 && nin < 8; k++)
+			ins[nin++] = tname(names, &nt, S[tr[k]].s);
+		out = tname(names, &nt, S[i + 1].s);
+
+		struct gnode g;
+
+		memset(&g, 0, sizeof(g));
+		g.out = out, g.in[0] = nin ? ins[0] : 0, g.nin = 1;
+		if (!strcmp(ty, "UpSample") && !nna_op) {	/* half of a ConvTranspose, see below */
+			if (nin != 1)
+				DIE("UpSample %s: %d inputs", S[i + 1].s, nin);
+			upsrc[out] = ins[0];
+			i = kix + 1;
+			continue;
+		} else if (!strcmp(ty, "UpSample")) {		/* an NNA op: nearest x2 (YOLOv5's Resize) */
+			if (nin != 1)
+				DIE("UpSample %s: %d inputs", S[i + 1].s, nin);
+			g.op = G_UP2;
+			chn[out] = chn[ins[0]];
+			chunks_copy(out, ins[0]);
+		} else if (!strcmp(ty, "FormatConvert")) {	/* the float head outputs: nothing to run */
+			i = kix + 1;
+			continue;
+		} else if (!strcmp(ty, "Normalize")) {
+			/* a concat input's rescale ("ptq_model_concat_fuse_..."): its factor is in the type-30
+			 * record after the conv record before it */
+			if (nin != 1)
+				DIE("Normalize %s: %d inputs", S[i + 1].s, nin);
+			g.op = G_NORM, g.zp = 128, g.ca[0] = type30(b, n, kconv - 1);
+			chn[out] = chn[ins[0]];
+			chunks_copy(out, ins[0]);
+		} else if (!strcmp(ty, "Convolution")) {
+			int zp, sh, ic, oc, pd[4], k, st, silu;
+			const struct qrec *r;
+
+			if (kconv >= nrec)
+				DIE("more Convolution ops than W blocks (%d)", nrec);
+			r = &rec[kconv];
+			g.rec = kconv++;
+			if (conv_rec(b, n, e, &zp, &sh, &ic, &oc, pd, &k, &st))
+				DIE("conv %s: record not understood", S[i + 1].s);
+			/* the SiLU kind (the model's, from its stem: a 6x6 on RGBA with a SiLU table, output zero
+			 * point 128); heads are float out */
+			if (first)
+				silu_model = k == 6 && r->silu && (zp >> 16 & 0xffff) == 128;
+			silu = silu_model && strncmp(S[kix].s, "Convolution/base_i8of", 21);
+			if (silu && (pd[0] != pd[1] || pd[0] != pd[2] || pd[0] != pd[3]))
+				DIE("conv %s: pads %d %d %d %d", S[i + 1].s, pd[0], pd[1], pd[2], pd[3]);
+			if (nin > 1) {		/* several inputs: their concat (venus's implicit one), then the conv */
+				struct gnode c;
+				char nm[24];
+
+				if (nin > 4 || ng == MAXNODE)
+					DIE("conv %s: %d inputs", S[i + 1].s, nin);
+				memset(&c, 0, sizeof(c));
+				snprintf(nm, sizeof(nm), "#concat%d", ncatx++);
+				c.op = G_CAT, c.nin = nin, c.crec = -1, c.zp = 128, c.out = tname(names, &nt, nm);
+				chn[c.out] = 0, nchk[c.out] = 0;
+				for (int q = 0; q < nin; q++) {
+					c.in[q] = ins[q], c.ca[q] = 1.0f, chn[c.out] += chn[ins[q]];
+					chunks_append(c.out, ins[q]);
+				}
+				G[ng++] = c;
+				g.in[0] = c.out;
+			}
+			if (first && silu) {			/* the SiLU kind's stem: 6x6/2 pad 2 on RGBA */
+				first = 0;
+				if (in_c != 4)
+					DIE("stem %s: input of %d channels", S[i + 1].s, in_c);
+				g.op = G_STEM, g.in[0] = 0, g.oc = oc, g.k = k, g.stride = st, g.pad = g.padb = pd[0];
+				g.nn = silu_node(g.rec, oc, in_c, k, st, pd[0], zp & 0xffff, 1, 0, NULL);
+			} else if (first) {			/* the stem: 3x3/2 on the image */
+				first = 0;
+				g.op = G_STEM, g.in[0] = 0, g.oc = oc;
+			} else if (!strncmp(S[kix].s, "Convolution/base_i8of", 21)) {
+				g.op = G_HEAD, g.oc = oc, g.ic = chn[g.in[0]];
+				if (nouts == 4)
+					DIE("more than 4 heads");
+				/* conv_op reads the record's W as one plain tensor */
+				if (silu_model && !chunks_dense(g.in[0], g.ic))
+					DIE("head %s: its input is not a plain tensor", S[i + 1].s);
+				outs[nouts++] = out;
+			} else if (silu) {
+				if (!r->silu)
+					DIE("conv %s: record %d has no SiLU table", S[i + 1].s, g.rec);
+				g.op = G_CONV, g.oc = oc, g.ic = chn[g.in[0]], g.k = k, g.stride = st, g.pad = g.padb = pd[0];
+				{
+					int s = 0;
+
+					for (int q = 0; q < nchk[g.in[0]]; q++)
+						s += chk[g.in[0]][q];
+					if (s != g.ic || g.ic != ic)
+						DIE("conv %s: %d input channels, chunks %d, record %d", S[i + 1].s, g.ic, s, ic);
+				}
+				g.nn = silu_node(g.rec, oc, g.ic, k, st, pd[0], zp & 0xffff, 0, nchk[g.in[0]], chk[g.in[0]]);
+			} else if (r->kh == 2) {		/* UpSample + 2x2 conv = ConvTranspose 2x2/2 */
+				if (upsrc[g.in[0]] < 0)
+					DIE("2x2 conv %s without an UpSample before it", S[i + 1].s);
+				g.op = G_DECONV, g.in[0] = upsrc[g.in[0]], g.oc = oc;
+			} else if (r->dw && r->kh == 1) {
+				g.op = G_PC, g.oc = oc;
+			} else {
+				g.op = G_CONV, g.oc = oc, g.ic = r->dw ? oc : ic, g.k = r->kh, g.pad = pd[0], g.dw = r->dw;
+				g.stride = st, g.padb = pd[1];
+				if (k != r->kh || st < 1 || st > 2 || pd[0] != pd[2] || pd[1] != pd[3])
+					DIE("conv %s: k %d (W %d), stride %d, pads %d %d %d %d", S[i + 1].s, k, r->kh, st,
+					    pd[0], pd[1], pd[2], pd[3]);
+			}
+			chn[out] = g.op == G_HEAD ? 0 : oc;
+			chunks_conv(out, oc);
+		} else if (!strcmp(ty, "Add")) {
+			if (nin != 2)
+				DIE("Add %s: %d inputs", S[i + 1].s, nin);
+			g.op = G_ADD, g.nin = 2, g.in[1] = ins[1], g.crec = kadd++;
+			if (g.crec >= nadd)
+				DIE("more Add ops than add records (%d)", nadd);
+			chn[out] = chn[ins[0]];
+			chunks_copy(out, ins[0]);
+		} else if (!strcmp(ty, "Concat")) {
+			if (nin < 2 || nin > 4)
+				DIE("Concat %s: %d inputs", S[i + 1].s, nin);
+			g.op = G_CAT, g.nin = nin, g.crec = kcat++;
+			chn[out] = 0, nchk[out] = 0;
+			for (int k = 0; k < nin; k++) {
+				g.in[k] = ins[k], chn[out] += chn[ins[k]];
+				chunks_append(out, ins[k]);
+			}
+			/* the op's own record; else the header's records in op order (load_bin) */
+			if (cat_rec(b, n, e, nin, g.ca, &g.zp)) {
+				if (g.crec >= ncat || cat_n[g.crec] != nin)
+					DIE("Concat %s: concat record %d", S[i + 1].s, g.crec);
+				memcpy(g.ca, cat_a[g.crec], sizeof(g.ca));
+				g.zp = 0;
+			}
+		} else if (!strcmp(ty, "Pooling")) {
+			int pk, pst, pp;
+
+			g.op = G_POOL;		/* 2x2/2 (QSUM; also when the record is not understood, as before) */
+			if (!pool_rec(b, n, e, &pk, &pst, &pp)) {
+				if (pk == 5 && pst == 1 && pp == 2)
+					g.op = G_POOL5;
+				else if (pk != 2 || pst != 2 || pp != 0)
+					DIE("Pooling %s: %dx%d/%d pad %d", S[i + 1].s, pk, pk, pst, pp);
+			}
+			chn[out] = chn[g.in[0]];
+			chunks_copy(out, g.in[0]);
+		} else {
+			DIE("op type %s (%s) not supported", ty, S[i + 1].s);
+		}
+		if (ng == MAXNODE)
+			DIE("graph too long");
+		G[ng++] = g;
+		i = kix + 1;
+	}
+	ntens = nt;
+	free(S);
+	free(b);
+	if (!silu_model)	/* the QSUM stem reads RGB (stem_f), whatever the header's input */
+		in_c = 3;
+	if (!ng || !nouts)
+		DIE("%s: no ops / heads in the header", path);
+	if (kconv != nrec || kadd != nadd)
+		DIE("%s: %d convs for %d W blocks, %d adds for %d add records", path, kconv, nrec, kadd, nadd);
+}
+
+/* ---- tensors and CPU ops */
+
+struct tensor { int h, w, c, ps; uint8_t *u8; float *f; size_t cap; };	/* ps: bytes per pixel (0: c) */
+static struct tensor T[MAXTENS];
+
+/* tensor memory: a pool of 64-byte aligned buffers. An op's output takes the smallest free buffer
+ * that fits (a new one only if none does); after a tensor's last reader has run its buffer goes
+ * back (plan_life). The outputs (float heads) and the caller's frame are never pooled. Every frame
+ * asks for the same sizes in the same order, so from the second frame on the same buffers come
+ * back: no allocations and no page faults per frame, and the peak is the largest live set, not
+ * the sum of all tensors */
+#define MAXPOOL 256
+static struct { uint8_t *p; size_t cap; int busy; } pool[MAXPOOL];
+static int npool;
+static size_t pool_bytes;
+static int last_use[MAXTENS];		/* the node after which a tensor's buffer goes back; -1 never */
+
+static uint8_t *pool_get(size_t n, size_t *cap)
+{
+	int b = -1;
+
+	for (int k = 0; k < npool; k++)
+		if (!pool[k].busy && pool[k].cap >= n && (b < 0 || pool[k].cap < pool[b].cap))
+			b = k;
+	if (b < 0) {
+		if (npool == MAXPOOL)
+			DIE("tensor pool: more than %d buffers", MAXPOOL);
+		b = npool++;
+		pool[b].cap = (n + 63) & ~(size_t)63;
+		if (posix_memalign((void **)&pool[b].p, 64, pool[b].cap))
+			DIE("out of memory (%zu bytes)", pool[b].cap);
+		pool_bytes += pool[b].cap;
+	}
+	pool[b].busy = 1;
+	*cap = pool[b].cap;
+	return pool[b].p;
+}
+
+static void pool_put(uint8_t *p)
+{
+	for (int k = 0; k < npool; k++)
+		if (pool[k].p == p) {
+			pool[k].busy = 0;
+			return;
+		}
+	DIE("tensor pool: buffer %p not from the pool", (void *)p);
+}
+
+static void need_u8(struct tensor *t, size_t n)
+{
+	if (t->u8 && t->cap >= n)
+		return;
+	if (t->u8)
+		pool_put(t->u8);
+	t->u8 = pool_get(n, &t->cap);
+}
+
+/* the tensor's buffer back to the pool */
+static void tensor_done(int id)
+{
+	if (id > 0 && T[id].u8) {
+		pool_put(T[id].u8);
+		T[id].u8 = NULL, T[id].cap = 0;
+	}
+}
+
+/* after the graph passes: each tensor's last reader among the nodes that run (a concat reads a
+ * folded deconv's input itself). Outputs and the frame are never returned; a tensor nothing reads
+ * goes back right after its producer */
+static void plan_life(void)
+{
+	for (int t = 0; t < MAXTENS; t++)
+		last_use[t] = -2;
+	for (int i = 0; i < ng; i++) {
+		if (G[i].skip)
+			continue;
+		if (last_use[G[i].out] == -2)
+			last_use[G[i].out] = i;
+		for (int k = 0; k < G[i].nin; k++)
+			last_use[G[i].dec[k] ? G[G[i].dec[k] - 1].in[0] : G[i].in[k]] = i;
+	}
+	last_use[0] = -1;
+	for (int k = 0; k < nouts; k++)
+		last_use[outs[k]] = -1;
+}
+
+static void need_f(struct tensor *t, size_t n)
+{
+	if (!t->f && !(t->f = malloc(n * sizeof(float))))
+		DIE("out of memory");
+}
+
+static uint8_t qsum(int64_t S, int32_t B, int32_t Tv, int sh);
+static uint8_t *pc_table(const struct qrec *r, int oc, int tap);
+
+/* the clamp min(x, t) the thingino-ai T41 export builds from Add (x - relu(x - t)): tensor X is
+ * read by a chain of per-channel 1x1 ops ending in N and by add(X, N). Every input of that add is a
+ * function of X's byte, so the whole clamp becomes one table, composed into the conv's (tab).
+ * Returns 1 when it folded one. */
+static int clamp_fold(struct gnode *g, uint8_t *tab, const int *uses, int *nthis)
+{
+	int X = g->out, jp = -1, ja = -1, cur, N = -1, chain[8], nc = 0, aX;
+	uint8_t ct[256], t2[256];
+
+	if (uses[X] != 2)
+		return 0;
+	for (int k = (int)(g - G) + 1; k < ng; k++) {
+		if (G[k].skip)
+			continue;
+		if (G[k].op == G_PC && G[k].in[0] == X && jp < 0)
+			jp = k;
+		if (G[k].op == G_ADD && (G[k].in[0] == X || G[k].in[1] == X) && ja < 0)
+			ja = k;
+	}
+	if (jp < 0 || ja < 0)
+		return 0;
+	for (int x = 0; x < 256; x++)
+		ct[x] = (uint8_t)x;
+	for (cur = jp;;) {
+		uint8_t *pt;
+		int same = 1, next = -1;
+
+		if (G[cur].oc != g->oc || nc == 8)
+			return 0;
+		pt = pc_table(&rec[G[cur].rec], g->oc, 0);
+		for (int c = 1; c < g->oc && same; c++)
+			same = !memcmp(pt, pt + 256 * c, 256);
+		if (same)
+			for (int x = 0; x < 256; x++)
+				ct[x] = pt[ct[x]];
+		free(pt);
+		if (!same)
+			return 0;
+		chain[nc++] = cur;
+		N = G[cur].out;
+		if (uses[N] != 1)
+			return 0;
+		for (int k = cur + 1; k < ng && next < 0; k++)
+			if (!G[k].skip && (G[k].in[0] == N || (G[k].nin > 1 && G[k].in[1] == N)))
+				next = k;
+		if (next == ja)
+			break;
+		if (next < 0 || G[next].op != G_PC || G[next].nin != 1)
+			return 0;
+		cur = next;
+	}
+	aX = G[ja].in[0] == X ? 0 : 1;
+	if (G[ja].in[1 - aX] != N)
+		return 0;
+	for (int v = 0; v < 256; v++) {
+		int xv = tab[v], nv = ct[xv];
+
+		t2[v] = aX == 0 ? add_q(&addr[G[ja].crec], xv, nv) : add_q(&addr[G[ja].crec], nv, xv);
+	}
+	memcpy(tab, t2, 256);
+	for (int k = 0; k < nc; k++)
+		G[chain[k]].skip = 1;
+	G[ja].skip = 1;
+	g->out = G[ja].out;
+	*nthis += nc + 1;
+	return 1;
+}
+
+/* fold per-channel 1x1 ops into the conv before them: conv -> pc -> pc ... becomes one conv whose
+ * output bytes go through one composed table, when that table is the same for every channel and
+ * each intermediate tensor has no other reader */
+static int fold(void)
+{
+	static int uses[MAXTENS];
+	int nf = 0;
+
+	memset(uses, 0, sizeof(uses));
+
+	for (int i = 0; i < ng; i++)
+		for (int k = 0; k < G[i].nin; k++)
+			uses[G[i].in[k]]++;
+	for (int k = 0; k < nouts; k++)
+		uses[outs[k]]++;
+	for (int i = 0; i < ng; i++) {
+		struct gnode *g = &G[i];
+		uint8_t tab[256];
+		int nthis = 0, ident = 1;
+
+		if (g->op != G_CONV && g->op != G_STEM)
+			continue;
+		for (int x = 0; x < 256; x++)
+			tab[x] = (uint8_t)x;
+		for (;;) {
+			for (;;) {
+				int j = -1, same = 1;
+				uint8_t *pt, t2[256];
+
+				if (uses[g->out] != 1)
+					break;
+				for (int k = i + 1; k < ng && j < 0; k++)
+					if (!G[k].skip && G[k].nin == 1 && G[k].in[0] == g->out)
+						j = k;
+				if (j < 0 || G[j].op != G_PC || G[j].oc != g->oc)
+					break;
+				pt = pc_table(&rec[G[j].rec], g->oc, 0);
+				for (int c = 1; c < g->oc && same; c++)
+					same = !memcmp(pt, pt + 256 * c, 256);
+				if (same)
+					for (int x = 0; x < 256; x++)
+						t2[x] = pt[tab[x]];
+				free(pt);
+				if (!same)
+					break;
+				memcpy(tab, t2, 256);
+				G[j].skip = 1;
+				g->out = G[j].out;
+				nthis++;
+			}
+			if (!clamp_fold(g, tab, uses, &nthis))
+				break;
+		}
+		for (int x = 0; x < 256 && ident; x++)
+			ident = tab[x] == x;
+		if (nthis && !ident) {
+			if (posix_memalign((void **)&g->post, 64, 256))	/* 64-aligned: VPR loads */
+				DIE("out of memory");
+			memcpy(g->post, tab, 256);
+		}
+		nf += nthis;
+	}
+	/* a residual add read only by per-channel 1x1 ops (the same table for every channel): the add
+	 * writes post[add] itself, in the same pass (nna_vadd_post / the add's 64 KB table) */
+	for (int i = 0; i < ng; i++) {
+		struct gnode *g = &G[i];
+		uint8_t tab[256];
+		int nthis = 0, ident = 1;
+
+		if (g->op != G_ADD || g->skip)
+			continue;
+		for (int x = 0; x < 256; x++)
+			tab[x] = (uint8_t)x;
+		for (;;) {
+			int j = -1, same = 1;
+			uint8_t *pt, t2[256];
+
+			if (uses[g->out] != 1)
+				break;
+			for (int k = i + 1; k < ng && j < 0; k++)
+				if (!G[k].skip && G[k].nin == 1 && G[k].in[0] == g->out)
+					j = k;
+			if (j < 0 || G[j].op != G_PC || G[j].oc < 1)
+				break;
+			pt = pc_table(&rec[G[j].rec], G[j].oc, 0);
+			for (int c = 1; c < G[j].oc && same; c++)
+				same = !memcmp(pt, pt + 256 * c, 256);
+			if (same)
+				for (int x = 0; x < 256; x++)
+					t2[x] = pt[tab[x]];
+			free(pt);
+			if (!same)
+				break;
+			memcpy(tab, t2, 256);
+			G[j].skip = 1;
+			g->out = G[j].out;
+			nthis++;
+		}
+		for (int x = 0; x < 256 && ident; x++)
+			ident = tab[x] == x;
+		if (nthis && !ident) {
+			if (posix_memalign((void **)&g->post, 64, 256))	/* 64-aligned: VPR loads */
+				DIE("out of memory");
+			memcpy(g->post, tab, 256);
+		}
+		nf += nthis;
+	}
+	/* a 2x2 deconv read only by a concat: the concat builds that input itself, each output phase
+	 * through the deconv's per-channel table for its tap and the concat's rescale in one table (a
+	 * zero-insert deconv: phases 1..3 are constants per channel) */
+	for (int c = 0; c < ng; c++)
+		for (int k = 0; G[c].op == G_CAT && k < G[c].nin; k++)
+			for (int j = 0; j < c; j++)
+				if (G[j].op == G_DECONV && !G[j].skip && G[j].out == G[c].in[k] && uses[G[j].out] == 1 &&
+				    rec[G[j].rec].kh == 2 && rec[G[j].rec].kw == 2 && rec[G[j].rec].dw) {
+					G[j].skip = 1;
+					G[c].dec[k] = j + 1;
+					nf++;
+				}
+	return nf;
+}
+
+static uint8_t qsum(int64_t S, int32_t B, int32_t Tv, int sh)
+{
+	int64_t r = S * ((int64_t)1 << sh) + B, t = Tv & 0x3ffffff, q;
+
+	if (!t)
+		return r >= 0 ? 255 : 0;
+	q = r / t - (r % t && r < 0);
+	q += 128;
+	return (uint8_t)(q < 0 ? 0 : q > 255 ? 255 : q);
+}
+
+static const int8_t STEM[32][3] = {	/* stem slot -> c, ky, kx (-1: unused) */
+	{0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {2, 0, 1}, {1, 1, 0},
+	{0, 0, 2}, {1, 0, 2}, {2, 0, 2}, {2, 1, 0}, {0, 1, 1}, {1, 1, 1}, {2, 1, 1}, {-1, 0, 0},
+	{0, 2, 0}, {1, 2, 0}, {2, 2, 0}, {-1, 0, 0}, {0, 2, 1}, {1, 2, 1}, {2, 2, 1}, {-1, 0, 0},
+	{0, 2, 2}, {1, 2, 2}, {2, 2, 2}, {-1, 0, 0}, {0, 1, 2}, {1, 1, 2}, {2, 1, 2}, {-1, 0, 0},
+};
+
+/* the stem's 32-byte pixels (3x3/2, pad bottom/right 1) into f (OH x OW x 32, zeroed once: the
+ * unused slots are never written). Interior pixels: 27 bytes at fixed offsets from the window */
+static void stem_f(const uint8_t *rgb, int H, int W, uint8_t *f)
+{
+	int OH = H / 2, OW = W / 2, off[32], slot[32], n = 0, unrolled;
+
+	for (int i = 0; i < 32; i++)
+		if (STEM[i][0] >= 0)
+			slot[n] = i, off[n++] = (STEM[i][1] * W + STEM[i][2]) * 3 + STEM[i][0];
+	/* the unrolled copy below is the STEM table; check that it is */
+	unrolled = n == 27;
+	for (int k = 0; k < n && unrolled; k++) {
+		static const int8_t u[32][2] = {	/* slot -> row (0..2), byte in the row's 9 */
+			{0, 0}, {0, 1}, {0, 2}, {1, 0}, {0, 3}, {0, 4}, {0, 5}, {1, 1}, {0, 6}, {0, 7}, {0, 8}, {1, 2},
+			{1, 3}, {1, 4}, {1, 5}, {-1, 0}, {2, 0}, {2, 1}, {2, 2}, {-1, 0}, {2, 3}, {2, 4}, {2, 5}, {-1, 0},
+			{2, 6}, {2, 7}, {2, 8}, {-1, 0}, {1, 6}, {1, 7}, {1, 8}, {-1, 0} };
+
+		unrolled = u[slot[k]][0] >= 0 && off[k] == u[slot[k]][0] * 3 * W + u[slot[k]][1];
+	}
+	for (int y = 0; y < OH; y++) {
+		const uint8_t *row = rgb + 2L * y * W * 3;
+		uint8_t *d = f + (long)y * OW * 32;
+		int xe = 2 * y + 2 < H ? OW - 1 : 0;	/* the last row and column take the checked path */
+
+		for (int x = 0; x < xe; x++, d += 32) {
+			const uint8_t *s = row + 6L * x, *s1 = s + 3L * W, *s2 = s1 + 3L * W;
+
+			if (unrolled) {	/* the STEM table, spelled out */
+				d[0] = s[0], d[1] = s[1], d[2] = s[2], d[3] = s1[0];
+				d[4] = s[3], d[5] = s[4], d[6] = s[5], d[7] = s1[1];
+				d[8] = s[6], d[9] = s[7], d[10] = s[8], d[11] = s1[2];
+				d[12] = s1[3], d[13] = s1[4], d[14] = s1[5];
+				d[16] = s2[0], d[17] = s2[1], d[18] = s2[2];
+				d[20] = s2[3], d[21] = s2[4], d[22] = s2[5];
+				d[24] = s2[6], d[25] = s2[7], d[26] = s2[8];
+				d[28] = s1[6], d[29] = s1[7], d[30] = s1[8];
+			} else {
+				for (int k = 0; k < n; k++)
+					d[slot[k]] = s[off[k]];
+			}
+		}
+		for (int x = xe; x < OW; x++, d += 32)
+			for (int i = 0; i < 32; i++) {
+				int c = STEM[i][0], iy = 2 * y + STEM[i][1], ix = 2 * x + STEM[i][2];
+
+				d[i] = c >= 0 && iy < H && ix < W ? rgb[((long)iy * W + ix) * 3 + c] : 0;
+			}
+	}
+}
+
+/* CPU conv: int sums [OH][OW][oc]; dense 1x1 or depthwise kxk; stride st, pad pt top/left and pb
+ * bottom/right with byte 0 (the zero code of these ReLU tensors) */
+static void cpu_sums(const struct qrec *r, const uint8_t *in, int H, int W, int C, int ips, int oc, int k,
+		     int pt, int pb, int st, int64_t *S)
+{
+	int OH = (H + pt + pb - k) / st + 1, OW = (W + pt + pb - k) / st + 1;
+
+	for (int y = 0; y < OH; y++)
+		for (int x = 0; x < OW; x++) {
+			int64_t *s = S + ((long)y * OW + x) * oc;
+
+			memset(s, 0, sizeof(*s) * (size_t)oc);
+			if (r->dw) {
+				for (int ky = 0; ky < k; ky++)
+					for (int kx = 0; kx < k; kx++) {
+						int iy = y * st + ky - pt, ix = x * st + kx - pt;
+						const int8_t *w = r->wq + (long)(ky * r->kw + kx) * 32 * r->nob;
+
+						if (iy < 0 || iy >= H || ix < 0 || ix >= W)
+							continue;
+						for (int c = 0; c < oc; c++)
+							s[c] += (int64_t)w[c] * in[((long)iy * W + ix) * ips + c];
+					}
+			} else {		/* dense k x k: wq [t][oc][ic] */
+				for (int ky = 0; ky < k; ky++)
+					for (int kx = 0; kx < k; kx++) {
+						int iy = y * st + ky - pt, ix = x * st + kx - pt;
+						const uint8_t *px = in + ((long)iy * W + ix) * ips;
+
+						if (iy < 0 || iy >= H || ix < 0 || ix >= W)
+							continue;
+						for (int o = 0; o < oc; o++) {
+							const int8_t *w = r->wq + ((long)(ky * k + kx) * 32 * r->nob + o) * 32 * r->nic;
+							int64_t a = 0;
+
+							for (int c = 0; c < C; c++)
+								a += (int64_t)w[c] * px[c];
+							s[o] += a;
+						}
+					}
+			}
+		}
+}
+
+static void qsum_all(const struct qrec *r, const int64_t *S, long npx, int oc, uint8_t *q)
+{
+	for (long p = 0; p < npx; p++)
+		for (int c = 0; c < oc; c++)
+			q[p * oc + c] = qsum(S[p * oc + c], r->bt[64 * (c / 32) + c % 32], r->bt[64 * (c / 32) + 32 + c % 32], r->sh);
+}
+
+/* per-channel byte -> byte table: q(w x) */
+static uint8_t *pc_table(const struct qrec *r, int oc, int tap)
+{
+	uint8_t *t = xmalloc(256L * (size_t)oc);
+
+	for (int c = 0; c < oc; c++)
+		for (int x = 0; x < 256; x++)
+			t[c * 256 + x] = qsum((int64_t)r->wq[(long)tap * 32 * r->nob + c] * x, r->bt[64 * (c / 32) + c % 32],
+					      r->bt[64 * (c / 32) + 32 + c % 32], r->sh);
+	return t;
+}
+
+static double now_ms(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6;
+}
+
+static struct nna_be be;
+static int use_nna, check;
+static uint8_t *tabs[MAXNODE];		/* per node: pc / deconv tables, built once */
+static void *cfuse[MAXNODE];		/* per concat node: its tables (struct catf) */
+static int8_t *wtrim[MAXREC];
+static uint8_t *padbuf[MAXREC];
+#ifdef ONNA_MXU3
+static int8_t vadd_ok[MAXNODE];		/* per add node: 1 nna_vadd == its table, -1 not (table) */
+#endif		/* per record: its input with the bottom/right pad (pb != pad) */		/* per record: weights trimmed to the conv's oc */
+static uint8_t *stem_buf;
+static uint8_t conv_readers_only[MAXTENS];	/* tensor read by convs / heads only (after folding) */		/* the stem's 32-byte pixels (unused slots stay 0) */
+
+/* which tensors only convs / heads read (after folding): those may be stored as 32-byte pixels */
+static void set_readers(void)
+{
+	for (int t = 0; t < MAXTENS; t++)
+		conv_readers_only[t] = 1;
+	for (int k = 0; k < nouts; k++)
+		conv_readers_only[outs[k]] = 0;
+	for (int i = 0; i < ng; i++)
+		if (!G[i].skip && G[i].op != G_CONV && G[i].op != G_HEAD)
+			for (int k = 0; k < G[i].nin; k++)
+				conv_readers_only[G[i].dec[k] ? G[G[i].dec[k] - 1].in[0] : G[i].in[k]] = 0;
+}
+
+static uint8_t rec_cpu[MAXREC];	/* a conv record whose sums the CPU computes every frame */
+
+static void conv_op(const struct gnode *g, const struct qrec *r, const uint8_t *in, int H, int W, int C, int ips,
+		    struct tensor *o, int head)
+{
+	int k = g->k ? g->k : 1, pad = g->pad, st = g->stride ? g->stride : 1;
+	int pb = g->op == G_CONV ? g->padb : pad;
+	int OH = (H + pad + pb - k) / st + 1, OW = (W + pad + pb - k) / st + 1, oc = g->oc;
+	long npx = (long)OH * OW;
+	int64_t *S = NULL;
+	int nna = use_nna;
+	/* raw: the NNA returns the sums and the CPU finishes: a head (float out), or a conv whose
+	 * requant shift is not the NNA QSUM's x4 (sh != 2) */
+	int raw = head || r->sh != 2;
+	/* A/B switches for the T41 reset hunt: keep a kind of conv on the CPU (as before 2445800).
+	 * ONNA_CPU_RAW=1: the non-head convs with sh != 2; ONNA_CPU_S2=1: stride-2 and
+	 * bottom/right-only padded convs. Read once */
+	static int cpu_raw = -1, cpu_s2 = -1;
+
+	if (cpu_raw < 0)
+		cpu_raw = !!getenv("ONNA_CPU_RAW"), cpu_s2 = !!getenv("ONNA_CPU_S2");
+	if ((cpu_raw && !head && r->sh != 2) || (cpu_s2 && (st != 1 || pb != pad)))
+		nna = 0;
+
+	/* on the NNA a 16-channel output is stored as 32-byte pixels: the next conv then writes F
+	 * straight from the tensor (its weights for channels 16..31 are 0). Only when convs alone read
+	 * it (an add, pc, pool or concat reads packed pixels) */
+	int ops = nna && !raw && oc == 16 && conv_readers_only[g->out] ? 32 : oc;
+
+	o->h = OH, o->w = OW, o->c = oc, o->ps = ops;
+	if (head)
+		need_f(o, (size_t)(npx * oc));
+	else
+		need_u8(o, (size_t)(npx * ops));
+	if (!nna)
+		rec_cpu[g->rec] = 1;		/* its weights stay (drop_weights) */
+	if (!nna || check) {
+		S = xmalloc(sizeof(*S) * (size_t)(npx * oc));
+		cpu_sums(r, in, H, W, C, ips, oc, k, pad, pb, st, S);
+	}
+	if (nna) {
+		struct nna_node nd;
+		struct nna_rq rq;
+		int oh, ow;
+		int32_t *S32 = raw ? xmalloc(sizeof(int32_t) * (size_t)(npx * 32 * r->nob)) : NULL;
+		const uint8_t *src = in;
+		int Hs = H, Ws = W;
+
+		/* the NNA pads symmetrically: a bottom/right-only pad (stride-2 layers, TF 'SAME') becomes
+		 * a copy of the input with pb - pad extra zero rows / columns at the bottom / right, run
+		 * with pad. Kept per record, zeroed once: the extra rows / columns are never written */
+		if (pb != pad) {
+			int e = pb - pad;
+
+			if (e < 0)
+				DIE("rec %d: pad top %d > bottom %d", g->rec, pad, pb);
+			Hs = H + e, Ws = W + e;
+			if (!padbuf[g->rec]) {
+				padbuf[g->rec] = calloc((size_t)Hs * Ws * ips, 1);
+				if (!padbuf[g->rec])
+					DIE("out of memory");
+			}
+			for (int y = 0; y < H; y++)
+				memcpy(padbuf[g->rec] + (size_t)y * Ws * ips, in + (size_t)y * W * ips, (size_t)W * ips);
+			src = padbuf[g->rec];
+		}
+		memset(&nd, 0, sizeof(nd));
+		memset(&rq, 0, sizeof(rq));
+		nd.rec = g->rec, nd.oc = oc, nd.ic = r->dw ? 1 : 32 * r->nic, nd.kh = nd.kw = k, nd.stride = st;
+		nd.pad = pad, nd.padval = 0, nd.dw = r->dw, nd.wq = r->wq;
+		/* nna_conv reads wq as [ky][kx][oc][ic] with oc = nd.oc; the records have oc = 32 nob. No wq
+		 * after drop_weights: nnaeng has the record's W encoded */
+		if (oc != 32 * r->nob && r->wq) {
+			int taps = k * k;
+
+			if (!wtrim[g->rec]) {
+				wtrim[g->rec] = xmalloc((size_t)taps * oc * nd.ic);
+				for (int t = 0; t < taps; t++)
+					memcpy(wtrim[g->rec] + (long)t * oc * nd.ic, r->wq + (long)t * 32 * r->nob * nd.ic,
+					       (size_t)oc * nd.ic);
+			}
+			nd.wq = wtrim[g->rec];
+		}
+		rq.q = o->u8, rq.bt = r->bt, rq.post = g->post, rq.ps = ops;
+		if (nna_conv(&be, src, Hs, Ws, C, ips, &nd, S32, raw ? NULL : &rq, &oh, &ow) || oh != OH || ow != OW)
+			DIE("rec %d: nna_conv failed (%dx%d, want %dx%d)", g->rec, oh, ow, OH, OW);
+		if (raw && !head) {			/* requant with this layer's shift, then its table */
+			for (long p = 0; p < npx; p++)
+				for (int c = 0; c < oc; c++) {
+					int32_t s = S32[p * oc + c];
+					uint8_t q;
+
+					if (check && s != S[p * oc + c])
+						DIE("rec %d (raw): sum differs at px %ld oc %d", g->rec, p, c);
+					q = qsum(s, r->bt[64 * (c / 32) + c % 32], r->bt[64 * (c / 32) + 32 + c % 32], r->sh);
+					o->u8[p * oc + c] = g->post ? g->post[q] : q;
+				}
+			free(S32);
+		} else if (head) {
+			for (long p = 0; p < npx; p++)
+				for (int c = 0; c < oc; c++) {
+					int32_t s = S32[p * oc + c];
+
+					if (check && s != S[p * oc + c])
+						DIE("rec %d (head): sum differs at px %ld oc %d", g->rec, p, c);
+					o->f[p * oc + c] = (float)((int64_t)s + r->bt[64 * (c / 32) + c % 32]) * r->fl[c];
+				}
+			free(S32);
+		} else if (check) {
+			uint8_t *ref = xmalloc((size_t)(npx * oc));
+
+			qsum_all(r, S, npx, oc, ref);
+			if (g->post)
+				for (long i = 0; i < npx * oc; i++)
+					ref[i] = g->post[ref[i]];
+			for (long i = 0; i < npx * oc; i++)
+				if (ref[i] != o->u8[i / oc * ops + i % oc])
+					DIE("rec %d: NNA byte %d, CPU %d at px %ld oc %ld", g->rec, o->u8[i / oc * ops + i % oc],
+					    ref[i], i / oc, i % oc);
+			free(ref);
+		}
+	} else if (head) {
+		for (long p = 0; p < npx; p++)
+			for (int c = 0; c < oc; c++)
+				o->f[p * oc + c] = (float)(S[p * oc + c] + r->bt[64 * (c / 32) + c % 32]) * r->fl[c];
+	} else {
+		qsum_all(r, S, npx, oc, o->u8);
+		if (g->post)
+			for (long i = 0; i < npx * oc; i++)
+				o->u8[i] = g->post[o->u8[i]];
+	}
+	free(S);
+}
+
+/* ---- the SiLU kind (yolov5n): venus's arithmetic (nnacpu.h) */
+
+/* integer conv on uint8 codes (ps bytes per pixel), padding = padval: S[oy][ox][oc] */
+static void silu_sums(const struct nna_node *nd, const uint8_t *in, int H, int W, int ps, int32_t *S)
+{
+	int OH = (H + 2 * nd->pad - nd->kh) / nd->stride + 1, OW = (W + 2 * nd->pad - nd->kw) / nd->stride + 1;
+	uint8_t padv[2048];
+
+	memset(padv, nd->padval, sizeof(padv));
+	for (int oy = 0; oy < OH; oy++)
+		for (int ox = 0; ox < OW; ox++) {
+			int32_t *acc = &S[((long)oy * OW + ox) * nd->oc];
+
+			memset(acc, 0, sizeof(int32_t) * (size_t)nd->oc);
+			for (int ky = 0; ky < nd->kh; ky++)
+				for (int kx = 0; kx < nd->kw; kx++) {
+					int iy = oy * nd->stride + ky - nd->pad, ix = ox * nd->stride + kx - nd->pad;
+					const uint8_t *px = iy < 0 || iy >= H || ix < 0 || ix >= W ? padv : &in[((long)iy * W + ix) * ps];
+					const int8_t *wr = &nd->wq[((long)ky * nd->kw + kx) * nd->oc * nd->ic];
+
+					for (int o = 0; o < nd->oc; o++) {
+						const int8_t *wo = wr + (long)o * nd->ic;
+						int32_t s = 0;
+
+						for (int c = 0; c < nd->ic; c++)
+							s += wo[c] * px[c];
+						acc[o] += s;
+					}
+				}
+		}
+}
+
+#ifdef ONNA_MXU3
+static struct nna_vrq *vrqs[MAXNODE];	/* per node: its numbers for the MXU3 SiLU requant */
+
+/* a conv's numbers for the MXU3 SiLU requant, per 32-oc block; wide: a
+ * 16-channel output stored as 32-byte pixels */
+static const struct nna_vrq *vrq_of(int i, const struct qrec *r, int oc, int wide)
+{
+	int nob = (oc + 31) / 32;
+
+	if (vrqs[i])
+		return vrqs[i];
+	if (posix_memalign((void **)&vrqs[i], 64, sizeof(struct nna_vrq) * (size_t)nob))
+		DIE("out of memory");
+	for (int ob = 0; ob < nob; ob++) {
+		struct nna_vrq *v = &vrqs[i][ob];
+
+		memset(v, 0, sizeof(*v));
+		for (int h = 0; h < 2; h++)
+			for (int c = 0; c < 16; c++)
+				if (32 * ob + 16 * h + c < oc) {
+					v->B[h][c] = r->B[32 * ob + 16 * h + c];
+					v->Fl[h][c] = r->fl[32 * ob + 16 * h + c];
+				}
+		if (oc - 32 * ob == 16)		/* paired pixels use half 0's numbers twice */
+			for (int c = 0; c < 16; c++)
+				v->B[1][c] = v->B[0][c], v->Fl[1][c] = v->Fl[0][c];
+		v->tb = r->st;
+		v->wide = wide;
+	}
+	return vrqs[i];
+}
+#endif
+
+/* a SiLU-kind conv (the stem too): q = lut[rint(f32(S + B) * Fl)]. On an engine the sums are
+ * requantized as they are read back (the MXU3 requant on the camera); -c also runs the CPU conv
+ * and compares the output bytes */
+static void silu_conv(int i, const struct gnode *g, const struct tensor *x, struct tensor *o)
+{
+	const struct nna_node *nd = g->nn;
+	const struct qrec *r = &rec[g->rec];
+	int OH = (x->h + 2 * nd->pad - nd->kh) / nd->stride + 1, OW = (x->w + 2 * nd->pad - nd->kw) / nd->stride + 1;
+	int oc = nd->oc, ips = x->ps ? x->ps : x->c;
+	long npx = (long)OH * OW;
+	/* 16 channels as 32-byte pixels on the NNA when only convs read them (as conv_op) */
+	int ops = use_nna && oc == 16 && conv_readers_only[g->out] ? 32 : oc;
+
+	if (x->c != nd->ic)
+		DIE("node %d: input has %d channels, the conv %d", i, x->c, nd->ic);
+	o->h = OH, o->w = OW, o->c = oc, o->ps = ops;
+	need_u8(o, (size_t)(npx * ops));
+	if (use_nna) {
+		struct nna_rq rq;
+		int oh, ow;
+
+		memset(&rq, 0, sizeof(rq));
+		rq.B = r->B, rq.Fl = r->fl, rq.q = o->u8, rq.ps = ops;
+#ifdef ONNA_MXU3
+		rq.vrq = vrq_of(i, r, oc, oc == 16 && ops == 32);	/* not a 32-channel conv */
+		if (!be.direct)
+#endif
+			rq.lut = rec_lut(g->rec);
+		if (nna_conv(&be, x->u8, x->h, x->w, x->c, ips, nd, NULL, &rq, &oh, &ow) || oh != OH || ow != OW)
+			DIE("rec %d: nna_conv failed (%dx%d, want %dx%d)", g->rec, oh, ow, OH, OW);
+	}
+	if (!use_nna || check) {
+		int32_t *S = malloc(sizeof(int32_t) * (size_t)(npx * oc));
+		uint8_t *q = use_nna ? malloc((size_t)(npx * oc)) : o->u8;
+
+		if (!S || !q)
+			DIE("out of memory");
+		silu_sums(nd, x->u8, x->h, x->w, ips, S);
+		nna_requant_lut(S, (int)npx, oc, r->B, r->fl, rec_lut(g->rec), q);
+		if (use_nna) {
+			for (long k = 0; k < npx * oc; k++)
+				if (q[k] != o->u8[k / oc * ops + k % oc])
+					DIE("rec %d: NNA byte %d, CPU %d at px %ld oc %ld", g->rec, o->u8[k / oc * ops + k % oc], q[k],
+					    k / oc, k % oc);
+			free(q);
+		}
+		free(S);
+	}
+}
+
+#ifdef ONNA_MXU3
+#include "mxu3.h"
+/* 2x2/2 byte max with MAXU.B, 64 bytes per op. C = 32: one VPR gathers octwords [p0 | p2], another
+ * [p1 | p3] of a row (LAO's immediate offsets), so 4 maxes give 2 output pixels. C % 64 = 0: the max
+ * of 4 whole pixels per 64 bytes. Needs 64-byte aligned rows; else 0 (the scalar loop runs) */
+static int pool2_mxu3(const struct tensor *x, struct tensor *o)
+{
+	long rs = (long)x->w * x->c, ors = (long)o->w * o->c;
+
+	if ((x->c != 32 && x->c % 64) || (rs & 63) || (ors & 63) || ((uintptr_t)x->u8 & 63) ||
+	    ((uintptr_t)o->u8 & 63) || (x->c == 32 && o->w % 2))
+		return 0;
+	for (int y = 0; y < o->h; y++) {
+		const uint8_t *a = x->u8 + 2L * y * rs, *b = a + rs;
+		uint8_t *d = o->u8 + y * ors;
+
+		if (x->c == 32) {
+			for (int xx = 0; xx < o->w; xx += 2, a += 128, b += 128, d += 64) {
+				register const void *ra __asm__("$9") = a;
+				register const void *rb __asm__("$10") = b;
+
+				__asm__ volatile(MXU3_WORD(LAO_W(9, 0, 0, 1)) MXU3_WORD(LAO_W(9, 2, 1, 1))
+						 MXU3_WORD(LAO_W(9, 1, 0, 2)) MXU3_WORD(LAO_W(9, 3, 1, 2))
+						 MXU3_WORD(LAO_W(10, 0, 0, 3)) MXU3_WORD(LAO_W(10, 2, 1, 3))
+						 MXU3_WORD(LAO_W(10, 1, 0, 4)) MXU3_WORD(LAO_W(10, 3, 1, 4))
+						 MXU3_WORD(MAXUB_W(1, 1, 2)) MXU3_WORD(MAXUB_W(3, 3, 4))
+						 MXU3_WORD(MAXUB_W(1, 1, 3))
+						 :: "r"(ra), "r"(rb) : "memory");
+				VSTORE(1, d);
+			}
+		} else {
+			for (int xx = 0; xx < o->w; xx++, a += 2 * x->c, b += 2 * x->c)
+				for (int v = 0; v < x->c; v += 64, d += 64) {
+					VLOAD(1, a + v);
+					VLOAD(2, a + x->c + v);
+					VLOAD(3, b + v);
+					VLOAD(4, b + x->c + v);
+					__asm__ volatile(MXU3_WORD(MAXUB_W(1, 1, 2)) MXU3_WORD(MAXUB_W(3, 3, 4))
+							 MXU3_WORD(MAXUB_W(1, 1, 3)) ::: "memory");
+					VSTORE(1, d);
+				}
+		}
+	}
+	return 1;
+}
+#endif
+
+static double optime[G_NOPS], nodetime[MAXNODE];	/* -T: per op kind, summed over the runs */
+static int timing;
+
+static void run_op(int i);
+
+/* ONNAQ_DUMP=dir: each op's output tensor as dir/t<id>.u8 (h w c, then the bytes, pixels packed) */
+static void dump_tensor(const char *dir, int id)
+{
+	const struct tensor *t = &T[id];
+	char path[512];
+	FILE *f;
+	int ps = t->ps ? t->ps : t->c;
+
+	if (!t->u8 || t->f)
+		return;
+	snprintf(path, sizeof(path), "%s/t%d.u8", dir, id);
+	if (!(f = fopen(path, "wb")))
+		return;
+	fwrite(&t->h, sizeof(int), 1, f), fwrite(&t->w, sizeof(int), 1, f), fwrite(&t->c, sizeof(int), 1, f);
+	for (long p = 0; p < (long)t->h * t->w; p++)
+		fwrite(t->u8 + p * ps, 1, (size_t)t->c, f);
+	fclose(f);
+}
+
+/* on the camera, after the first frame: every engine conv's W is encoded in nnaeng's cache and every
+ * table built from weights (per-channel ops, deconvs, concats) exists, so the decoded int8 weights
+ * go: the records' (except convs the CPU runs every frame), the trimmed copies and the SiLU
+ * convs'. ONNAQ_KEEP_W=1 keeps them; ONNAQ_DROP_W=1 drops them on the host oracle too (test) */
+static int weights_dropped;
+
+static void drop_weights(void)
+{
+	for (int i = 0; i < nrec; i++) {
+		if (!rec_cpu[i])
+			free(rec[i].wq), rec[i].wq = NULL;
+		free(wtrim[i]), wtrim[i] = NULL;
+	}
+	for (int i = 0; i < ng; i++)
+		if (G[i].nn)
+			free(G[i].nn->wq), G[i].nn->wq = NULL;
+	weights_dropped = 1;
+}
+
+static void run(const uint8_t *rgb)
+{
+	const char *dump = getenv("ONNAQ_DUMP");
+
+	T[0].h = in_h, T[0].w = in_w, T[0].c = in_c, T[0].ps = 0, T[0].u8 = (uint8_t *)rgb;
+	for (int i = 0; i < ng; i++) {
+		double t0 = timing ? now_ms() : 0;
+
+		run_op(i);
+		if (dump && !G[i].skip)
+			dump_tensor(dump, G[i].out);
+		if (!G[i].skip) {	/* buffers whose last reader this was */
+			for (int k = 0; k < G[i].nin; k++) {
+				int t = G[i].dec[k] ? G[G[i].dec[k] - 1].in[0] : G[i].in[k];
+
+				if (last_use[t] == i)
+					tensor_done(t);
+			}
+			if (last_use[G[i].out] == i)
+				tensor_done(G[i].out);
+		}
+		if (timing) {
+			optime[G[i].op] += now_ms() - t0;
+			nodetime[i] += now_ms() - t0;
+		}
+	}
+	/* the camera (MXU3 backend); ONNAQ_DROP_W=1 forces it on any engine (host test with the oracle) */
+	if (use_nna && !check && !weights_dropped && !getenv("ONNAQ_KEEP_W") && (be.direct || getenv("ONNAQ_DROP_W")))
+		drop_weights();
+}
+
+static void run_op(int i)
+{
+	{
+		const struct gnode *g = &G[i];
+		struct tensor *x = &T[g->in[0]], *o = &T[g->out];
+		const struct qrec *r = g->op == G_STEM || g->op == G_CONV || g->op == G_PC || g->op == G_HEAD ||
+				       g->op == G_DECONV ? &rec[g->rec] : NULL;
+		long npx = (long)x->h * x->w;
+
+		if (g->skip)
+			return;
+		for (int k = 0; k < g->nin; k++)
+			if (g->op != G_CONV && g->op != G_HEAD && T[g->in[k]].ps && T[g->in[k]].ps != T[g->in[k]].c)
+				DIE("node %d reads a %d-channel tensor stored with %d-byte pixels", i, T[g->in[k]].c,
+				    T[g->in[k]].ps);
+		o->ps = 0;
+		switch (g->op) {
+		case G_STEM: {
+			uint8_t *f = stem_buf;
+			struct gnode g1 = *g;
+
+			if (g->nn) {		/* the SiLU kind's 6x6/2 on RGBA: nnaeng's stem strips */
+				silu_conv(i, g, x, o);
+				break;
+			}
+
+			if (!f) {		/* zeroed once: the unused slots stay so */
+				if (posix_memalign((void **)&stem_buf, 64, (size_t)(x->h / 2) * (x->w / 2) * 32))
+					DIE("out of memory");
+				f = stem_buf;
+				memset(f, 0, (size_t)(x->h / 2) * (x->w / 2) * 32);
+			}
+			stem_f(x->u8, x->h, x->w, f);
+
+			g1.k = 1, g1.pad = 0;
+			if (r->dw || r->nic != 1 || r->kh != 1)
+				DIE("stem record %d", g->rec);
+			conv_op(&g1, r, f, x->h / 2, x->w / 2, 32, 32, o, 0);
+			break;
+		}
+		case G_CONV:
+		case G_HEAD:
+			if (g->nn) {
+				silu_conv(i, g, x, o);
+				break;
+			}
+			if (x->c != (r->dw ? g->oc : g->ic) || (g->op == G_CONV && r->kh != (g->k ? g->k : 1)))
+				DIE("node %d: shapes (in %d, rec k %d)", i, x->c, r->kh);
+			conv_op(g, r, x->u8, x->h, x->w, x->c, x->ps ? x->ps : x->c, o, g->op == G_HEAD);
+			break;
+		case G_PC:
+			if (!tabs[i])
+				tabs[i] = pc_table(r, g->oc, 0);
+			o->h = x->h, o->w = x->w, o->c = x->c;
+			need_u8(o, (size_t)(npx * x->c));
+			for (long p = 0; p < npx; p++)
+				for (int c = 0; c < x->c; c++)
+					o->u8[p * x->c + c] = tabs[i][c * 256 + x->u8[p * x->c + c]];
+			break;
+		case G_ADD: {
+			const struct tensor *y = &T[g->in[1]];
+
+			if (y->h != x->h || y->w != x->w || y->c != x->c)
+				DIE("node %d: add of %dx%dx%d and %dx%dx%d", i, x->h, x->w, x->c, y->h, y->w, y->c);
+			/* the whole (a, b) -> out table (64 KB), built once; with the MXU3 add it is only the
+			 * reference for its check, and is freed after it passes */
+			if (!tabs[i]
+#ifdef ONNA_MXU3
+			    && vadd_ok[i] <= 0
+#endif
+			   ) {
+				tabs[i] = xmalloc(65536);
+				for (int a = 0; a < 256; a++)
+					for (int b = 0; b < 256; b++) {
+						uint8_t q = add_q(&addr[g->crec], a, b);
+
+						tabs[i][a << 8 | b] = g->post ? g->post[q] : q;
+					}
+			}
+			o->h = x->h, o->w = x->w, o->c = x->c;
+			need_u8(o, (size_t)(npx * x->c));
+#ifdef ONNA_MXU3
+			/* MXU3 add (nna_vadd, 64 bytes a step; with a folded table nna_vadd_post), once checked
+			 * against this node's table on all 65536 (a, b) pairs: it was verified on yolov5n's
+			 * records, these differ (wB 0, T) */
+			/* ONNA_NO_VADD=1: the scalar table only (A/B for the T41 NN/MXU3 deadlock hunt) */
+			if (!vadd_ok[i] && getenv("ONNA_NO_VADD"))
+				vadd_ok[i] = -1;
+			if (!vadd_ok[i]) {
+				uint8_t *va, *vb, *vo;
+
+				if (posix_memalign((void **)&va, 64, 65536) || posix_memalign((void **)&vb, 64, 65536) ||
+				    posix_memalign((void **)&vo, 64, 65536))
+					DIE("out of memory");
+				for (int v = 0; v < 65536; v++)
+					va[v] = (uint8_t)(v >> 8), vb[v] = (uint8_t)v;
+				nna_vadd_post(va, vb, 65536, addr[g->crec].wa, addr[g->crec].wb, addr[g->crec].B, addr[g->crec].T,
+					      g->post, vo);
+				vadd_ok[i] = memcmp(vo, tabs[i], 65536) ? -1 : 1;
+				free(va), free(vb), free(vo);
+				if (vadd_ok[i] > 0)
+					free(tabs[i]), tabs[i] = NULL;
+			}
+			if (vadd_ok[i] > 0) {
+				nna_vadd_post(x->u8, y->u8, (int)(npx * x->c), addr[g->crec].wa, addr[g->crec].wb,
+					      addr[g->crec].B, addr[g->crec].T, g->post, o->u8);
+				break;
+			}
+#endif
+			for (long p = 0; p < npx * x->c; p++)
+				o->u8[p] = tabs[i][x->u8[p] << 8 | y->u8[p]];
+			break;
+		}
+		case G_POOL:
+			o->h = x->h / 2, o->w = x->w / 2, o->c = x->c;
+			need_u8(o, (size_t)o->h * o->w * o->c);
+#ifdef ONNA_MXU3
+			if (pool2_mxu3(x, o))
+				break;
+#endif
+			for (int y = 0; y < o->h; y++)
+				for (int xx = 0; xx < o->w; xx++)
+					for (int c = 0; c < o->c; c++) {
+						const uint8_t *a = x->u8 + ((long)(2 * y) * x->w + 2 * xx) * x->c + c;
+						uint8_t m = a[0];
+
+						m = a[x->c] > m ? a[x->c] : m;
+						m = a[(long)x->w * x->c] > m ? a[(long)x->w * x->c] : m;
+						m = a[(long)x->w * x->c + x->c] > m ? a[(long)x->w * x->c + x->c] : m;
+						o->u8[((long)y * o->w + xx) * o->c + c] = m;
+					}
+			break;
+		case G_DECONV: {
+			/* ConvTranspose 2x2/2, stored flipped: output (2y + dy, 2x + dx) uses tap (1 - dy, 1 - dx).
+			 * Each output is q(w x): a table per channel and phase */
+			if (r->kh != 2 || r->kw != 2 || !r->dw)
+				DIE("deconv record %d", g->rec);
+			if (!tabs[i]) {
+				tabs[i] = xmalloc(4 * 256L * (size_t)g->oc);
+				for (int t = 0; t < 4; t++) {
+					uint8_t *tt = pc_table(r, g->oc, t);
+
+					memcpy(tabs[i] + t * 256L * g->oc, tt, 256L * g->oc);
+					free(tt);
+				}
+			}
+			o->h = 2 * x->h, o->w = 2 * x->w, o->c = x->c;
+			need_u8(o, (size_t)o->h * o->w * o->c);
+			for (int y = 0; y < o->h; y++)
+				for (int xx = 0; xx < o->w; xx++) {
+					int t = (1 - y % 2) * 2 + (1 - xx % 2);
+					const uint8_t *tb = tabs[i] + t * 256L * g->oc, *s = x->u8 + ((long)(y / 2) * x->w + xx / 2) * x->c;
+					uint8_t *d = o->u8 + ((long)y * o->w + xx) * o->c;
+
+					for (int c = 0; c < x->c; c++)
+						d[c] = tb[c * 256 + s[c]];
+				}
+			break;
+		}
+		case G_CAT: {
+			/* per input: a byte table rint(x s_i / s_out) (a memcpy when it is the identity); an
+			 * input from a folded deconv is built here, straight into its slice: output phase
+			 * (y & 1, x & 1) of pixel (y / 2, x / 2) through the deconv's per-channel table for that
+			 * phase's tap and the concat's, as one table per phase (full). A zero-insert deconv:
+			 * only phase 0 reads the input (comp), the other three are a constant per channel (cst) */
+			struct catf { int ident[4]; uint8_t *comp[4], *cst[4][3], *full[4]; } *cf = cfuse[i];
+			int ctot = 0, off = 0, h = -1, w = -1;
+
+			for (int k = 0; k < g->nin; k++) {
+				const struct tensor *a = g->dec[k] ? &T[G[g->dec[k] - 1].in[0]] : &T[g->in[k]];
+				int ah = g->dec[k] ? 2 * a->h : a->h, aw = g->dec[k] ? 2 * a->w : a->w;
+
+				if (h < 0)
+					h = ah, w = aw;
+				if (ah != h || aw != w)
+					DIE("concat %d: input sizes", i);
+				ctot += a->c;
+			}
+			if (!cf) {
+				cf = cfuse[i] = xcalloc(1, sizeof(*cf));
+				for (int k = 0; k < g->nin; k++) {
+					uint8_t tb[256];
+
+					cf->ident[k] = 1;
+					for (int v = 0; v < 256; v++) {
+						if (g->zp == 128) {	/* the SiLU kind: nnacpu's rescale, (x - 128) a */
+							uint8_t xv = (uint8_t)v;
+
+							nna_rescale(&xv, 1, g->ca[k], &tb[v]);
+						} else {
+							float y = rintf((float)v * g->ca[k]);
+
+							tb[v] = (uint8_t)(y < 0 ? 0 : y > 255 ? 255 : y);
+						}
+						cf->ident[k] &= tb[v] == v;
+					}
+					if (g->dec[k]) {
+						const struct gnode *dn = &G[g->dec[k] - 1];
+						const struct qrec *dr = &rec[dn->rec];
+						int C = dn->oc;
+
+						if (dr->kh != 2 || dr->kw != 2 || !dr->dw)
+							DIE("deconv record %d", dn->rec);
+						uint8_t *ft = xmalloc(4 * 256L * (size_t)C);	/* [phase][c][v] */
+						int zi = 1;		/* phases 1..3 do not depend on the input */
+
+						for (int ph = 0; ph < 4; ph++) {	/* output phase (dy, dx) uses tap 3 - ph */
+							uint8_t *pt = pc_table(dr, C, 3 - ph), *fp = ft + ph * 256L * C;
+
+							for (long e = 0; e < 256L * C; e++)
+								fp[e] = tb[pt[e]];
+							free(pt);
+							for (int c = 0; ph && c < C && zi; c++)
+								for (int v = 1; v < 256 && zi; v++)
+									zi = fp[c * 256 + v] == fp[c * 256];
+						}
+						if (zi) {
+							cf->comp[k] = xmalloc(256L * (size_t)C);
+							memcpy(cf->comp[k], ft, 256L * (size_t)C);
+							for (int ph = 1; ph < 4; ph++) {
+								cf->cst[k][ph - 1] = xmalloc((size_t)C);
+								for (int c = 0; c < C; c++)
+									cf->cst[k][ph - 1][c] = ft[ph * 256L * C + c * 256];
+							}
+							free(ft);
+						} else
+							cf->full[k] = ft;
+					} else if (!cf->ident[k]) {
+						cf->comp[k] = xmalloc(256);
+						memcpy(cf->comp[k], tb, 256);
+					}
+				}
+			}
+			o->h = h, o->w = w, o->c = ctot;
+			npx = (long)h * w;
+			need_u8(o, (size_t)(npx * ctot));
+			for (int k = 0; k < g->nin; k++) {
+				if (g->dec[k]) {
+					const struct tensor *a = &T[G[g->dec[k] - 1].in[0]];
+					int C = a->c;
+
+					if (cf->full[k]) {	/* nearest x2: each input pixel -> its 2 x 2 output pixels */
+						for (int sy = 0; sy < a->h; sy++)
+							for (int sx = 0; sx < a->w; sx++) {
+								const uint8_t *sp = a->u8 + ((long)sy * a->w + sx) * C;
+
+								for (int ph = 0; ph < 4; ph++) {
+									const uint8_t *tb = cf->full[k] + ph * 256L * C;
+									uint8_t *d = o->u8 + ((long)(2 * sy + (ph >> 1)) * w + 2 * sx + (ph & 1)) * ctot + off;
+
+									for (int c = 0; c < C; c++)
+										d[c] = tb[c * 256 + sp[c]];
+								}
+							}
+						off += C;
+						continue;
+					}
+					for (int y = 0; y < h; y++)
+						for (int xx = 0; xx < w; xx++) {
+							uint8_t *d = o->u8 + ((long)y * w + xx) * ctot + off;
+							int ph = (y & 1) * 2 + (xx & 1);
+
+							if (ph) {
+								memcpy(d, cf->cst[k][ph - 1], (size_t)C);
+								continue;
+							}
+							const uint8_t *sp = a->u8 + ((long)(y / 2) * a->w + xx / 2) * C;
+
+							for (int c = 0; c < C; c++)
+								d[c] = cf->comp[k][c * 256 + sp[c]];
+						}
+					off += C;
+					continue;
+				}
+				const struct tensor *a = &T[g->in[k]];
+
+				for (long p = 0; p < npx; p++) {
+					uint8_t *d = o->u8 + p * ctot + off;
+					const uint8_t *sp = a->u8 + p * a->c;
+
+					if (cf->ident[k])
+						memcpy(d, sp, (size_t)a->c);
+					else
+						for (int c = 0; c < a->c; c++)
+							d[c] = cf->comp[k][sp[c]];
+				}
+				off += a->c;
+			}
+			break;
+		}
+		case G_POOL5:		/* SPPF: 5x5/1 pad 2 */
+			o->h = x->h, o->w = x->w, o->c = x->c;
+			need_u8(o, (size_t)(npx * x->c));
+			nna_maxpool5(x->u8, x->h, x->w, x->c, o->u8);
+			break;
+		case G_UP2:		/* nearest x2 */
+			o->h = 2 * x->h, o->w = 2 * x->w, o->c = x->c;
+			need_u8(o, (size_t)o->h * o->w * o->c);
+			nna_upsample2(x->u8, x->h, x->w, x->c, o->u8);
+			break;
+		case G_NORM:		/* rescale through a byte table built with nna_rescale (exact) */
+			if (!tabs[i]) {
+				uint8_t id[256];
+
+				if (!(tabs[i] = malloc(256)))
+					DIE("out of memory");
+				for (int v = 0; v < 256; v++)
+					id[v] = (uint8_t)v;
+				nna_rescale(id, 256, g->ca[0], tabs[i]);
+			}
+			o->h = x->h, o->w = x->w, o->c = x->c;
+			need_u8(o, (size_t)(npx * x->c));
+			for (long p = 0; p < npx * x->c; p++)
+				o->u8[p] = tabs[i][x->u8[p]];
+			break;
+		}
+	}
+}
+
+/* ---- library API (onnaq.h) */
+
+struct catf { int ident[4]; uint8_t *comp[4], *cst[4][3], *full[4]; };
+
+const char *onnaq_error(void)
+{
+	return die_msg;
+}
+
+static uint8_t *rgba;		/* onnaq_run's frame as RGBA, for a 4-channel model */
+
+void onnaq_close(void)
+{
+	for (int i = 0; i < MAXNODE; i++) {
+		struct catf *cf = cfuse[i];
+
+		if (cf) {
+			for (int k = 0; k < 4; k++) {
+				free(cf->comp[k]);
+				free(cf->full[k]);
+				for (int ph = 0; ph < 3; ph++)
+					free(cf->cst[k][ph]);
+			}
+			free(cf);
+		}
+		free(tabs[i]);
+		free(G[i].post);
+		if (G[i].nn)
+			free(G[i].nn->wq);
+		free(G[i].nn);
+		tabs[i] = NULL, cfuse[i] = NULL;
+#ifdef ONNA_MXU3
+		free(vrqs[i]);
+		vrqs[i] = NULL;
+#endif
+	}
+	for (int i = 0; i < MAXREC; i++) {
+		if (i < nrec) {
+			free(rec[i].wq);
+			free(rec[i].bt);
+			free(rec[i].fl);
+			free(rec[i].lut);
+			free(rec[i].B);
+		}
+		free(wtrim[i]);
+		free(padbuf[i]);
+		wtrim[i] = NULL, padbuf[i] = NULL;
+	}
+	for (int i = 0; i < MAXTENS; i++)	/* u8 buffers belong to the pool; T[0] is the caller's frame */
+		free(T[i].f);
+	for (int k = 0; k < npool; k++)
+		free(pool[k].p);
+	memset(pool, 0, sizeof(pool));
+	npool = 0, pool_bytes = 0;
+	free(stem_buf);
+	free(rgba);
+	stem_buf = NULL, rgba = NULL;
+	memset(T, 0, sizeof(T));
+	memset(G, 0, sizeof(G));
+	memset(rec, 0, sizeof(rec));
+	memset(rec_cpu, 0, sizeof(rec_cpu));
+	weights_dropped = 0;
+	nrec = ncat = nadd = ng = ntens = nouts = nanc = in_h = in_w = 0;
+	in_c = 3;
+	use_nna = 0;
+}
+
+int onnaq_open(const char *bin_path, const char *graph_path, int nna)
+{
+	jmp_buf jb;
+
+	onnaq_close();
+	die_msg[0] = 0;
+	die_jb = &jb;
+	if (setjmp(jb)) {
+		die_jb = NULL;
+		onnaq_close();
+		return -1;
+	}
+	if (nna) {
+#ifdef ONNA_MXU3
+		nna_be_mxu3(&be);
+		nna_pin_isp_cpu0();
+		use_nna = 1;
+#else
+		DIE("not a T41 build: no NNA");
+#endif
+	}
+	load_bin(bin_path);
+	if (graph_path && *graph_path && strcmp(graph_path, "-"))
+		load_graph(graph_path);
+	else
+		load_graph_bin(bin_path);		/* no graph file: the .bin's own op list */
+	fold();
+	set_readers();
+	plan_life();
+	die_jb = NULL;
+	return 0;
+}
+
+void onnaq_input_size(int *w, int *h)
+{
+	*w = in_w, *h = in_h;
+}
+
+int onnaq_run(const uint8_t *rgb)
+{
+	jmp_buf jb;
+
+	if (!ng) {
+		snprintf(die_msg, sizeof(die_msg), "no model");
+		return -1;
+	}
+	die_jb = &jb;
+	if (setjmp(jb)) {
+		die_jb = NULL;
+		return -1;
+	}
+	if (in_c == 4) {	/* the caller's RGB as the model's RGBA, alpha 0 (as venus's input) */
+		long npx = (long)in_h * in_w;
+
+		if (!rgba && posix_memalign((void **)&rgba, 64, (size_t)npx * 4))
+			DIE("out of memory");
+		for (long p = 0; p < npx; p++)
+			rgba[4 * p] = rgb[3 * p], rgba[4 * p + 1] = rgb[3 * p + 1], rgba[4 * p + 2] = rgb[3 * p + 2],
+			rgba[4 * p + 3] = 0;
+	}
+	run(in_c == 4 ? rgba : rgb);
+	die_jb = NULL;
+	return 0;
+}
+
+int onnaq_num_heads(void)
+{
+	return nouts;
+}
+
+const float *onnaq_head(int k, int *h, int *w, int *c)
+{
+	const struct tensor *t;
+
+	if (k < 0 || k >= nouts)
+		return NULL;
+	t = &T[outs[k]];
+	*h = t->h, *w = t->w, *c = t->c;
+	return t->f;
+}
+
+int onnaq_anchors(int stride, float wh[6])
+{
+	static const float yolo[3][6] = { { 10, 13, 16, 30, 33, 23 }, { 30, 61, 62, 45, 59, 119 },
+					  { 116, 90, 156, 198, 373, 326 } };
+
+	for (int i = 0; i < nanc; i++)
+		if (anc_stride[i] == stride) {
+			memcpy(wh, anc_wh[i], sizeof(anc_wh[0]));
+			return 0;
+		}
+	if (nanc || (stride != 8 && stride != 16 && stride != 32))
+		return -1;
+	memcpy(wh, yolo[stride == 8 ? 0 : stride == 16 ? 1 : 2], sizeof(yolo[0]));
+	return 0;
+}

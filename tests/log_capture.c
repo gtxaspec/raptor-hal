@@ -22,6 +22,8 @@ static void capture(int level, const char *file, int line, const char *fmt, ...)
     logged.level = level;
     if (level == HAL_LOG_LVL_WARN)
         logged.warns++;
+    if (level == HAL_LOG_LVL_ERR)
+        logged.errors++;
 }
 
 rss_hal_log_func_t rss_hal_log_fn = capture;
