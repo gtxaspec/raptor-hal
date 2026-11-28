@@ -317,6 +317,33 @@ TEST bad_output_refused_logged_once(void)
     PASS();
 }
 
+/* A JZDL head has 3 anchors. With the wrong num_classes, persondet-style
+ * heads (3 x (5 + 3) = 24 channels here) would also fit 2 x (5 + 7): that
+ * must be refused (logged once), not decoded as garbage. */
+TEST wrong_num_classes_refused(void)
+{
+    static hal_yolo_t y;
+    rss_ivs_jzdl_param_t p;
+    rss_ivs_detect_result_t r;
+    size_t len;
+    const yv_head_t *hs[] = {&two32, &two16};
+    float *out = pack(hs, 2, &len);
+
+    param(&p, 0.5f, 0.45f);
+    p.num_classes = YV_C / 2 - 5;
+    ASSERT_EQ_FMT(0, YV_C % (5 + p.num_classes), "%d");
+    ASSERT_EQ_FMT(RSS_OK, hal_yolo_init(&y, &p, YV_TWO_W, YV_TWO_H), "%d");
+    log_capture_reset();
+    int r1 = hal_yolo_run(&y, out, len, 640, 360, &r), n1 = r.count;
+    int r2 = hal_yolo_run(&y, out, len, 640, 360, &r);
+    free(out);
+    ASSERT_EQ(RSS_ERR, r1);
+    ASSERT_EQ_FMT(0, n1, "%d");
+    ASSERT_EQ(RSS_ERR, r2);
+    ASSERT_EQ_FMT(1, logged.errors, "%d");
+    PASS();
+}
+
 TEST results_capped(void)
 {
     static hal_yolo_t y;
@@ -473,6 +500,7 @@ SUITE(yolo_suite)
     RUN_TEST(per_head_with_letterbox);
     RUN_TEST(bad_heads_refused);
     RUN_TEST(bad_output_refused_logged_once);
+    RUN_TEST(wrong_num_classes_refused);
     RUN_TEST(results_capped);
     RUN_TEST(preprocess_must_match_the_backend);
     RUN_TEST(config_out_of_range_refused);
