@@ -8,6 +8,7 @@
  * its exact length, so a read past it is an ASan error.
  */
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -116,7 +117,7 @@ static enum greatest_test_res run(const rss_ivs_jzdl_param_t *p, int iw, int ih,
     size_t len;
     float *out = pack(hs, nh, &len);
 
-    hal_yolo_init(&y, p, iw, ih);
+    ASSERT_EQ_FMT(RSS_OK, hal_yolo_init(&y, p, iw, ih), "%d");
     log_capture_reset();
     int ret = hal_yolo_run(&y, out, len, 640, 360, &r);
     free(out);
@@ -182,10 +183,10 @@ TEST anchors_stock_unless_param_sets_a_stride(void)
     rss_ivs_jzdl_param_t p;
 
     param(&p, 0.5f, 0.45f);
-    hal_yolo_init(&y, &p, YV_TWO_W, YV_TWO_H);
+    ASSERT_EQ_FMT(RSS_OK, hal_yolo_init(&y, &p, YV_TWO_W, YV_TWO_H), "%d");
     ASSERT_MEM_EQ(stock, y.anchors, sizeof(stock));
     memcpy(p.anchors[2], yv_param32, sizeof(yv_param32));
-    hal_yolo_init(&y, &p, YV_TWO_W, YV_TWO_H);
+    ASSERT_EQ_FMT(RSS_OK, hal_yolo_init(&y, &p, YV_TWO_W, YV_TWO_H), "%d");
     ASSERT_MEM_EQ(stock[0], y.anchors[0], sizeof(stock[0]));
     ASSERT_MEM_EQ(stock[1], y.anchors[1], sizeof(stock[1]));
     ASSERT_MEM_EQ(yv_param32, y.anchors[2], sizeof(yv_param32));
@@ -226,7 +227,7 @@ TEST nms_per_class(void)
     float *out = pack(hs, 2, &len);
 
     param(&p, 0.5f, 1.0f);
-    hal_yolo_init(&y, &p, YV_TWO_W, YV_TWO_H);
+    ASSERT_EQ_FMT(RSS_OK, hal_yolo_init(&y, &p, YV_TWO_W, YV_TWO_H), "%d");
     ASSERT_EQ_FMT(RSS_OK, hal_yolo_run(&y, out, len, 640, 360, &r), "%d");
     free(out);
     ASSERT_EQ_FMT(YV_TWO_N + 1, r.count, "%d");
@@ -247,7 +248,7 @@ TEST per_head_with_letterbox(void)
     float *out = pack(hs, 3, &len);
 
     param(&p, 0.5f, 0.45f);
-    hal_yolo_init(&y, &p, YV_THREE_W, YV_THREE_H);
+    ASSERT_EQ_FMT(RSS_OK, hal_yolo_init(&y, &p, YV_THREE_W, YV_THREE_H), "%d");
     hal_yolo_begin(&y);
     for (int k = 0; k < 3; k++) {
         float *h = head(hs[k]->slots, hs[k]->ns, hs[k]->gh, hs[k]->gw);
@@ -261,7 +262,7 @@ TEST per_head_with_letterbox(void)
     CHECK_CALL(same(&r, yv_three_lb, YV_THREE_LB_N));
 
     /* the same candidates as the packed path */
-    hal_yolo_init(&ref, &p, YV_THREE_W, YV_THREE_H);
+    ASSERT_EQ_FMT(RSS_OK, hal_yolo_init(&ref, &p, YV_THREE_W, YV_THREE_H), "%d");
     ASSERT_EQ_FMT(RSS_OK, hal_yolo_run(&ref, out, len, 640, 360, &r), "%d");
     free(out);
     ASSERT_MEM_EQ(ref.cand, y.cand, sizeof(hal_yolo_box_t) * n);
@@ -276,7 +277,7 @@ TEST bad_heads_refused(void)
 
     memset(h, 0, sizeof(h));
     param(&p, 0.5f, 0.45f);
-    hal_yolo_init(&y, &p, YV_THREE_W, YV_THREE_H);
+    ASSERT_EQ_FMT(RSS_OK, hal_yolo_init(&y, &p, YV_THREE_W, YV_THREE_H), "%d");
     hal_yolo_begin(&y);
     ASSERT_EQ(RSS_ERR, hal_yolo_decode_head(&y, h, 1, 1, YV_C));     /* stride 96 x 64 */
     ASSERT_EQ(RSS_ERR, hal_yolo_decode_head(&y, h, 4, 6, YV_C + 1)); /* not anchors x 8 */
@@ -297,7 +298,7 @@ TEST bad_output_refused_logged_once(void)
     float *out = pack(hs, 2, &len);
 
     param(&p, 0.5f, 0.45f);
-    hal_yolo_init(&y, &p, YV_TWO_W, YV_TWO_H);
+    ASSERT_EQ_FMT(RSS_OK, hal_yolo_init(&y, &p, YV_TWO_W, YV_TWO_H), "%d");
     log_capture_reset();
     out[len - 1] = 3.0f; /* the trailer's head count off by one */
     ASSERT_EQ(RSS_ERR, hal_yolo_run(&y, out, len, 640, 360, &r));
@@ -305,12 +306,12 @@ TEST bad_output_refused_logged_once(void)
     ASSERT_EQ(RSS_ERR, hal_yolo_run(&y, out, len, 640, 360, &r));
     ASSERT_EQ_FMT(1, logged.errors, "%d");
 
-    hal_yolo_init(&y, &p, YV_TWO_W, YV_TWO_H);
+    ASSERT_EQ_FMT(RSS_OK, hal_yolo_init(&y, &p, YV_TWO_W, YV_TWO_H), "%d");
     out[len - 1] = 2.0f;
     out[len - 2] = 16.0f; /* the last head as 2 anchors: the sizes don't add up */
     ASSERT_EQ(RSS_ERR, hal_yolo_run(&y, out, len, 640, 360, &r));
 
-    hal_yolo_init(&y, &p, YV_TWO_W, YV_TWO_H);
+    ASSERT_EQ_FMT(RSS_OK, hal_yolo_init(&y, &p, YV_TWO_W, YV_TWO_H), "%d");
     ASSERT_EQ(RSS_ERR, hal_yolo_run(&y, out, 3, 640, 360, &r)); /* too short */
     free(out);
     PASS();
@@ -358,6 +359,107 @@ TEST preprocess_must_match_the_backend(void)
     PASS();
 }
 
+/* num_classes and anchors come from config unchecked: 5 + num_classes = 0
+ * divided by zero in the decode (num_classes <= -5), a NaN or huge anchor
+ * gave a box no int holds. init refuses them, and a refused decoder decodes
+ * nothing. */
+TEST config_out_of_range_refused(void)
+{
+    static hal_yolo_t y;
+    rss_ivs_jzdl_param_t p;
+    rss_ivs_detect_result_t r;
+    const yv_head_t *hs[] = {&two32, &two16};
+    const int bad_nc[] = {-5, -6, -1000, 0, HAL_YOLO_MAX_CLASSES + 1};
+    const float bad_anchor[] = {-1.0f, NAN, INFINITY, HAL_YOLO_MAX_ANCHOR + 1.0f};
+    float h[16 * 16 * 32];
+    size_t len;
+    float *out = pack(hs, 2, &len);
+
+    memset(h, 0, sizeof(h));
+    for (size_t i = 0; i < sizeof(bad_nc) / sizeof(bad_nc[0]); i++) {
+        param(&p, 0.5f, 0.45f);
+        p.num_classes = bad_nc[i];
+        log_capture_reset();
+        ASSERT_EQ_FMT(RSS_ERR, hal_yolo_init(&y, &p, YV_TWO_W, YV_TWO_H), "%d");
+        ASSERT_EQ_FMT(1, logged.errors, "%d");
+        ASSERT_EQ(RSS_ERR, hal_yolo_run(&y, out, len, 640, 360, &r));
+        ASSERT_EQ_FMT(0, r.count, "%d");
+        hal_yolo_begin(&y);
+        ASSERT_EQ(RSS_ERR, hal_yolo_decode_head(&y, h, 2, 3, YV_C));
+        ASSERT_EQ(RSS_ERR, hal_yolo_decode_head(&y, h, 2, 3, 5)); /* the c % 0 case */
+    }
+    for (size_t i = 0; i < sizeof(bad_anchor) / sizeof(bad_anchor[0]); i++) {
+        param(&p, 0.5f, 0.45f);
+        p.anchors[1][3] = bad_anchor[i];
+        log_capture_reset();
+        ASSERT_EQ_FMT(RSS_ERR, hal_yolo_init(&y, &p, YV_TWO_W, YV_TWO_H), "%d");
+        ASSERT_EQ_FMT(1, logged.errors, "%d");
+        ASSERT_EQ(RSS_ERR, hal_yolo_run(&y, out, len, 640, 360, &r));
+    }
+    param(&p, 0.5f, 0.45f);
+    ASSERT_EQ_FMT(RSS_ERR, hal_yolo_init(&y, &p, 0, YV_TWO_H), "%d");
+    /* the edges are fine */
+    p.num_classes = 1;
+    ASSERT_EQ_FMT(RSS_OK, hal_yolo_init(&y, &p, YV_TWO_W, YV_TWO_H), "%d");
+    p.num_classes = HAL_YOLO_MAX_CLASSES;
+    p.anchors[2][0] = HAL_YOLO_MAX_ANCHOR;
+    ASSERT_EQ_FMT(RSS_OK, hal_yolo_init(&y, &p, YV_TWO_W, YV_TWO_H), "%d");
+    free(out);
+    PASS();
+}
+
+/* NaN logits: a NaN score is false against any threshold, so `score < t`
+ * let it through to a NaN box and an undefined float-to-int cast. Each
+ * logit of one cell set to NaN in turn: never a detection. */
+TEST nan_logits_dropped(void)
+{
+    static hal_yolo_t y;
+    rss_ivs_jzdl_param_t p;
+    rss_ivs_detect_result_t r;
+    const int gh = YV_THREE_H / 32, gw = YV_THREE_W / 32;
+    float *h = malloc(sizeof(float) * gh * gw * YV_C);
+
+    param(&p, 0.25f, 0.45f);
+    /* x, y, w, h, objectness and class 0 (the one every class ties with) */
+    for (int k = 0; k < 6; k++) {
+        ASSERT_EQ_FMT(RSS_OK, hal_yolo_init(&y, &p, YV_THREE_W, YV_THREE_H), "%d");
+        for (int i = 0; i < gh * gw * YV_C; i++)
+            h[i] = YV_BG;
+        for (int i = 0; i < YV_PER; i++)
+            h[i] = 4.0f; /* cell 0, anchor 0: a sure box */
+        h[k] = NAN;
+        hal_yolo_begin(&y);
+        ASSERT_EQ_FMT(RSS_OK, hal_yolo_decode_head(&y, h, gh, gw, YV_C), "%d");
+        int n = hal_yolo_finish(&y);
+        ASSERT_EQ_FMT(0, n, "%d");
+        hal_yolo_emit(&y, n, 1.0f, 1.0f, 0.0f, 0.0f, 640, 360, &r);
+        ASSERT_EQ_FMT(0, r.count, "%d");
+    }
+    /* the same cell without the NaN is found */
+    h[5] = 4.0f;
+    hal_yolo_begin(&y);
+    ASSERT_EQ_FMT(RSS_OK, hal_yolo_decode_head(&y, h, gh, gw, YV_C), "%d");
+    ASSERT_EQ_FMT(1, hal_yolo_finish(&y), "%d");
+    /* a NaN in a class that doesn't win leaves the winner's score */
+    h[6] = NAN;
+    hal_yolo_begin(&y);
+    ASSERT_EQ_FMT(RSS_OK, hal_yolo_decode_head(&y, h, gh, gw, YV_C), "%d");
+    ASSERT_EQ_FMT(1, hal_yolo_finish(&y), "%d");
+    ASSERT_EQ_FMT(0, y.cand[0].cls, "%d");
+    ASSERT(isfinite(y.cand[0].score));
+    free(h);
+
+    /* a NaN or infinite box that reached emit anyway is clamped, no UB cast */
+    memset(&y, 0, sizeof(y));
+    y.cand[0] = (hal_yolo_box_t){NAN, -INFINITY, INFINITY, 1e30f, 0.9f, 0};
+    hal_yolo_emit(&y, 1, 1.0f, 1.0f, 0.0f, 0.0f, 640, 360, &r);
+    ASSERT_EQ_FMT(0, r.detections[0].box.p0_x, "%d");
+    ASSERT_EQ_FMT(0, r.detections[0].box.p0_y, "%d");
+    ASSERT_EQ_FMT(639, r.detections[0].box.p1_x, "%d");
+    ASSERT_EQ_FMT(359, r.detections[0].box.p1_y, "%d");
+    PASS();
+}
+
 SUITE(yolo_suite)
 {
     RUN_TEST(two_heads_persondet_order);
@@ -373,4 +475,6 @@ SUITE(yolo_suite)
     RUN_TEST(bad_output_refused_logged_once);
     RUN_TEST(results_capped);
     RUN_TEST(preprocess_must_match_the_backend);
+    RUN_TEST(config_out_of_range_refused);
+    RUN_TEST(nan_logits_dropped);
 }

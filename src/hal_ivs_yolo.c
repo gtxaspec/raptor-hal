@@ -59,11 +59,30 @@ bool hal_yolo_preprocess_ok(const rss_ivs_jzdl_param_t *p, rss_ivs_preprocess_t 
     return true;
 }
 
-void hal_yolo_init(hal_yolo_t *y, const rss_ivs_jzdl_param_t *p, int input_w, int input_h)
+int hal_yolo_init(hal_yolo_t *y, const rss_ivs_jzdl_param_t *p, int input_w, int input_h)
 {
     float lo = 1.0f;
 
     memset(y, 0, sizeof(*y));
+    y->nheads = -1; /* refuses outputs until init succeeds */
+    /* from config: 5 + num_classes divides the head's channels */
+    if (p->num_classes < 1 || p->num_classes > HAL_YOLO_MAX_CLASSES) {
+        HAL_LOG_ERR("JZDL: num_classes %d out of range 1..%d", p->num_classes,
+                    HAL_YOLO_MAX_CLASSES);
+        return RSS_ERR;
+    }
+    if (input_w < 1 || input_h < 1) {
+        HAL_LOG_ERR("JZDL: model input %dx%d", input_w, input_h);
+        return RSS_ERR;
+    }
+    for (int s = 0; s < HAL_YOLO_MAX_HEADS; s++)
+        for (int k = 0; k < HAL_YOLO_MAX_ANCHORS * 2; k++)
+            if (!(p->anchors[s][k] >= 0.0f && p->anchors[s][k] <= HAL_YOLO_MAX_ANCHOR)) {
+                HAL_LOG_ERR("JZDL: anchor %g (stride %d) out of range 0..%d",
+                            (double)p->anchors[s][k], 8 << s, HAL_YOLO_MAX_ANCHOR);
+                return RSS_ERR;
+            }
+    y->nheads = 0;
     y->input_w = input_w;
     y->input_h = input_h;
     y->num_classes = p->num_classes;
@@ -86,6 +105,7 @@ void hal_yolo_init(hal_yolo_t *y, const rss_ivs_jzdl_param_t *p, int input_w, in
             set |= a[k] > 0.0f;
         memcpy(y->anchors[s], set ? a : yolov5_anchors[s], sizeof(y->anchors[s]));
     }
+    return RSS_OK;
 }
 
 /* one head's grid and channels against the model: stride from the grid */
@@ -93,7 +113,7 @@ static int head_setup(const hal_yolo_t *y, hal_yolo_head_t *h, int gh, int gw, i
 {
     int per = 5 + y->num_classes, s, si;
 
-    if (gh < 1 || gw < 1 || c < per || c % per)
+    if (y->num_classes < 1 || gh < 1 || gw < 1 || c < per || c % per)
         return -1;
     s = y->input_w / gw;
     si = stride_index(s);
@@ -168,7 +188,7 @@ static const float *decode_head(hal_yolo_t *y, const hal_yolo_head_t *h, const f
                 obj = sigmoid(p[4]);
                 b.score = obj * sigmoid(p[5 + best]);
                 t = best < RSS_IVS_MAX_CLASSES ? y->conf[best] : y->conf_default;
-                if (b.score < t)
+                if (!(b.score >= t)) /* NaN fails too */
                     continue;
                 sw = sigmoid(p[2]) * 2.0f;
                 sh = sigmoid(p[3]) * 2.0f;
@@ -180,6 +200,8 @@ static const float *decode_head(hal_yolo_t *y, const hal_yolo_head_t *h, const f
                 b.y1 = cy - sh * 0.5f;
                 b.x2 = cx + sw * 0.5f;
                 b.y2 = cy + sh * 0.5f;
+                if (!isfinite(b.x1) || !isfinite(b.y1) || !isfinite(b.x2) || !isfinite(b.y2))
+                    continue;
                 b.cls = best;
                 cand_add(y, &b);
             }
@@ -252,6 +274,12 @@ int hal_yolo_finish(hal_yolo_t *y)
     return nms(y->cand, y->ncand, y->nms);
 }
 
+/* v into 0..hi; NaN gives 0 */
+static inline float clampf(float v, float hi)
+{
+    return fminf(fmaxf(v, 0.0f), hi > 0.0f ? hi : 0.0f);
+}
+
 void hal_yolo_emit(const hal_yolo_t *y, int n, float scale_x, float scale_y, float off_x,
                    float off_y, int frame_w, int frame_h, rss_ivs_detect_result_t *result)
 {
@@ -259,16 +287,11 @@ void hal_yolo_emit(const hal_yolo_t *y, int n, float scale_x, float scale_y, flo
         n = RSS_IVS_MAX_DETECTIONS;
     for (int i = 0; i < n; i++) {
         const hal_yolo_box_t *b = &y->cand[i];
-        int x0 = (int)((b->x1 - off_x) * scale_x), y0 = (int)((b->y1 - off_y) * scale_y);
-        int x1 = (int)((b->x2 - off_x) * scale_x), y1 = (int)((b->y2 - off_y) * scale_y);
-        if (x0 < 0)
-            x0 = 0;
-        if (y0 < 0)
-            y0 = 0;
-        if (x1 >= frame_w)
-            x1 = frame_w - 1;
-        if (y1 >= frame_h)
-            y1 = frame_h - 1;
+        /* clamp before the int cast: fmaxf/fminf drop a NaN, so it can't overflow */
+        int x0 = (int)clampf((b->x1 - off_x) * scale_x, (float)(frame_w - 1));
+        int y0 = (int)clampf((b->y1 - off_y) * scale_y, (float)(frame_h - 1));
+        int x1 = (int)clampf((b->x2 - off_x) * scale_x, (float)(frame_w - 1));
+        int y1 = (int)clampf((b->y2 - off_y) * scale_y, (float)(frame_h - 1));
         result->detections[i].box = (rss_rect_t){x0, y0, x1, y1};
         result->detections[i].confidence = b->score;
         result->detections[i].class_id = b->cls;
