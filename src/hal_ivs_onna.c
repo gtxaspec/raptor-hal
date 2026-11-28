@@ -11,10 +11,10 @@
  *     model.bin.qgraph) is optional: without one onnaq reads the .bin's own op list;
  *   - the frame is resized as ojzdl_resize does (= libjzdl's jzdl::resize), so a
  *     model trained for both SoCs sees the same input on the T31 and the T41;
- *   - every output is a YOLOv5-style head (NHWC, 3 anchors x (5 + classes)); the
- *     stride comes from its grid, the anchors from the caller (param->anchors: rvd [motion]
- *     anchors_<stride>, e.g. from the model's model.conf), else the graph, else YOLOv5's defaults
- *     for strides 8/16/32 when it names none).
+ *   - every output is a YOLO head (NHWC, anchors x (5 + classes)), decoded by
+ *     hal_ivs_yolo.c (per-class thresholds, per-class NMS); the stride comes from its grid,
+ *     the anchors from the caller (param->anchors: rvd [motion] anchors_<stride>, e.g. from
+ *     the model's model.conf), else the graph, else YOLOv5's defaults.
  *
  * The NN instructions only run on core 0: detect pins its thread (rvd's
  * inference thread) to core 0 for good, and create pins the ISP firmware thread
@@ -34,7 +34,6 @@
 #include "ojzdl/ojzdl.h"
 #include "onna/onnaq.h"
 
-#include <math.h>
 #include <sched.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,113 +41,12 @@
 #include <unistd.h>
 
 typedef struct {
-    float x1, y1, x2, y2;
-    float score;
-    int classid;
-} det_box_t;
-
-typedef struct {
-    det_box_t *v;
-    size_t n, cap;
-} box_vec_t;
-
-static int box_push(box_vec_t *b, const det_box_t *d)
-{
-    if (b->n == b->cap) {
-        size_t cap = b->cap ? b->cap * 2 : 64;
-        det_box_t *nv = realloc(b->v, cap * sizeof(*nv));
-        if (!nv)
-            return -1;
-        b->v = nv;
-        b->cap = cap;
-    }
-    b->v[b->n++] = *d;
-    return 0;
-}
-
-static inline float sigmoid(float x)
-{
-    return 1.0f / (1.0f + expf(-x));
-}
-
-/* one head: p = NHWC [gh][gw][3 * (5 + nc)], YOLOv5 v5+ box formula */
-static void head_decode(const float *p, int gh, int gw, int stride, const float anc[6], int nc,
-                        float conf_thresh, box_vec_t *boxes)
-{
-    int oc = 5 + nc;
-    /* objectness and class score are at most 1: skip a cell whose raw
-     * objectness is under the threshold's logit */
-    float obj_min = logf(conf_thresh / (1.0f - conf_thresh));
-
-    for (int y = 0; y < gh; y++)
-        for (int x = 0; x < gw; x++)
-            for (int a = 0; a < 3; a++) {
-                const float *q = p + ((size_t)(y * gw + x) * 3 + a) * oc;
-                if (q[4] < obj_min)
-                    continue;
-                int bc = 0;
-                for (int c = 1; c < nc; c++)
-                    if (q[5 + c] > q[5 + bc])
-                        bc = c;
-                float s = sigmoid(q[4]) * sigmoid(q[5 + bc]);
-                if (s < conf_thresh)
-                    continue;
-                float cx = (sigmoid(q[0]) * 2.0f - 0.5f + x) * stride;
-                float cy = (sigmoid(q[1]) * 2.0f - 0.5f + y) * stride;
-                float bw = sigmoid(q[2]) * 2.0f, bh = sigmoid(q[3]) * 2.0f;
-                bw = bw * bw * anc[2 * a];
-                bh = bh * bh * anc[2 * a + 1];
-                det_box_t d = {cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2, s, bc};
-                if (box_push(boxes, &d))
-                    return;
-            }
-}
-
-static int score_desc(const void *a, const void *b)
-{
-    float sa = ((const det_box_t *)a)->score, sb = ((const det_box_t *)b)->score;
-    return (sa < sb) - (sa > sb);
-}
-
-/* class-aware greedy NMS; input sorted in place */
-static void nms(box_vec_t *in, box_vec_t *out, unsigned char *gone, float thr)
-{
-    qsort(in->v, in->n, sizeof(*in->v), score_desc);
-    memset(gone, 0, in->n);
-    for (size_t i = 0; i < in->n; i++) {
-        if (gone[i])
-            continue;
-        const det_box_t *bi = &in->v[i];
-        if (box_push(out, bi))
-            return;
-        float ai = (bi->x2 - bi->x1) * (bi->y2 - bi->y1);
-        for (size_t j = i + 1; j < in->n; j++) {
-            const det_box_t *bj = &in->v[j];
-            if (gone[j] || bj->classid != bi->classid)
-                continue;
-            float iw = fmaxf(0.0f, fminf(bi->x2, bj->x2) - fmaxf(bi->x1, bj->x1));
-            float ih = fmaxf(0.0f, fminf(bi->y2, bj->y2) - fmaxf(bi->y1, bj->y1));
-            float inter = iw * ih;
-            float aj = (bj->x2 - bj->x1) * (bj->y2 - bj->y1);
-            if (inter / (ai + aj - inter) > thr)
-                gone[j] = 1;
-        }
-    }
-}
-
-#define ONNA_MAX_HEADS 4
-
-typedef struct {
     int input_w, input_h, frame_w, frame_h;
-    float conf_thresh, nms_thresh;
-    int nheads, nc, stride[ONNA_MAX_HEADS];
-    float anc[ONNA_MAX_HEADS][6];
-    float panc[3][6]; /* the caller's anchors for strides 8, 16, 32 (param->anchors; 0 = none) */
+    int nheads;
+    int bad; /* the outputs don't fit the configured model: logged once, detect refuses */
+    hal_yolo_t yolo;
     uint8_t *in_buf;
     ojzdl_resize *rs;
-    box_vec_t candidates, detections;
-    unsigned char *gone;
-    size_t gone_cap;
     int pinned;
     /* mean times, logged every 100 inferences */
     double t_pre, t_net, t_post;
@@ -163,9 +61,6 @@ static void ctx_free(onna_ctx_t *c)
         return;
     free(c->in_buf);
     ojzdl_resize_free(c->rs);
-    free(c->candidates.v);
-    free(c->detections.v);
-    free(c->gone);
     free(c);
 }
 
@@ -251,76 +146,45 @@ void *hal_jzdl_create(const rss_ivs_jzdl_param_t *param)
     in_use = 1;
     onnaq_input_size(&c->input_w, &c->input_h);
     c->nheads = onnaq_num_heads();
-    if (c->nheads < 1 || c->nheads > ONNA_MAX_HEADS)
+    if (c->nheads < 1 || c->nheads > HAL_YOLO_MAX_HEADS)
         goto bad_heads;
-    /* head shapes are known after the first run (heads_setup) */
-
-    memcpy(c->panc, param->anchors, sizeof(c->panc));
+    /* thresholds (per class), NMS and the caller's anchors ([motion] anchors_<stride>, e.g.
+     * from the model's model.conf); the head shapes are checked on the first run */
+    if (hal_yolo_init(&c->yolo, param, c->input_w, c->input_h) != RSS_OK)
+        goto fail;
+    /* strides the caller left without anchors: the graph's anchors line, else YOLOv5's
+     * (onnaq_anchors gives those too; hal_yolo_init already did) */
+    for (int si = 0; si < HAL_YOLO_MAX_HEADS; si++) {
+        int set = 0;
+        for (int j = 0; j < HAL_YOLO_MAX_ANCHORS * 2; j++)
+            set |= param->anchors[si][j] > 0.0f;
+        if (!set)
+            onnaq_anchors(8 << si, c->yolo.anchors[si]);
+    }
     c->frame_w = param->width;
     c->frame_h = param->height;
-    c->conf_thresh = param->conf_threshold;
-    c->nms_thresh = param->nms_threshold;
     c->in_buf = malloc((size_t)c->input_w * c->input_h * 3);
     c->rs = ojzdl_resize_create(c->frame_w, c->frame_h, c->input_w, c->input_h);
-    if (!c->in_buf || !c->rs) {
-        onnaq_close();
-        in_use = 0;
-        ctx_free(c);
-        return NULL;
-    }
-    HAL_LOG_INFO("ONNA: ready: %s (%dx%d -> %dx%d, %d heads, conf=%.2f, nms=%.2f)",
+    if (!c->in_buf || !c->rs)
+        goto fail;
+    HAL_LOG_INFO("ONNA: ready: %s (%dx%d -> %dx%d, %d heads, %d classes, conf=%.2f, nms=%.2f)",
                  param->model_path, c->frame_w, c->frame_h, c->input_w, c->input_h, c->nheads,
-                 (double)c->conf_thresh, (double)c->nms_thresh);
+                 param->num_classes, (double)param->conf_threshold, (double)param->nms_threshold);
     return c;
+
+fail:
+    onnaq_close();
+    in_use = 0;
+    ctx_free(c);
+    return NULL;
 
 bad_heads:
     HAL_LOG_ERR("ONNA: %s: %d outputs (1..%d supported)", param->model_path, c->nheads,
-                ONNA_MAX_HEADS);
+                HAL_YOLO_MAX_HEADS);
     onnaq_close();
     in_use = 0;
     free(c);
     return NULL;
-}
-
-/* after the first run: head shapes -> strides, classes, anchors */
-static int heads_setup(onna_ctx_t *c)
-{
-    for (int k = 0; k < c->nheads; k++) {
-        int h, w, ch;
-        if (!onnaq_head(k, &h, &w, &ch) || h < 1 || w < 1 || ch % 3 || ch / 3 < 6)
-            goto bad;
-        int nc = ch / 3 - 5;
-        if (k && nc != c->nc)
-            goto bad;
-        c->nc = nc;
-        c->stride[k] = c->input_h / h;
-        if (c->stride[k] * h != c->input_h || c->stride[k] * w != c->input_w)
-            goto bad;
-        /* anchors: the caller's ([motion] anchors_<stride>, e.g. from the model's model.conf),
-         * else the graph's anchors line, else YOLOv5's (onnaq_anchors) */
-        int si = -1, set = 0;
-        if (c->stride[k] == 8)
-            si = 0;
-        else if (c->stride[k] == 16)
-            si = 1;
-        else if (c->stride[k] == 32)
-            si = 2;
-        for (int j = 0; si >= 0 && j < 6; j++)
-            set |= c->panc[si][j] != 0.0f;
-        if (set) {
-            memcpy(c->anc[k], c->panc[si], sizeof(c->anc[k]));
-        } else if (onnaq_anchors(c->stride[k], c->anc[k])) {
-            HAL_LOG_ERR("ONNA: no anchors for stride %d ([motion] anchors_%d or the graph)",
-                        c->stride[k], c->stride[k]);
-            return -1;
-        }
-    }
-    HAL_LOG_INFO("ONNA: %d classes, %d heads, strides %d %d %d %d (0: none)", c->nc, c->nheads,
-                 c->stride[0], c->stride[1], c->stride[2], c->stride[3]);
-    return 0;
-bad:
-    HAL_LOG_ERR("ONNA: outputs are not YOLOv5-style heads (NHWC, 3 x (5 + classes))");
-    return -1;
 }
 
 int hal_jzdl_detect(void *handle, const uint8_t *nv12_data, rss_ivs_detect_result_t *result)
@@ -347,46 +211,23 @@ int hal_jzdl_detect(void *handle, const uint8_t *nv12_data, rss_ivs_detect_resul
         return RSS_ERR;
     }
     double t2 = now_ms();
-    if (!c->nc && heads_setup(c)) {
-        c->nc = -1;
-        return RSS_ERR;
-    }
-    if (c->nc < 0)
+    if (c->bad)
         return RSS_ERR;
 
-    c->candidates.n = 0;
-    c->detections.n = 0;
+    hal_yolo_begin(&c->yolo);
     for (int k = 0; k < c->nheads; k++) {
-        int h, w, ch;
+        int h = 0, w = 0, ch = 0;
         const float *p = onnaq_head(k, &h, &w, &ch);
-        head_decode(p, h, w, c->stride[k], c->anc[k], c->nc, c->conf_thresh, &c->candidates);
-    }
-    if (c->candidates.n > c->gone_cap) {
-        unsigned char *g = realloc(c->gone, c->candidates.n);
-        if (!g)
+        if (!p || hal_yolo_decode_head(&c->yolo, p, h, w, ch) != RSS_OK) {
+            HAL_LOG_ERR("ONNA: output %d (%dx%dx%d) is not a YOLO head with %d classes at stride "
+                        "8/16/32 for a %dx%d input",
+                        k, h, w, ch, c->yolo.num_classes, c->input_w, c->input_h);
+            c->bad = 1;
             return RSS_ERR;
-        c->gone = g;
-        c->gone_cap = c->candidates.n;
+        }
     }
-    nms(&c->candidates, &c->detections, c->gone, c->nms_thresh);
-
-    float sx = (float)c->frame_w / c->input_w, sy = (float)c->frame_h / c->input_h;
-    int n = (int)c->detections.n;
-    if (n > RSS_IVS_MAX_DETECTIONS)
-        n = RSS_IVS_MAX_DETECTIONS;
-    for (int i = 0; i < n; i++) {
-        const det_box_t *d = &c->detections.v[i];
-        int x0 = (int)(d->x1 * sx), y0 = (int)(d->y1 * sy);
-        int x1 = (int)(d->x2 * sx), y1 = (int)(d->y2 * sy);
-        x0 = x0 < 0 ? 0 : x0;
-        y0 = y0 < 0 ? 0 : y0;
-        x1 = x1 >= c->frame_w ? c->frame_w - 1 : x1;
-        y1 = y1 >= c->frame_h ? c->frame_h - 1 : y1;
-        result->detections[i].box = (rss_rect_t){x0, y0, x1, y1};
-        result->detections[i].confidence = d->score;
-        result->detections[i].class_id = d->classid;
-    }
-    result->count = n;
+    hal_yolo_emit(&c->yolo, hal_yolo_finish(&c->yolo), (float)c->frame_w / c->input_w,
+                  (float)c->frame_h / c->input_h, 0.0f, 0.0f, c->frame_w, c->frame_h, result);
     result->timestamp = 0; /* caller sets this */
 
     c->t_pre += t1 - t0;
