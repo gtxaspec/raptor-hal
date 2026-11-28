@@ -15,6 +15,7 @@
 #   HDAL_INCLUDE    - Path to the Novatek HDAL headers (NA51055 only)
 #   INGENIC_LIB     - Path to ingenic-lib repo (default: ../ingenic-lib)
 #   V4L2_OPENIMP    - Set to 1 for the optional V4L2/OpenIMP AVC bridge
+#   JZDL_INCLUDE    - Path to Ingenic jzdl headers: build hal_jzdl_* on libjzdl.m.so
 #   DEBUG           - Set to 1 for debug build
 #   V               - Set to 1 for verbose output
 
@@ -131,6 +132,7 @@ AUDIO_SRCS := src/hal_audio.c \
 CXX_SRCS :=
 ifneq ($(JZDL_INCLUDE),)
 CXX_SRCS += src/hal_ivs_jzdl.cpp
+VIDEO_SRCS += src/hal_ivs_yolo.c
 CXXFLAGS := $(filter-out -std=c11,$(CFLAGS)) -std=c++11 -Wno-missing-field-initializers -DJZ_MXU=0 -I$(JZDL_INCLUDE) -fno-exceptions -fno-rtti
 endif
 

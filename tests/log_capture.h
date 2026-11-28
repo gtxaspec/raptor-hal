@@ -7,6 +7,7 @@
 
 typedef struct {
     int warns;
+    int errors;
     int level;
     char msg[256];
 } log_capture_t;
