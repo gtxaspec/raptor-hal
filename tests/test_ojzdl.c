@@ -69,14 +69,15 @@ TEST tiny_model_output_is_bit_identical_to_libjzdl(void)
  * 16-entry int32 bias and mult blobs */
 static size_t first_shift_offset(const uint8_t *b)
 {
-    uint32_t param_bytes = (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
+    uint32_t param_bytes =
+        (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
 
     return 24 + (size_t)param_bytes + 432 + 2 * 16 * 4;
 }
 
 TEST requant_shift_out_of_range_is_refused(void)
 {
-    static const int32_t bad[] = { 32, 70, -1 };
+    static const int32_t bad[] = {32, 70, -1};
     size_t len = 0;
     uint8_t *b = slurp(DIR "tiny.bin", &len);
 
