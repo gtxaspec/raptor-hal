@@ -528,7 +528,7 @@ enum {
 
 /* Exposure info (for IR-cut control) */
 typedef struct {
-    uint32_t total_gain;
+    uint32_t total_gain;    /* linear [24.8], 256 = 1.0x on every SoC (hal_gain.h) */
     uint32_t exposure_time; /* microseconds */
     uint32_t ae_luma;
     uint32_t ev;       /* EV from GetEVAttr (T20-T31) */
