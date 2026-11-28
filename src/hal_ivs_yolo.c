@@ -141,7 +141,10 @@ static int parse_heads(hal_yolo_t *y, const float *out, size_t n)
     t = n - 1 - 3 * (size_t)nh;
     for (int k = 0; k < nh; k++) {
         int gh = (int)out[t + 3 * k], gw = (int)out[t + 3 * k + 1], c = (int)out[t + 3 * k + 2];
-        if (head_setup(y, &y->head[k], gh, gw, c))
+        /* JZDL heads have 3 anchors: without this, persondet's 18 channels
+         * (3 x (5 + 1)) pass as 2 x (5 + 4) when num_classes is 4 */
+        if (c != HAL_YOLO_MAX_ANCHORS * (5 + y->num_classes) ||
+            head_setup(y, &y->head[k], gh, gw, c))
             return -1;
         sum += (size_t)gh * gw * c;
     }
@@ -306,9 +309,11 @@ int hal_yolo_run(hal_yolo_t *y, const float *out, size_t n, int frame_w, int fra
     result->timestamp = 0; /* caller sets this */
     if (y->nheads == 0 || n != y->out_len) {
         if (y->nheads >= 0 && parse_heads(y, out, n)) {
-            HAL_LOG_ERR("JZDL: model output (%zu values) is not %d-class YOLO heads at "
-                        "strides 8/16/32 for a %dx%d input",
-                        n, y->num_classes, y->input_w, y->input_h);
+            HAL_LOG_ERR("JZDL: model output (%zu values, last head %g channels) is not "
+                        "%d-class YOLO heads (3 x %d channels) at strides 8/16/32 for a "
+                        "%dx%d input",
+                        n, n >= 2 ? (double)out[n - 2] : 0.0, y->num_classes, 5 + y->num_classes,
+                        y->input_w, y->input_h);
             y->nheads = -1; /* log once */
         }
         if (y->nheads <= 0)
