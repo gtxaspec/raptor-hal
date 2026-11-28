@@ -1,6 +1,11 @@
 /*
  * onnaq as a library: one QSUM model (venus .bin + onnaq text graph) per process, run on the T41
- * NNA or on the CPU. Build onnaq.c with -DONNAQ_LIB (no main). Not thread safe: one caller.
+ * NNA or on the CPU. onnaq.c has no main (the runner is onnaqmain.c).
+ *
+ * One model per process, one caller: the loaded model, the tensors and the error state live in
+ * file-scope globals. Errors inside onnaq_open and onnaq_run longjmp back to that call through a
+ * global jmp_buf pointer, which is set only for the duration of the call; so no two calls may run
+ * at once (not thread safe). A second onnaq_open replaces the first model (it calls onnaq_close).
  *
  * On the NNA every onnaq_run must come from a thread pinned to CPU0 (the NN instructions are
  * reserved instructions on CPU1). onnaq_open(..., 1) also pins the ISP firmware thread to CPU0,

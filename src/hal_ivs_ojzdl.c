@@ -90,7 +90,10 @@ void *hal_jzdl_create(const rss_ivs_jzdl_param_t *param)
     c->frame_w = param->width;
     c->frame_h = param->height;
     c->num_classes = param->num_classes;
-    hal_yolo_init(&c->yolo, param, c->input_w, c->input_h);
+    if (hal_yolo_init(&c->yolo, param, c->input_w, c->input_h) != RSS_OK) {
+        ctx_free(c);
+        return NULL;
+    }
     c->in_buf = malloc((size_t)c->input_w * c->input_h * 3);
     c->rs = ojzdl_resize_create(c->frame_w, c->frame_h, c->input_w, c->input_h);
     if (!c->in_buf || !c->rs) {

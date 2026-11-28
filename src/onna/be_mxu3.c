@@ -5,12 +5,12 @@
  * SPDX-License-Identifier: MIT
  */
 #define _GNU_SOURCE
-#include <dirent.h>
 #include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "be_mxu3.h"
+#include "hal_ivs_nna_pin.h"
 #include "mxu3.h"
 
 #define CASE_RWR(r) case r: NNRWR(r); break;
@@ -103,38 +103,17 @@ void nna_be_mxu3(struct nna_be *be)
 /* The T41 deadlocks (both cores stall, the watchdog resets the SoC) when CPU0 interleaves NN
  * instructions with MXU3 loads/stores while CPU1 runs the ISP firmware's kernel MXU3 code
  * (tisp_tmo_fpga in the isp_fw_process thread). Keeping that thread on CPU0 means the two never
- * run at once (nna/open-runtime.md, step 18). Returns the pid pinned, 0 if none, -1 on error. */
+ * run at once (nna/open-runtime.md, step 18). The /proc scan and the pin are
+ * hal_ivs_nna_pin.h, shared with raptor-hal's venus/Uranus backend (gtxaspec/raptor-hal#21).
+ * ONNA_NO_ISP_PIN set: no pin. Returns the pid pinned, 0 if none, -1 on error. */
 int nna_pin_isp_cpu0(void)
 {
-	DIR *d;
-	struct dirent *e;
-	int pid = 0;
+	pid_t pid;
 
-	if (getenv("ONNA_NO_ISP_PIN") || !(d = opendir("/proc")))
+	if (getenv("ONNA_NO_ISP_PIN"))
 		return 0;
-	while ((e = readdir(d)) && !pid) {
-		char path[300], comm[32] = "";
-		FILE *f;
-
-		if (e->d_name[0] < '1' || e->d_name[0] > '9')
-			continue;
-		snprintf(path, sizeof(path), "/proc/%s/comm", e->d_name);
-		if (!(f = fopen(path, "r")))
-			continue;
-		if (fgets(comm, sizeof(comm), f) && !strcmp(comm, "isp_fw_process\n"))
-			pid = atoi(e->d_name);
-		fclose(f);
-	}
-	closedir(d);
-	if (pid) {
-		cpu_set_t cs;
-
-		CPU_ZERO(&cs);
-		CPU_SET(0, &cs);
-		if (sched_setaffinity(pid, sizeof(cs), &cs)) {
-			perror("onna: pinning isp_fw_process to CPU0");
-			return -1;
-		}
-	}
-	return pid;
+	pid = nna_pin_isp_core0();
+	if (pid < 0)
+		perror("onna: pinning isp_fw_process to CPU0");
+	return (int)pid;
 }
