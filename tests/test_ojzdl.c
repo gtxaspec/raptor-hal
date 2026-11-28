@@ -2,9 +2,12 @@
  * test_ojzdl.c -- ojzdl (OJZDL=1) against libjzdl's own output
  *
  * ojzdl/tiny.bin: a 15-layer JZDL model with random weights (ojzdl/gen_tiny.py) covering the
- * layer types of thingino-ai's models. ojzdl/tiny.ref.f32: libjzdl 1.7.0's output for it on
+ * layer types of thingino-ai's models. ojzdl/tiny.ref.f32: libjzdl's output (jzdl 1.7.0) for it on
  * ojzdl/tiny.rgb (jzdlrun under QEMU; int32 w, h, c, then the floats). The host build is the
  * plain C path; the T31's MXU2 kernels give the same bytes (thingino-ai tools/ojzdl/gate.sh).
+ *
+ * Copyright (C) 2026 Thingino Project
+ * SPDX-License-Identifier: MIT
  */
 
 #include <stdio.h>
