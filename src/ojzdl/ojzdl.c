@@ -204,8 +204,11 @@ static int plan_memory(ojzdl_net *n);
 
 #define ALIGN16(x) (((x) + 15) & ~(size_t)15)
 
-/* bias/mult/shift as int32 [fmt: Arithmetic]: int32 for 46/52/65, int16 for 53/73/74 */
-static int decode_requant(ojzdl_net *n)
+/* bias/mult/shift as int32 [fmt: Arithmetic]: int32 for 46/52/65, int16 for 53/73/74.
+ * Shift amounts come from the file: int16 ones are taken mod 16 below; int32 ones
+ * must be 0..31 (the models seen use 2..17), so rsr64() never shifts by >= 64 or
+ * overflows its rounding add. */
+static int decode_requant(ojzdl_net *n, const char **err)
 {
 	int i, o;
 	for (i = 0; i < n->nlayers; i++) {
@@ -216,7 +219,7 @@ static int decode_requant(ojzdl_net *n)
 			l->q = malloc((size_t)co * sizeof(int32_t));
 			l->scale = malloc((size_t)co * sizeof(float));
 			if (!l->q || !l->scale)
-				return -1;
+				goto oom;
 			for (o = 0; o < co; o++) {
 				l->q[o] = rd32(l->blob[1] + 4 * o);
 				l->scale[o] = rdf(l->blob[2] + 4 * o);
@@ -227,7 +230,7 @@ static int decode_requant(ojzdl_net *n)
 			/* int16 as stored; the MXU2 kernels read these arrays as the raw blobs */
 			l->q16 = malloc(3 * (size_t)co * sizeof(int16_t));
 			if (!l->q16)
-				return -1;
+				goto oom;
 			for (k = 0; k < 3; k++)
 				for (o = 0; o < co; o++)
 					l->q16[k * co + o] = rd16(l->blob[k + 1] + 2 * o);
@@ -242,17 +245,22 @@ static int decode_requant(ojzdl_net *n)
 			continue;
 		l->q = malloc(3 * (size_t)co * sizeof(int32_t));
 		if (!l->q)
-			return -1;
+			goto oom;
 		for (k = 0; k < 3; k++)
 			for (o = 0; o < co; o++)
 				l->q[k * co + o] = rd32(l->blob[k + 1] + 4 * o);
+		for (o = 0; o < co; o++)
+			if (l->q[2 * co + o] < 0 || l->q[2 * co + o] > 31) {
+				if (err) *err = "requant shift out of range (0..31)";
+				return -1;
+			}
 		if (l->type == T_CONV_FIRST && l->simd) {
 			/* even/odd arrangement for the vector requant; also its limits:
 			 * acc + bias must not wrap int32, SRAR.w shifts mod 32 [mxu2.h] */
 			int g, v, j;
 			l->qtab = malloc((size_t)(co / GRP) * 48 * sizeof(int32_t));
 			if (!l->qtab)
-				return -1;
+				goto oom;
 			for (o = 0; o < co; o++)
 				if (l->q[o] > INT32_MAX - 32768 || l->q[o] < INT32_MIN + 32768 ||
 				    l->q[2 * co + o] < 0 || l->q[2 * co + o] > 31)
@@ -266,6 +274,9 @@ static int decode_requant(ojzdl_net *n)
 		}
 	}
 	return 0;
+oom:
+	if (err) *err = "out of memory";
+	return -1;
 }
 
 /* first conv: bytes per 16 outputs of the MXU2 layout (v5: as stored) */
@@ -471,7 +482,9 @@ ojzdl_net *ojzdl_load(const uint8_t *src, size_t len, const char **err)
 		goto fail;
 	mark_simd(n);
 	n->simd = OJZDL_HAVE_MXU2;
-	if (decode_requant(n) || build_weights(n) || plan_memory(n)) {
+	if (decode_requant(n, err))
+		goto fail;
+	if (build_weights(n) || plan_memory(n)) {
 		if (err) *err = "out of memory";
 		goto fail;
 	}

@@ -131,19 +131,20 @@ AUDIO_SRCS := src/hal_audio.c \
               src/hal_dmic.c
 
 # Open JZDL inference: same hal_jzdl_* API, results bit-identical to libjzdl.
-# MXU2 kernels on the T31 (the only SoC they are tested on); C elsewhere.
+# T31 only: its MXU2 kernels are what make it usable (persondet ~85 ms on the T31, like
+# libjzdl). The plain C path is ~30x slower, so other SoCs are refused.
 OJZDL ?=
 ifeq ($(OJZDL),1)
 ifneq ($(JZDL_INCLUDE),)
 $(error OJZDL=1 and JZDL_INCLUDE are mutually exclusive)
 endif
+ifneq ($(PLATFORM),T31)
+$(error OJZDL=1 is for the T31 (MXU2 kernels); on $(PLATFORM) the C path would be ~30x slower than libjzdl)
+endif
 OJZDL_SRCS := src/hal_ivs_ojzdl.c src/ojzdl/ojzdl.c src/ojzdl/ojzdl_mxu2.c src/ojzdl/ojzdl_resize.c
 VIDEO_SRCS += $(OJZDL_SRCS)
 # -O2: the runtime's loops lose ~12 % at -Os on the T31 (measured)
-OJZDL_FLAGS := -D_POSIX_C_SOURCE=200809L -ffp-contract=off -O2
-ifeq ($(PLATFORM),T31)
-OJZDL_FLAGS += -DOJZDL_MXU2
-endif
+OJZDL_FLAGS := -D_POSIX_C_SOURCE=200809L -ffp-contract=off -O2 -DOJZDL_MXU2
 $(OJZDL_SRCS:.c=.o): CFLAGS += $(OJZDL_FLAGS)
 endif
 
