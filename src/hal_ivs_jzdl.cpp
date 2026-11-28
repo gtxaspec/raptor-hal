@@ -122,7 +122,11 @@ extern "C" void *hal_jzdl_create(const rss_ivs_jzdl_param_t *param)
     ctx->frame_w = param->width;
     ctx->frame_h = param->height;
     ctx->num_classes = param->num_classes;
-    hal_yolo_init(&ctx->yolo, param, ctx->input_w, ctx->input_h);
+    if (hal_yolo_init(&ctx->yolo, param, ctx->input_w, ctx->input_h) != RSS_OK) {
+        jzdl::net_destory(net);
+        delete ctx;
+        return NULL;
+    }
     ctx->rgb_buf = new (std::nothrow) uint8_t[(size_t)param->width * param->height * 3];
     if (!ctx->rgb_buf) {
         jzdl::net_destory(net);

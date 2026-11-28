@@ -29,9 +29,11 @@
 extern "C" {
 #endif
 
-#define HAL_YOLO_MAX_HEADS 3   /* strides 8, 16, 32 */
-#define HAL_YOLO_MAX_ANCHORS 3 /* per head */
-#define HAL_YOLO_MAX_CAND 256  /* candidates kept before NMS (the best ones) */
+#define HAL_YOLO_MAX_HEADS 3     /* strides 8, 16, 32 */
+#define HAL_YOLO_MAX_ANCHORS 3   /* per head */
+#define HAL_YOLO_MAX_CAND 256    /* candidates kept before NMS (the best ones) */
+#define HAL_YOLO_MAX_CLASSES 255 /* num_classes accepted from config */
+#define HAL_YOLO_MAX_ANCHOR 4096 /* anchor w/h, model input pixels */
 
 typedef struct {
     float x1, y1, x2, y2; /* model input pixels */
@@ -64,8 +66,10 @@ typedef struct {
  * then refuses the model at load instead of feeding it the wrong input. */
 bool hal_yolo_preprocess_ok(const rss_ivs_jzdl_param_t *param, rss_ivs_preprocess_t backend);
 
-/* thresholds, anchors (param's, or YOLOv5's for strides left at 0) */
-void hal_yolo_init(hal_yolo_t *y, const rss_ivs_jzdl_param_t *param, int input_w, int input_h);
+/* thresholds, anchors (param's, or YOLOv5's for strides left at 0).
+ * RSS_ERR, logged, if num_classes is outside 1..HAL_YOLO_MAX_CLASSES, the
+ * input size is not positive or an anchor is outside 0..HAL_YOLO_MAX_ANCHOR. */
+int hal_yolo_init(hal_yolo_t *y, const rss_ivs_jzdl_param_t *param, int input_w, int input_h);
 
 /* JZDL packed output: decode + NMS + scale to the frame. RSS_ERR if the
  * output doesn't fit the configured model (logged once). */
